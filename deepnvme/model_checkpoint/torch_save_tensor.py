@@ -3,7 +3,11 @@ import argparse
 import torch
 import os
 from torch_save_utils import PINNED_BUFFER_MB, load_io_ops
-from torch_save_utils import test_save, test_ds_mock_save, test_ds_py_save, test_ds_aio_fast_save, test_ds_gds_fast_save
+from torch_save_utils import (
+    test_save, test_ds_mock_save, test_ds_py_save, 
+    test_ds_aio_fast_save, test_ds_gds_fast_save,
+    test_fastpersist_aio_nopatch, test_fastpersist_gds_nopatch
+)
 import deepspeed 
 from deepspeed.accelerator import get_accelerator
 import os 
@@ -21,6 +25,8 @@ def run(args):
         'test_ds_py_save': test_ds_py_save,
         'test_ds_gds_fast_save': test_ds_gds_fast_save,
         'test_ds_aio_fast_save': test_ds_aio_fast_save,
+        'test_fastpersist_aio_nopatch': test_fastpersist_aio_nopatch,
+        'test_fastpersist_gds_nopatch': test_fastpersist_gds_nopatch,
     }
     for tag, fn in fn_dict.items():
         if tag == 'test_ds_gds_fast_save' and not args.gpu:

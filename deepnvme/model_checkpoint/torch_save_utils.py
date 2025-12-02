@@ -5,6 +5,7 @@ import deepspeed
 from deepspeed.ops.op_builder import AsyncIOBuilder, GDSBuilder
 from deepspeed.io import MockFileWriter, PyFileWriter, FastFileWriter, FastFileWriterConfig
 from deepspeed.accelerator import get_accelerator
+from fastpersist_save import fastpersist_save
 
 AIO_QUEUE_DEPTH = 8
 AIO_BLOCK_SIZE = 8 * (1024**2)
@@ -95,7 +96,7 @@ def _test_ds_fast_save(file, buffer, args, use_gds):
     fast_writer_config = FastFileWriterConfig(dnvme_handle=h,
                                   pinned_tensor=pinned_memory,
                                   double_buffer=not args.single_io_buffer,
-                                  num_parallel_writers=1,
+                                  num_parallel_writers=8,
                                   writer_rank=0)
 
     ds_fast_writer = FastFileWriter(file_path=file,
@@ -115,3 +116,38 @@ def test_ds_aio_fast_save(file, buffer, args):
 
 def test_ds_gds_fast_save(file, buffer, args):
     return _test_ds_fast_save(file, buffer, args, True)
+
+
+def _test_fastpersist_nopatch(file, buffer, args, use_gds):
+    """
+    Test FastPersist using the no-patch approach with torch.serialization.skip_data.
+    
+    This method does NOT require patching torch/serialization.py.
+    """
+    if use_gds:
+        h, pinned_memory = _get_gds_components(args)
+    else:
+        h, pinned_memory = _get_aio_components(args)
+    
+    st = time.time()
+    stats = fastpersist_save(
+        obj=buffer,
+        file_path=file,
+        aio_handle=h,
+        pinned_buffer=pinned_memory,
+        use_gds=use_gds,
+        show_stats=not args.no_statistics
+    )
+    write_sec = time.time() - st
+    
+    return write_sec
+
+
+def test_fastpersist_aio_nopatch(file, buffer, args):
+    """FastPersist with async I/O (no torch patching required)."""
+    return _test_fastpersist_nopatch(file, buffer, args, False)
+
+
+def test_fastpersist_gds_nopatch(file, buffer, args):
+    """FastPersist with GPU Direct Storage (no torch patching required)."""
+    return _test_fastpersist_nopatch(file, buffer, args, True)
