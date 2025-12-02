@@ -25,7 +25,8 @@ def run(model, model_name, ckpt_name, args):
         'test_fastpersist_gds_nopatch': test_fastpersist_gds_nopatch,
     }
     for tag, fn in fn_dict.items():
-        if tag == 'test_ds_gds_fast_save' and not args.gpu:
+        # Skip GDS tests if not using GPU
+        if 'gds' in tag and not args.gpu:
             continue 
         file = os.path.join(args.folder, f'{tag}_{ckpt_name}.pt')
         print(f'checkpoint file = {file}')
