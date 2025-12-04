@@ -5,7 +5,7 @@ import deepspeed
 from deepspeed.ops.op_builder import AsyncIOBuilder, GDSBuilder
 from deepspeed.io import MockFileWriter, PyFileWriter, FastFileWriter, FastFileWriterConfig
 from deepspeed.accelerator import get_accelerator
-from fastpersist_save import fastpersist_save, fastpersist_save_legacy
+from fastpersist_save import fastpersist_save, fastpersist_save_legacy, fastpersist_save_zipfile_optimized
 
 # Constants for FastPersist I/O
 AIO_QUEUE_DEPTH = 64
@@ -139,8 +139,8 @@ def _test_fastpersist_nopatch(file, buffer, args, use_gds):
     st = time.time()
     
     if args.zipfile:
-        # Best we can do for zipfile without patching
-        stats = fastpersist_save(
+        # Optimized no-patch zipfile path using skip_data + scatter write
+        stats = fastpersist_save_zipfile_optimized(
             obj=buffer,
             file_path=file,
             aio_handle=h,

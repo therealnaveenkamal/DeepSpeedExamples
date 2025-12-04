@@ -8,7 +8,8 @@ FastPersist is designed to integrate with torch checkpointing and has been valid
 
 FastPersist can be used **without modifying torch's source code** by using `FastFileWriter` wrappers.
 
-1. **Standard (Zipfile) Format**: Use `fastpersist_save()`. This wraps `torch.save` and passes `FastFileWriter` as the file object, enabling sequential async I/O. Performance is ~1.2 GB/s (limited by zip overhead).
+1. **Standard (Zipfile) Format**: Use `fastpersist_save_zipfile_optimized()`. This creates a sparse zip skeleton with `skip_data()`, then fills storage data using buffered sequential writes. **Performance: ~1.6 GB/s** (1.7x faster than vanilla `torch.save` for zipfile).
+   - Alternative: `fastpersist_save()` wraps `torch.save` with `FastFileWriter` (~1.2 GB/s, simpler but slower).
 2. **Legacy Format (Fastest)**: Use `fastpersist_save_legacy()`. This manually serializes the object in the PyTorch legacy format, leveraging `FastFileWriter`'s batch API for maximum throughput. **Performance: ~10+ GB/s**.
 
 The implementation is in `fastpersist_save.py`.
@@ -32,22 +33,33 @@ To measure performance of checkpointing HF phi-3-mini model:
 python torch_save_model.py --model phi3 --folder /mnt/nvme0 --io_buffer_mb 256
 ```
 
-Results comparison:
-- `test_save`: Vanilla `torch.save()` (~1.2 GB/s)
-- `test_ds_aio_fast_save`: FastPersist using FastFileWriter (~1.5 GB/s)
+Results comparison (legacy format, default):
+- `test_save`: Vanilla `torch.save()` (~1.3 GB/s)
+- `test_ds_aio_fast_save`: FastPersist using FastFileWriter (~1.2 GB/s)
 - `test_fastpersist_aio_nopatch`: **FastPersist Optimized Legacy No-Patch (~13 GB/s)**
 
-To test the zipfile format (slower due to format overhead):
+To test the zipfile format:
 ```bash
 python torch_save_model.py --model phi3 --folder /mnt/nvme0 --io_buffer_mb 256 --zipfile
 ```
+
+Results comparison (zipfile format, `--zipfile`):
+- `test_save`: Vanilla `torch.save()` (~0.9 GB/s)
+- `test_ds_aio_fast_save`: FastPersist using FastFileWriter (~1.2 GB/s)
+- `test_fastpersist_aio_nopatch`: **FastPersist Optimized Zipfile No-Patch (~1.6 GB/s)**
 
 ## API Usage ##
 
 For programmatic use of FastPersist without patching torch:
 
 ```python
-from fastpersist_save import fastpersist_save, fastpersist_save_legacy, get_aio_handle, get_pinned_buffer
+from fastpersist_save import (
+    fastpersist_save,
+    fastpersist_save_zipfile_optimized,
+    fastpersist_save_legacy,
+    get_aio_handle,
+    get_pinned_buffer,
+)
 
 # Get async I/O handle and pinned buffer (256MB recommended)
 aio_handle = get_aio_handle()
@@ -61,10 +73,18 @@ stats = fastpersist_save_legacy(
     pinned_buffer=pinned_buffer
 )
 
-# OPTION 2: Standard Format (Zipfile) - ~1.2 GB/s
-stats = fastpersist_save(
+# OPTION 2: Standard Format (Zipfile) - ~1.6 GB/s (optimized)
+stats = fastpersist_save_zipfile_optimized(
     obj=model.state_dict(),
     file_path="/path/to/checkpoint_zip.pt",
+    aio_handle=aio_handle,
+    pinned_buffer=pinned_buffer
+)
+
+# OPTION 2 (Alternative): Simple Zipfile wrapper - ~1.2 GB/s
+stats = fastpersist_save(
+    obj=model.state_dict(),
+    file_path="/path/to/checkpoint_zip_simple.pt",
     aio_handle=aio_handle,
     pinned_buffer=pinned_buffer
 )
