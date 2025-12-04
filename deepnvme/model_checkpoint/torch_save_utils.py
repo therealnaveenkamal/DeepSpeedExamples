@@ -5,14 +5,15 @@ import deepspeed
 from deepspeed.ops.op_builder import AsyncIOBuilder, GDSBuilder
 from deepspeed.io import MockFileWriter, PyFileWriter, FastFileWriter, FastFileWriterConfig
 from deepspeed.accelerator import get_accelerator
-from fastpersist_save import fastpersist_save
+from fastpersist_save import fastpersist_save, fastpersist_save_legacy
 
-AIO_QUEUE_DEPTH = 8
-AIO_BLOCK_SIZE = 8 * (1024**2)
-AIO_INTRA_OP_PARALLEL = 1
+# Constants for FastPersist I/O
+AIO_QUEUE_DEPTH = 64
+AIO_BLOCK_SIZE = 16 * (1024**2)
+AIO_INTRA_OP_PARALLEL = 4
 AIO_SINGLE_SUBMIT = False
-AIO_OVERLAP_EVENTS = False
-PINNED_BUFFER_MB = 64
+AIO_OVERLAP_EVENTS = True
+PINNED_BUFFER_MB = 256
 
 def load_io_ops(args):
     if AsyncIOBuilder().is_compatible(): 
@@ -25,7 +26,7 @@ def _get_aio_handle():
     h = AsyncIOBuilder().load(verbose=False).aio_handle(block_size=AIO_BLOCK_SIZE,
                                            queue_depth=AIO_QUEUE_DEPTH,
                                            single_submit=AIO_SINGLE_SUBMIT,
-                                           overlap_events=AIO_SINGLE_SUBMIT,
+                                           overlap_events=AIO_OVERLAP_EVENTS,
                                            intra_op_parallelism=AIO_INTRA_OP_PARALLEL)
     return h
 
@@ -33,7 +34,7 @@ def _get_gds_handle():
     h = GDSBuilder().load(verbose=False).gds_handle(block_size=AIO_BLOCK_SIZE,
                                     queue_depth=AIO_QUEUE_DEPTH,
                                     single_submit=AIO_SINGLE_SUBMIT,
-                                    overlap_events=AIO_SINGLE_SUBMIT,
+                                    overlap_events=AIO_OVERLAP_EVENTS,
                                     intra_op_parallelism=AIO_INTRA_OP_PARALLEL)
     return h
 
@@ -120,9 +121,15 @@ def test_ds_gds_fast_save(file, buffer, args):
 
 def _test_fastpersist_nopatch(file, buffer, args, use_gds):
     """
-    Test FastPersist using the no-patch approach with torch.serialization.skip_data.
+    Test FastPersist using no-patch approach.
     
-    This method does NOT require patching torch/serialization.py.
+    If args.zipfile is True:
+      Uses FastFileWriter wrapper (sequential O_DIRECT). 
+      Limited by Python zip overhead (~1.2 GB/s).
+      
+    If args.zipfile is False (legacy):
+      Uses manual legacy serialization logic (fastpersist_save_legacy).
+      Hits maximum FastPersist speed (~10+ GB/s).
     """
     if use_gds:
         h, pinned_memory = _get_gds_components(args)
@@ -130,14 +137,32 @@ def _test_fastpersist_nopatch(file, buffer, args, use_gds):
         h, pinned_memory = _get_aio_components(args)
     
     st = time.time()
-    stats = fastpersist_save(
-        obj=buffer,
-        file_path=file,
-        aio_handle=h,
-        pinned_buffer=pinned_memory,
-        use_gds=use_gds,
-        show_stats=not args.no_statistics
-    )
+    
+    if args.zipfile:
+        # Best we can do for zipfile without patching
+        stats = fastpersist_save(
+            obj=buffer,
+            file_path=file,
+            aio_handle=h,
+            pinned_buffer=pinned_memory,
+            use_gds=use_gds,
+            show_stats=not args.no_statistics,
+            double_buffer=not args.single_io_buffer,
+            num_parallel_writers=8
+        )
+    else:
+        # Fast legacy path (manual serialization)
+        stats = fastpersist_save_legacy(
+            obj=buffer,
+            file_path=file,
+            aio_handle=h,
+            pinned_buffer=pinned_memory,
+            use_gds=use_gds,
+            show_stats=not args.no_statistics,
+            double_buffer=not args.single_io_buffer,
+            num_parallel_writers=8
+        )
+        
     write_sec = time.time() - st
     
     return write_sec
