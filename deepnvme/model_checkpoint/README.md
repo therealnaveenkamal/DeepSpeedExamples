@@ -23,3 +23,16 @@ test_save -- 14.23 GB, 20.72 secs,  0.69 GB/s
 test_ds_aio_fast_save -- 14.23 GB,  0.80 secs, 17.75 GB/s
 ```
 
+## No-Patch Model Checkpointing
+No patch integration path using the zipfile serialization format. This method leverages `torch.serialization.skip_data` (available in newer torch) to create a checkpoint skeleton and then injects data using DeepNVMe FastPersist writer.
+
+Example usage:
+```bash
+python torch_save_model.py --model phi3 --folder /mnt/nvme0 --zipfile
+```
+
+### Steps (will be removed later)
+1. Use `torch.save(, skip_data=True)` to create a valid ZipFile checkpoint structure.
+2. Load this skeleton using `torch.load` with `FakeTensorMode`. Gives `_checkpoint_offset` for every storage object.
+3. Map the real model storages to these discovered offsets.
+4. We use `FastFileWriter` to write the real tensor data directly to the file at the specific offsets.

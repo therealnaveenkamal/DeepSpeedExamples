@@ -2,7 +2,7 @@ import time
 import torch
 from torch.optim import Adam
 import os
-from torch_save_utils import test_save, test_ds_mock_save, test_ds_py_save, test_ds_aio_fast_save, test_ds_gds_fast_save, load_io_ops
+from torch_save_utils import test_save, test_ds_mock_save, test_ds_py_save, test_ds_aio_fast_save, test_ds_gds_fast_save, test_ds_aio_no_patch_save, load_io_ops
 from save_model_utils import get_model, validate_arguments, parse_arguments
 import deepspeed
 from deepspeed.accelerator import get_accelerator
@@ -16,6 +16,7 @@ def run(model, model_name, ckpt_name, args):
         'test_ds_py_save': test_ds_py_save,
         'test_ds_gds_fast_save': test_ds_gds_fast_save,
         'test_ds_aio_fast_save': test_ds_aio_fast_save,
+        'test_ds_aio_no_patch_save': test_ds_aio_no_patch_save,
     }
     for tag, fn in fn_dict.items():
         if tag == 'test_ds_gds_fast_save' and not args.gpu:

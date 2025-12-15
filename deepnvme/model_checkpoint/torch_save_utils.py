@@ -115,3 +115,67 @@ def test_ds_aio_fast_save(file, buffer, args):
 
 def test_ds_gds_fast_save(file, buffer, args):
     return _test_ds_fast_save(file, buffer, args, True)
+
+def _get_storage_map(real_obj, fake_obj, storage_map):
+    if isinstance(real_obj, torch.Tensor):
+        if hasattr(fake_obj.untyped_storage(), '_checkpoint_offset'):
+            offset = fake_obj.untyped_storage()._checkpoint_offset
+            storage_map[offset] = real_obj.untyped_storage()
+    elif isinstance(real_obj, (list, tuple)):
+        for r, f in zip(real_obj, fake_obj):
+            _get_storage_map(r, f, storage_map)
+    elif isinstance(real_obj, dict):
+        for k in real_obj:
+            _get_storage_map(real_obj[k], fake_obj[k], storage_map)
+    elif hasattr(real_obj, 'state_dict'):
+        # For modules/optimizers, traverse their state_dict to find tensors
+        _get_storage_map(real_obj.state_dict(), fake_obj.state_dict(), storage_map)
+
+def test_ds_aio_no_patch_save(file, buffer, args):
+    st = time.time()
+    
+    with torch.serialization.skip_data():
+        torch.save(buffer, file, _use_new_zipfile_serialization=True)
+    
+    from torch._subclasses import FakeTensorMode
+    with FakeTensorMode():
+        fake_buffer = torch.load(file, weights_only=False)
+    storage_map = {}
+    _get_storage_map(buffer, fake_buffer, storage_map)
+    
+    # Sort by offset to write sequentially where possible (good for performance)
+    sorted_offsets = sorted(storage_map.keys())
+    # Tag real storages with offsets so FastFileWriter knows where to put them
+    sorted_storages = []
+    for offset in sorted_offsets:
+        storage = storage_map[offset]
+        storage._checkpoint_offset = offset
+        # FastFileWriter expects (storage, dtype) tuple for new torch versions
+        sorted_storages.append((storage, torch.uint8))
+        
+    # 4. Write data using FastFileWriter
+    # Setup writer
+    use_gds = False # Default to AIO for now, or check args?
+    if use_gds:
+        h, pinned_memory = _get_gds_components(args)
+    else:
+        h, pinned_memory = _get_aio_components(args)
+        
+    fast_writer_config = FastFileWriterConfig(dnvme_handle=h,
+                                  pinned_tensor=pinned_memory,
+                                  double_buffer=not args.single_io_buffer,
+                                  num_parallel_writers=1,
+                                  writer_rank=0)
+
+    ds_fast_writer = FastFileWriter(file_path=file,
+                                    config=fast_writer_config)
+    
+    # Write the storages. save_size=False because zipfile format doesn't prefix data with size in the blob.
+    ds_fast_writer.save_torch_storage_object_list(sorted_storages, save_size=False)
+    
+    ds_fast_writer.close()
+    
+    write_sec = time.time() - st
+    if not args.no_statistics:
+        ds_fast_writer._dump_state()
+    return write_sec
