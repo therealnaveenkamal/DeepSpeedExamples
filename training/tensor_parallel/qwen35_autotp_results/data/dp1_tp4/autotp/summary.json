@@ -1,0 +1,15 @@
+{
+  "mode": "autotp",
+  "tp_size": 4,
+  "dp_size": 1,
+  "dtype": "bf16",
+  "steps": 500,
+  "warmup_steps": 50,
+  "tokens_per_step": 8192,
+  "params": 617614784,
+  "time_to_first_step_sec": 13.509529113769531,
+  "steady_tokens_per_sec": 751.9411198481155,
+  "steady_step_ms": 10895.317312876383,
+  "peak_memory_allocated_bytes": 9483323392.0,
+  "final_loss": 4.587182998657227
+}
