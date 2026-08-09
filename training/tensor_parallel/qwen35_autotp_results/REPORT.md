@@ -18,7 +18,17 @@ compiler winning most where collectives and replicated fallback compute dominate
 losses match all four runs at 11.2358 from a bit-identical shared init. This confirms the pass  
 computes the same training math *at bf16 resolution*; the sharper fp32 equivalence (~1e-6) was  
 previously established on Llama only (see Threats).
-- **Bottom line:** the compile pass delivers a reproducible ~1.3–1.45× training speedup over module injection on this model with identical-at-bf16 training behavior.
+- **Finding 3 :** A three-arm torch.profiler comparison at DP1/TP4 attributes the speedup:
+plain torch.compile over the injected modules gains only **1.09×** (it graph-breaks at every
+module-level collective), while the pass reaches **1.57×**. NCCL all-reduce device time drops
+~45% (33.7 → 18.6 s in the profiled window) because the pass merges the backward `f` all-reduce
+across column layers sharing an activation, while all-gather time is unchanged. The step is
+communication-bound in all arms (61–64% of device time in NCCL kernels).
+- **Finding 4 :** The FX graph dump cross-check passes on all 65 sharded modules: every
+column/row/gather layer has its collective in the compiled graph, every graph collective maps
+back to an injected layer, and the replicated `q_norm`/`k_norm` correctly stay out of the graph
+(handled by grad hooks).
+- **Bottom line:** the compile pass delivers a reproducible ~1.3–1.45× training speedup over module injection on this model with identical-at-bf16 training behavior, and the profiler shows the win comes from the pass itself (merged in-graph collectives), not from generic compilation.
 
 
 
@@ -97,8 +107,35 @@ crossing ~30 gathers), with 4-rank rings also moving 1.5× the bytes per element
 exactly the components the compiler attacks (kernel fusion of the memory-bound fallback;
 collectives as schedulable graph nodes), so the addressable pool is larger at TP4: 1.31× → 1.45×.
 This interpretation is consistent with the eager slowdown pattern (1,557 → 752 tok/s despite
-constant sharded FLOPs) but is not yet confirmed by profiling — the planned torch.profiler
-three-arm comparison will attribute the win between Inductor fusion and collective placement.
+constant sharded FLOPs) and is confirmed by the profiler below.
+
+### Speedup attribution (torch.profiler, three arms, DP1/TP4, 40 steps)
+
+| arm | steady tok/s | vs eager | NCCL % device time | all_reduce | all_gather |
+| --- | --- | --- | --- | --- | --- |
+| `autotp` (module inject, eager) | 732.7 | — | 61.0% | 33.7 s | 14.6 s |
+| `autotp_torchcompile` (plain torch.compile) | 799.2 | 1.09× | 63.9% | 32.6 s | 14.7 s |
+| `autotp_compile` (DeepCompile pass) | 1,152.9 | **1.57×** | 64.3% | **18.6 s** | 15.1 s |
+
+Traces captured on steps 23–27 post-warmup; collective times are device totals over the profiled
+window; artifacts in `data/profile_tp4/`. Plain torch.compile contributes little because it
+graph-breaks at each module-level collective, so the pass — not generic compilation — carries the
+speedup. The pass's all-reduce time is ~45% lower with all-gather unchanged: graph-level
+insertion merges the backward `f` all-reduce across column-parallel consumers of the same
+activation (4 `in_proj` → 1, `q/k/v` → 1, `gate/up` → 1; 23 `copy_to_tp_region` ops vs. ~54
+module-level `f`s), while gathers remain one per gather-output layer by design. Losses agree
+across all three arms (7.060–7.062 at step 39). The profiled-run ratio (1.57×) exceeds the
+unprofiled 500-step ratio (1.45×); both are single runs — quote 1.45× as the conservative
+headline.
+
+### Graph dump cross-check
+
+`graph_dump.py` on the same commit (TP4, full 8-layer model, forward+backward): **no
+mismatches**. All 65 sharded modules carry their expected collective in the compiled graph (30
+gather-output GatedDeltaNet projections, 10 rowwise, colwise attention/MLP, gathered `lm_head`),
+every graph collective attributes back to an injected layer via `nn_module_stack`, and the
+collective totals confirm the consumer merging (23 `copy_to_tp_region`, 10
+`reduce_from_tp_region`). Table and per-op attribution in `data/graph_dump/`.
 
 ### fla / causal-conv1d compatibility (fullgraph study)
 
@@ -127,5 +164,6 @@ branch `feature/autotp-dev` @ `4738778e` (`environment/deepspeed_commit.txt`), p
 bit-reproducible; compiled arms vary at the ~1e-6 (fp32) / ~1e-2 (bf16) level across
 recompilations because Inductor does not pin reduction order.
 - Raw artifacts: `data/<setup>/<mode>/{summary.json,metrics.csv}`, combined ratios in  
-`data/combined_summary.json`.
+`data/combined_summary.json`, profiler op tables and comm splits in `data/profile_tp4/`,  
+graph-dump cross-check in `data/graph_dump/`.
 
