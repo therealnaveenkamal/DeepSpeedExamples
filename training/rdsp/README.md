@@ -1,0 +1,243 @@
+# rdsp: pipeline parallelism on Ray + DeepSpeed with per-stage layouts
+
+`ray_deepspeed_pipeline` splits a model into pipeline stages. Each stage is a
+group of Ray actors (one per GPU) running an unmodified DeepSpeed engine, and
+each stage has its own GPU count and its own DP / TP / SP / EP / ZeRO settings.
+DeepSpeed and Ray are used through public APIs only.
+
+## Install
+
+```bash
+pip install -e ".[dev]"      # rdsp, pytest, ruff
+pip install deepspeed transformers datasets
+```
+
+Python ≥ 3.12. Importing `ray_deepspeed_pipeline` does not import `ray` or
+`deepspeed`; the actors do.
+
+## Run
+
+```bash
+./run.sh                                  # Qwen3-0.6B, 4 GPUs: [DP=2, ZeRO-2] -> [TP=2]
+python train.py --stages 4                # 4 single-GPU stages, even layer split
+python train.py --stages 4 --cuts 7,14,21 \
+    --stage 0:gpus=2,zero=2 --stage 1:gpus=2,tp=2 \
+    --stage 2:gpus=2,sp=2  --stage 3:gpus=2          # 8 GPUs, four layouts (not yet run at this size)
+python demo.py                            # CPU only, ~10 s, pipeline vs unsplit model
+```
+
+`train.py` flags:
+
+| Flag | Default | |
+|---|---|---|
+| `--model` | `Qwen/Qwen3-0.6B` | HF causal LM; tied embeddings are untied automatically |
+| `--stages` | 2 | pipeline stages |
+| `--cuts` | even split | block index where each stage after the first starts, e.g. `7,14,21` |
+| `--stage` | 1 GPU, no parallelism | per-stage layout, repeatable: `<i>:gpus=N,zero=Z,tp=T,sp=S,ep=E,fold=1` |
+| `--microbatches` | 8 | microbatches per optimizer step |
+| `--rows` | 4 | sequences per microbatch |
+| `--seq` | 512 | tokens per sequence |
+| `--steps` | 100 | optimizer steps |
+| `--lr` | 1e-5 | AdamW learning rate |
+| `--zero` | 0 | ZeRO stage for stages without `zero=` |
+| `--dtype` | `bf16` | `bf16` or `fp32` |
+| `--data` | `wikitext` | `wikitext` (WikiText-103) or `synthetic` (random tokens) |
+| `--deepspeed_config` | — | JSON file replacing the generated config; `train_batch_size` must equal `--rows` × `--microbatches` |
+| `--save_dir` | — | write a checkpoint after the last step |
+
+Output: one line per step with loss, step time and tokens/s.
+
+## API
+
+```python
+import ray, ray_deepspeed_pipeline as rdsp
+from ray_deepspeed_pipeline.config import StageOverride
+
+ray.init()
+engine, _, _, _ = rdsp.initialize(
+    model=model,                      # HF causal LM, embeddings untied
+    config=ds_config,                 # DeepSpeed config dict or JSON path
+    loss_fn=loss_fn,                  # loss_fn(logits, labels), last stage only
+    pipeline_config=rdsp.PipelineConfig(
+        stages=2,
+        partition=rdsp.UniformTransformerBlocks(),      # or rdsp.ExplicitCuts((14,))
+        stage_overrides=(StageOverride(stage=0, num_gpus=2, zero_stage=2),
+                         StageOverride(stage=1, num_gpus=2, tp=2)),
+    ),
+)
+loss = engine.train_batch(data_iter=it)   # it yields (input_ids, labels); consumes M per call
+engine.save_checkpoint("ckpt/")           # engine.load_checkpoint("ckpt/")
+```
+
+| `PipelineConfig` field | |
+|---|---|
+| `stages` | number of stages |
+| `partition` | `UniformTransformerBlocks()` or `ExplicitCuts((i, ...))` |
+| `microbatches` | optional; must equal `gradient_accumulation_steps` |
+| `stage_overrides` | `StageOverride(stage, num_gpus=1, zero_stage=None, tp=1, sp=1, ep=1, fold=False)` |
+| `checkpoint` | `CheckpointPolicy(save_optimizer_state=True)` |
+
+DeepSpeed config rules:
+
+| Key | Rule |
+|---|---|
+| `gradient_accumulation_steps` | = microbatches per step (M) |
+| `train_batch_size` | = M × rows per microbatch |
+| `train_micro_batch_size_per_gpu` | set per stage by rdsp (rows / stage DP degree) |
+| `gradient_clipping` | must be 0 (per-stage clipping ≠ global clipping) |
+| pipeline / Ray keys | rejected |
+
+Engine surface: `train_batch`, `eval_batch`, `save_checkpoint`, `load_checkpoint`,
+`global_steps`. `forward`, `backward`, `step` and `module` raise
+`UnsupportedEngineMethod`.
+
+## Architecture
+
+| Component | Process | Role |
+|---|---|---|
+| `compiler.lower()` | driver | block list → stage cuts, per-stage grid (`gpus = dp·sp·tp`), per-stage DeepSpeed config, plan hash |
+| `schedule.generate_commands()` | driver | per-stage 1F1B op list; stage *s* of *N* does `min(N−1−s, M)` warm-up forwards |
+| `coordinator` | driver | one step: data, dispatch, ready barrier, apply, failure handling, checkpoints |
+| `stage_group` | driver | placement groups (`STRICT_PACK`, one node per stage), actor start-up, mesh check, link set-up |
+| `stage_worker.StageWorkerActor` | 1 per GPU | `run_step()`: executes the op list, exchanges tensors with neighbours |
+| `deepspeed_adapter` | 1 per GPU | wraps `deepspeed.initialize()`; forward, external-gradient backward, apply, save/load |
+| `p2p` | 1 per GPU | two `ProcessGroupNCCL`s over all ranks of all stages: `fwd` (activations), `bwd` (gradients) |
+| `boundary` | 1 per GPU | which rank sends which rows to whom; gradient scale |
+
+Process groups per GPU: DeepSpeed's stage-local world (intra-stage collectives)
+plus rdsp's `fwd` and `bwd` groups (inter-stage point-to-point). Rendezvous for
+`fwd`/`bwd` is a `TCPStore` in stage 0 rank 0.
+
+Step sequence:
+
+1. Driver takes exactly M `(inputs, labels)` entries; short iterator → `StepFailed`, nothing dispatched.
+2. Generation id += 1; one Ray call per rank: `run_step(generation, ops, inputs|labels)`.
+3. Per op, forward: `recv(fwd)` from overlapping upstream cells → assemble → `x.detach().requires_grad_()` → `engine(x)` → `send(fwd)` (async).
+4. Per op, backward: `recv(bwd)` → assemble → × `dp_s / dp_(s+1)` → `engine.backward((out * g).sum())` → `send(bwd, x.grad)`. Last stage: `engine.backward(loss / M)`.
+5. Only the M-th backward is a DeepSpeed accumulation boundary (intra-stage gradient reduction happens there).
+6. Each rank returns `{losses (last stage), ready}`. All ready → driver sends `apply` → `engine.step()` once per rank.
+
+Boundary rules:
+
+- A rank's cell = (row block of `rows / dp`, sequence block of `seq / sp`); TP ranks share a cell.
+- Only TP rank 0 of a cell sends; every rank of an overlapping destination cell receives.
+- First message per (direction, peer) per step carries a 10-int shape header.
+- Gradient scale `dp_s / dp_(s+1)`: DeepSpeed averages over DP and sums over SP.
+
+Engine settings rdsp overrides per stage: `gradient_accumulation_steps = 1`
+(rdsp accumulates; loss scaled by 1/M), `gradient_clipping = 0`.
+
+## Failure semantics
+
+| When | Result | State after |
+|---|---|---|
+| Before any stage applies (exception, dead actor, p2p timeout) | `StepFailed` | weights unchanged; links rebuilt; retry discards leftovers and rewinds RNG, so it is exact |
+| During apply | `PipelinePoisoned` | all calls refused until `load_checkpoint()` |
+
+Checkpoint layout: `<dir>/<tag>/stage<s>/` (DeepSpeed files + `rng/rank<r>.pt`),
+`<dir>/<tag>/manifest.json` (written last, atomic; plan hash, step, data
+position, SHA-256 per file), `<dir>/latest`. Load verifies the manifest, rebuilds
+all actors if any died (preferring previous nodes), verifies each stage's files
+on its node, then loads.
+
+## Supported layouts
+
+Parity against the unsplit model on one device, 8×L4, real DeepSpeed + NCCL
+(fp32, SGD with momentum, learnable data, per-parameter update comparison):
+
+| Layout | GPUs per stage | Tolerance |
+|---|---|---|
+| Single-GPU stages, Qwen3-0.6B bf16 | 1 · 1 | bf16 rounding |
+| Row-splitting boundary | 1 · 2 · 1 | loss 1e-4 |
+| Uneven GPU counts | 2 · 4 · 2 | loss 1e-4 |
+| Mixed ZeRO | 4 (Z2) · 2 (Z1) · 2 (Z0) | loss 1e-4 |
+| AutoTP | 1 · 2 · 4 (TP×DP) | update 2.4e-5 |
+| Ulysses SP | 2 · 4 (SP×DP) · 1 | update 2.4e-5 |
+| AutoEP, folded onto TP | 1 · 4 · 2 | update 3e-4 |
+| SP · TP · EP+TP · TP | 2 · 2 · 2 · 2 | update 2.4e-5 |
+
+Constraints: SP not on the last stage; TP and SP not in the same stage; rows
+divisible by every stage's DP degree; no parameters tied across stages; no
+gradient clipping.
+
+## Tests
+
+```bash
+pytest -q            # CPU: full runtime on Ray with a torch stub engine (301 tests, ~5 min)
+ruff check .
+modal run scripts/modal_tests.py --gpus L4:8 \
+    --tests "tests/integration/test_p6_first_row.py tests/integration/test_p7_checkpoint_gpu.py tests/integration/test_heterogeneous_pipeline.py"
+```
+
+GPU tests skip on CPU and run on Modal (billed). `scripts/modal_cluster.py` runs
+multi-node layouts.
+
+## Results (Qwen3-0.6B, H100, vs Megatron-Core 0.19.2)
+
+Same pretrained weights, WikiText-103, matched fused kernels and gradient
+precision; both systems back to back on one pinned host.
+
+| | 1 GPU | 4 GPUs | 8 GPUs |
+|---|---|---|---|
+| Loss difference per step (median) | 0.05% | 0.05% | 0.05% |
+| Throughput ratio, 8,192-token microbatches | 1.10× | 1.11× | 1.02× |
+| Throughput ratio, 2,048-token microbatches | 1.24× | 1.30× | 1.29× |
+
+Balanced 4- and 5-stage layouts: 1.18×. A 2-GPU output stage vs a plain extra
+stage at 0.6B: 0.91–0.97×. Details: `docs/BENCHMARK_RESULTS.md`,
+`docs/presentation/rdsp-report.html`, raw data in `bench/results/`.
+
+## Limitations
+
+- Single node, ≤ 8 GPUs validated; multi-node path untested on real hardware.
+- 1F1B only; no interleaved stages.
+- No global-norm gradient clipping.
+- `UniformTransformerBlocks` balances layer count, not cost.
+- Node-local checkpoints survive actor loss, not node loss.
+
+### Model coverage
+
+Automatic split: longest `ModuleList` of same-class modules, cut by layer count
+(or `ExplicitCuts`). Stage builders:
+
+| Model shape | Builder | Status |
+|---|---|---|
+| HF Llama-style causal LM (`embed_tokens`, `layers`, `norm`, `rotary_emb`, `lm_head`): Qwen3, Llama | `CausalLMStage` | supported |
+| Plain sequential (each block takes only the previous output) | `GenericSequentialStage` | supported |
+| Anything else | — | not supported |
+
+Checked on tiny CPU configs (transformers 5.17):
+
+| Model | Failure |
+|---|---|
+| Qwen3.5 | 3-D mRoPE position ids and per-layer-type masks; `CausalLMStage` passes 2-D ids → `IndexError` in rotary |
+| GLM-5.3 (`glm5_next`) | 4-stream hyper-connected hidden state, layers return `(hidden, topk_indices)`, no RoPE, vision encoder declared before the embedding → generic builder feeds token ids to the patch embed |
+| VL checkpoints | block-list heuristic picks `visual.blocks` when it is longer than the decoder, refuses on a tie |
+
+The driver builds the full model in CPU memory before slicing, so models of
+hundreds of billions of parameters cannot be loaded.
+
+Planned fix: run the model's own `forward` on every stage; a pre-hook on the
+first local layer injects the tensors received from upstream (all positional and
+keyword tensor args), a hook on the last local layer captures the output and
+stops the forward; stages load only their own layers from safetensors onto a
+`meta`-initialised model. Covers any decoder whose forward loops over one layer
+list. Megatron-Core instead supports a fixed set of architectures re-implemented
+in its own model code.
+
+## Layout
+
+```
+train.py, run.sh      training example
+demo.py               CPU walkthrough
+src/ray_deepspeed_pipeline/
+  api.py config.py compiler.py plan.py partition.py     planning
+  schedule.py coordinator.py engine.py data.py           driver-side step
+  stage_group.py                                         start-up, per-stage client
+  stage_worker.py deepspeed_adapter.py p2p.py boundary.py per-GPU worker
+  checkpoint.py protocols.py errors.py support_matrix.py
+tests/                unit, contract, architecture, integration (GPU tests skip on CPU)
+scripts/              Modal harnesses for GPU tests
+bench/                Megatron-Core comparison, results
+docs/                 ENGINEERING.md, BENCHMARK_RESULTS.md, CODING_STANDARDS.md, presentation/
+```

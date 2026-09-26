@@ -1,0 +1,375 @@
+"""One pipeline stage's DeepSpeed engine, driven one microbatch at a time.
+
+The coordinator owns the global step and its all-stage ready/apply barrier,
+so the engine runs with gradient_accumulation_steps=1 and the adapter scales
+the loss by 1/n_microbatches itself: letting DeepSpeed count micro-steps would
+fire the optimizer mid-step, before the barrier. engine.step() runs exactly
+once, on apply().
+
+Backward crosses the stage boundary as a scalar vector-Jacobian product
+through public engine.backward(); DeepSpeed forbids direct tensor.backward()
+under ZeRO-0.
+"""
+
+import functools
+import json
+
+import torch
+
+
+def _tp_partition_config(stage_module) -> dict | None:
+    """DeepSpeed AutoTP layer rules from the stage's HF TP plan, or None.
+    Expert weights are AutoEP's and never TP-split."""
+    plan = getattr(stage_module, "_tp_plan", None) or {}
+    specs = []
+    for pattern, style in plan.items():
+        if ".experts" in pattern or style.lower() not in ("colwise", "rowwise"):
+            continue
+        regex = ".*" + pattern.replace(".", r"\.").replace("*", r"[^.]+") + r"\.weight$"
+        specs.append({"patterns": [regex],
+                      "partition_type": "column" if style.lower() == "colwise" else "row"})
+    return {"use_default_specs": False, "layer_specs": specs} if specs else None
+
+
+def _ulysses_mpu(stage_module, micro_batch_size: int, sp: int, backend: str):
+    """The mpu DeepSpeed needs for Ulysses sequence parallelism over the
+    stage's HF attention layers. Every SP rank reports model-parallel rank 0:
+    each holds a full weight copy, and otherwise SP ranks >= 1 cannot reload a
+    checkpoint."""
+    import types
+
+    import deepspeed.comm as dscomm
+    from deepspeed.runtime.sequence_parallel.ulysses_sp import UlyssesSPAttentionHF
+
+    hf_config = getattr(stage_module, "_rdsp_hf_config", None)
+    if hf_config is None:
+        raise ValueError("sequence parallelism needs an HF attention stage "
+                         "(build_causal_lm_stage attaches the model config)")
+    dscomm.init_distributed(dist_backend=backend, dist_init_required=False)
+    sp_mpu = UlyssesSPAttentionHF.register_with_transformers(
+        types.SimpleNamespace(config=hf_config),
+        core_attn_implementation=hf_config._attn_implementation,
+        sequence_parallel_size=sp, micro_batch_size=micro_batch_size,
+        seq_length_is_variable=True)
+    mpu = types.SimpleNamespace(**{k: getattr(sp_mpu, k) for k in dir(sp_mpu)
+                                   if not k.startswith("__")})
+    mpu.get_model_parallel_rank = lambda: 0
+    mpu.get_model_parallel_world_size = lambda: 1
+    return mpu
+
+
+def _deepspeed_engine_factory(stage_module, ds_config: dict):
+    """One stage-local DeepSpeed engine. The stage's TP/SP/EP degrees come
+    from ds_config; model-specific details from the HF config the stage
+    module carries."""
+    import deepspeed
+
+    conf = json.loads(json.dumps(ds_config))  # deep copy
+    conf["gradient_accumulation_steps"] = 1  # the coordinator accumulates (module doc)
+    # DeepSpeed derives train_batch_size from the per-rank micro batch and its
+    # own data-parallel world, which excludes TP
+    conf.pop("train_batch_size", None)
+    hf_config = getattr(stage_module, "_rdsp_hf_config", None)
+    kwargs = {"model": stage_module, "config": conf, "dist_init_required": False}
+
+    tp_conf = conf.get("tensor_parallel", {})
+    tp = int(tp_conf.get("autotp_size", 1) or 1)
+    if tp > 1 and "partition_config" not in tp_conf and "preset_model" not in tp_conf:
+        rules = _tp_partition_config(stage_module)
+        if rules is not None:
+            tp_conf["partition_config"] = rules
+
+    sp = int(conf.get("sequence_parallel_size", 1) or 1)
+    if sp > 1:
+        backend = "nccl" if torch.cuda.is_available() else "gloo"
+        kwargs["mpu"] = _ulysses_mpu(stage_module,
+                                     int(conf["train_micro_batch_size_per_gpu"]), sp, backend)
+
+    ep_conf = conf.get("expert_parallel")
+    if ep_conf and int(ep_conf.get("autoep_size", 1)) > 1:
+        if hf_config is not None:
+            ep_conf.setdefault("preset_model", getattr(hf_config, "model_type", None))
+            ep_conf.setdefault("top_k", hf_config.num_experts_per_tok)
+            ep_conf.setdefault("route_norm", bool(getattr(hf_config, "norm_topk_prob", True)))
+        # stage modules name layers `layers.<i>`, not the preset's `model.layers.<i>`
+        ep_conf.setdefault("moe_layer_pattern", r"layers\.\d+\.mlp")
+        ep_conf.setdefault("use_grouped_mm", torch.cuda.is_available())
+        # no model_parameters: AutoEP creates the expert parameters inside
+        # initialize(), and DeepSpeed collects them (and MoE groups) itself
+    else:
+        kwargs["model_parameters"] = stage_module.parameters()
+
+    engine, _, _, _ = deepspeed.initialize(**kwargs)
+    return engine
+
+
+def observed_mesh(engine) -> dict | None:
+    """This rank's dp/tp/sp coordinates as DeepSpeed's process groups define
+    them; None for non-DeepSpeed engines (CPU test stubs)."""
+    if "deepspeed" not in type(engine).__module__ and not hasattr(engine, "_engine"):
+        return None
+    from deepspeed.utils import groups
+
+    def probe(fn_name):
+        fn = getattr(groups, fn_name, None)
+        try:
+            return int(fn()) if fn is not None else None
+        except Exception:
+            return None
+
+    mesh = {
+        "dp_rank": probe("_get_data_parallel_rank"),
+        "dp_world": probe("_get_data_parallel_world_size"),
+        "tp_rank": probe("get_tensor_model_parallel_rank"),
+        "tp_world": probe("get_tensor_model_parallel_world_size"),
+        "sp_rank": probe("_get_sequence_parallel_rank"),
+        "sp_world": probe("_get_sequence_parallel_world_size"),
+    }
+    if (mesh.get("sp_world") or 1) > 1:
+        # under Ulysses DeepSpeed reports no plain data-parallel world (its
+        # gradient group is the whole stage); only the SP coordinates apply
+        mesh.pop("dp_rank", None)
+        mesh.pop("dp_world", None)
+    return {k: v for k, v in mesh.items() if v is not None}
+
+
+def _all_reduce_sum(grad, group):
+    grad = grad.clone()
+    torch.distributed.all_reduce(grad, group=group)
+    return grad
+
+
+class _AverageGradOverGroup(torch.autograd.Function):
+    """Identity forward; backward replaces the gradient by its average over
+    `group`."""
+
+    @staticmethod
+    def forward(ctx, x, group):
+        ctx.group = group
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad):
+        grad = grad.contiguous().clone()
+        torch.distributed.all_reduce(grad, group=ctx.group)
+        return grad / torch.distributed.get_world_size(ctx.group), None
+
+
+def _average_input_grad(group, module, args):
+    return (_AverageGradOverGroup.apply(args[0], group), *args[1:])
+
+
+class DeepSpeedStageAdapter:
+    """Forward, external-gradient backward, ready/apply, eval and checkpoint
+    shards for one stage. loss_fn is required on the terminal stage and
+    forbidden elsewhere."""
+
+    def __init__(self, stage_module, ds_config, n_microbatches: int,
+                 is_first: bool, is_last: bool, loss_fn=None,
+                 engine_factory=None):
+        if isinstance(ds_config, str):
+            ds_config = json.loads(ds_config)
+        assert (loss_fn is not None) == is_last, \
+            "loss_fn belongs on the terminal stage and only there"
+        self.n_mb = n_microbatches
+        self.is_first = is_first
+        self.is_last = is_last
+        self.loss_fn = loss_fn
+        self.engine = (engine_factory or _deepspeed_engine_factory)(
+            stage_module, ds_config)
+        self.device = next(self.engine.module.parameters()).device
+        self._install_tp_grad_allreduce()
+        self._install_folded_moe_grad_average()
+        self._rng_at_generation_start = None
+        self._acts = {}    # mb -> (input_leaf_or_None, output)
+        self._losses = {}  # mb -> graph loss (terminal only)
+        self._backwards = 0
+
+    def _install_tp_grad_allreduce(self) -> None:
+        """Sum gradients of replicated parameters whose gradient differs per
+        TP rank (Qwen3 q_norm/k_norm see only their rank's heads) over the TP
+        group. Tensor hooks fire before accumulation, so every ZeRO stage sees
+        the sum; every TP rank runs the same backward, so collectives match."""
+        import fnmatch
+
+        patterns = getattr(self.engine.module, "_rdsp_tp_grad_allreduce", ())
+        if not patterns:
+            return
+        try:
+            from deepspeed.utils import groups
+            if groups.get_tensor_model_parallel_world_size() <= 1:
+                return
+            group = groups.get_tensor_model_parallel_group()
+        except Exception:
+            return  # not a DeepSpeed TP engine
+        globs = [p if p.endswith("*") else p + ".*" for p in patterns]
+        for name, param in self.engine.module.named_parameters():
+            if any(fnmatch.fnmatch(name, g) for g in globs):
+                param.register_hook(functools.partial(_all_reduce_sum, group=group))
+
+    def _install_folded_moe_grad_average(self) -> None:
+        """Average the input gradient of each folded MoE layer over TP.
+        AutoEP folding splits experts over TP peers, and each rank's gradient
+        below the layer is only correct once averaged over TP. DeepSpeed does
+        that for parameter gradients, but everything upstream (earlier layers
+        and the gradient sent to the previous stage) would see per-rank values.
+        Averaging here gives every rank the true gradient."""
+        for module in self.engine.module.modules():
+            handles = getattr(module, "folding_group_handles", None)
+            if handles is None or handles.spec.tp_size <= 1:
+                continue
+            group = module.tp_group
+            module.register_forward_pre_hook(functools.partial(_average_input_grad, group))
+
+    # -- forward ------------------------------------------------------------
+
+    def _call(self, x, position_offset):
+        if position_offset is None:
+            return self.engine(x)
+        # a sequence shard: rotary and Ulysses need its GLOBAL positions
+        position_ids = torch.arange(position_offset, position_offset + x.shape[1],
+                                    device=self.device).unsqueeze(0)
+        return self.engine(x, position_ids=position_ids)
+
+    def forward(self, mb: int, x, labels=None, position_offset=None):
+        x = x.to(self.device)
+        if not self.is_first:
+            x = x.detach().requires_grad_(True)  # the cut
+        out = self._call(x, position_offset)
+        self._acts[mb] = (None if self.is_first else x, out)
+        if self.is_last:
+            loss = self.loss_fn(out, labels.to(self.device))
+            self._losses[mb] = loss
+            return float(loss.detach())
+        return self._boundary(out)
+
+    def _boundary(self, t):
+        return t.detach()  # stays on the device: it leaves over NCCL
+
+    def eval_forward(self, mb: int, x, labels=None, position_offset=None):
+        with torch.no_grad():
+            out = self._call(x.to(self.device), position_offset)
+            if self.is_last:
+                return float(self.loss_fn(out, labels.to(self.device)))
+            return self._boundary(out)
+
+    # -- backward -----------------------------------------------------------
+
+    def backward(self, mb: int, grad=None):
+        inp, out = self._acts.pop(mb)
+        # only the step's last backward is an accumulation boundary: with gas=1
+        # ZeRO-1/2 otherwise treat every backward as one and overwrite (not add)
+        # the reduced gradient, keeping only the last microbatch's
+        set_boundary = getattr(self.engine, "set_gradient_accumulation_boundary", None)
+        if set_boundary is not None:
+            set_boundary(self._backwards == self.n_mb - 1)
+        if self.is_last:
+            loss = self._losses.pop(mb)
+            self.engine.backward(loss / self.n_mb)  # summed grads = full-step mean
+        else:
+            grad = grad.to(self.device)
+            # scalar VJP: d/d(out) of (out * grad).sum() is exactly grad
+            self.engine.backward((out * grad).sum())
+        self._backwards += 1
+        if self.is_first:
+            return None
+        return self._boundary(inp.grad)
+
+    # -- step barrier -------------------------------------------------------
+
+    def ready(self) -> bool:
+        return self._backwards == self.n_mb and not self._acts
+
+    def apply(self) -> bool:
+        self.engine.step()
+        self._backwards = 0
+        self._losses.clear()
+        return True
+
+    # -- checkpoint shards and generations ---------------------------------
+
+    def drained(self) -> bool:
+        """No microbatch in flight: nothing cached, no partial accumulation."""
+        return not self._acts and not self._losses and self._backwards == 0
+
+    def save_shard(self, save_dir: str, tag: str) -> bool:
+        """DeepSpeed checkpoint of this stage; a collective over the stage
+        world. Writes no `latest` pointer: the manifest owns that."""
+        if not self.drained():
+            raise RuntimeError("save requested with microbatches in flight")
+        self.engine.save_checkpoint(save_dir, tag=tag, save_latest=False)
+        return True
+
+    def load_shard(self, load_dir: str, tag: str, *, load_optimizer_states=True,
+                   load_lr_scheduler_states=True) -> bool:
+        path, _ = self.engine.load_checkpoint(
+            load_dir, tag=tag, load_optimizer_states=load_optimizer_states,
+            load_lr_scheduler_states=load_lr_scheduler_states)
+        if path is None:
+            raise RuntimeError(f"DeepSpeed found no checkpoint at {load_dir}/{tag}")
+        self.reset()
+        return True
+
+    def reset(self) -> None:
+        """Discard cached activations AND accumulated gradients, so a retried
+        step does not add onto an abandoned one."""
+        self._acts.clear()
+        self._losses.clear()
+        self._backwards = 0
+        self.engine.zero_grad()
+        optimizer = getattr(self.engine, "optimizer", None)
+        if optimizer is not None:  # ZeRO>=1 keeps partitioned grads here
+            optimizer.zero_grad()
+            # ZeRO-2's running sum of reduced microbatch gradients survives
+            # zero_grad() (private DeepSpeed state; GPU abandoned-step test)
+            running = getattr(optimizer, "all_grad_tensors", None)
+            if isinstance(running, dict):
+                for key in list(running):
+                    running[key] = None
+
+    def begin_generation(self) -> None:
+        """Call on a new generation's first command. Leftovers of an abandoned
+        generation are discarded and the RNG rewinds to where it started, so a
+        retry draws the same dropout masks. A drained stage is untouched."""
+        if not self.drained():
+            self.reset()
+            if self._rng_at_generation_start is not None:
+                self._set_rng(self._rng_at_generation_start)
+        self._rng_at_generation_start = self._get_rng()
+
+    @staticmethod
+    def _get_rng() -> dict:
+        import random
+
+        import numpy as np
+        state = {"python": random.getstate(), "numpy": np.random.get_state(),
+                 "torch": torch.get_rng_state()}
+        if torch.cuda.is_available():
+            state["cuda"] = torch.cuda.get_rng_state()
+        return state
+
+    @staticmethod
+    def _set_rng(state: dict) -> None:
+        import random
+
+        import numpy as np
+        random.setstate(state["python"])
+        np.random.set_state(state["numpy"])
+        torch.set_rng_state(state["torch"])
+        if "cuda" in state and torch.cuda.is_available():
+            torch.cuda.set_rng_state(state["cuda"])
+
+    def save_rng(self, path: str) -> None:
+        import os
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        torch.save(self._get_rng(), path)
+
+    def load_rng(self, path: str) -> None:
+        self._set_rng(torch.load(path, weights_only=False))
+        self._rng_at_generation_start = None
+
+    # -- introspection (numpy: safe across process boundaries) --------------
+
+    def named_parameters_numpy(self):
+        return {n: p.detach().float().cpu().numpy().copy()
+                for n, p in self.engine.module.named_parameters()}

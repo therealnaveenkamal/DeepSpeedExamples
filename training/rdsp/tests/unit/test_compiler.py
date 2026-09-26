@@ -1,0 +1,112 @@
+"""The single lowering path from PipelineConfig to ExecutionPlan.
+
+Test names double as acceptance selectors; keep them stable."""
+
+import json
+
+import pytest
+from test_partition import ToyLM
+
+from ray_deepspeed_pipeline.compiler import lower, resolve_microbatches
+from ray_deepspeed_pipeline.config import (
+    ConnectionOverride,
+    PipelineConfig,
+    StageOverride,
+    UniformTransformerBlocks,
+)
+from ray_deepspeed_pipeline.errors import ValidationError
+
+DS = {"train_batch_size": 8, "gradient_accumulation_steps": 4}
+
+
+def simple_config(**kw):
+    return PipelineConfig(stages=2, partition=UniformTransformerBlocks(), **kw)
+
+
+def test_simple_complete_plan():
+    plan = lower(ToyLM(), simple_config(), DS)
+    assert len(plan.stages) == 2 and len(plan.connections) == 1
+    assert plan.global_microbatches == 4
+    assert plan.schedule.kind == "1f1b"
+    assert all(s.num_gpus == 1 for s in plan.stages)
+    assert plan.connections[0].conversion == "identity"
+    assert plan.failure.poison_on_partial_apply
+    # stage ds config stays an ordinary DeepSpeed config
+    assert json.loads(plan.stages[0].ds_config_json)["train_batch_size"] == 8
+
+
+def test_microbatches_from_gas():
+    assert resolve_microbatches(simple_config(), DS) == 4
+    assert resolve_microbatches(simple_config(microbatches=8), {}) == 8
+    with pytest.raises(ValidationError):
+        resolve_microbatches(simple_config(), {})  # neither source
+
+
+def test_mismatch_rejected():
+    with pytest.raises(ValidationError, match="microbatches"):
+        lower(ToyLM(), simple_config(microbatches=8), DS)
+
+
+def test_equal_explicit_value_same_plan_hash():
+    implicit = lower(ToyLM(), simple_config(), DS)
+    explicit = lower(ToyLM(), simple_config(microbatches=4), DS)
+    assert implicit.plan_hash() == explicit.plan_hash()
+
+
+def test_simple_advanced_same_plan():
+    # an advanced config that spells out the defaults lowers byte-identically
+    simple = lower(ToyLM(), simple_config(), DS)
+    advanced = lower(ToyLM(), simple_config(
+        stage_overrides=(StageOverride(stage=0, num_gpus=1),
+                         StageOverride(stage=1, num_gpus=1)),
+        connection_overrides=(ConnectionOverride(source=0, dest=1),),
+    ), DS)
+    assert simple.canonical_json() == advanced.canonical_json()
+    assert simple.plan_hash() == advanced.plan_hash()
+
+
+def test_heterogeneous_one_global_count():
+    ds = {"train_batch_size": 16, "gradient_accumulation_steps": 4}  # 4 rows/mb
+    plan = lower(ToyLM(), simple_config(
+        stage_overrides=(StageOverride(stage=0, num_gpus=4, zero_stage=1),
+                         StageOverride(stage=1, num_gpus=2)),
+    ), ds)
+    assert [s.num_gpus for s in plan.stages] == [4, 2]
+    assert [s.rows_per_rank for s in plan.stages] == [1, 2]
+    assert plan.connections[0].conversion == "shard-to-shard"
+    assert json.loads(plan.stages[0].ds_config_json)["zero_optimization"]["stage"] == 1
+    # differing stage-local resources never fork the global microbatch count
+    assert plan.global_microbatches == plan.schedule.global_microbatches == 4
+
+
+def test_unsupported_layout_rejected_before_ray():
+    with pytest.raises(ValidationError, match="layouts require 'identity'"):
+        lower(ToyLM(), simple_config(
+            connection_overrides=(ConnectionOverride(source=0, dest=1,
+                                                     conversion="replicate-to-shard"),)), DS)
+    with pytest.raises(ValidationError, match="adjacent"):
+        lower(ToyLM(), PipelineConfig(
+            stages=3, partition=UniformTransformerBlocks(),
+            connection_overrides=(ConnectionOverride(source=2, dest=3),)), DS)
+
+
+def test_duplicate_stage_override_rejected():
+    with pytest.raises(ValidationError, match="duplicate"):
+        lower(ToyLM(), simple_config(
+            stage_overrides=(StageOverride(stage=0), StageOverride(stage=0))), DS)
+
+
+def test_plan_deterministic_across_model_instances():
+    # partitioning is name-based, so two identically-shaped models lower to
+    # the same plan hash (weights don't enter the plan)
+    assert lower(ToyLM(), simple_config(), DS).plan_hash() == \
+        lower(ToyLM(), simple_config(), DS).plan_hash()
+
+
+def test_per_stage_gradient_clipping_never_silently_on():
+    plan = lower(ToyLM(), simple_config(), DS)
+    # DeepSpeed's own default (1.0) would clip per stage: forced off
+    assert all(json.loads(st.ds_config_json)["gradient_clipping"] == 0.0
+               for st in plan.stages)
+    with pytest.raises(ValidationError, match="global"):
+        lower(ToyLM(), simple_config(), dict(DS, gradient_clipping=1.0))

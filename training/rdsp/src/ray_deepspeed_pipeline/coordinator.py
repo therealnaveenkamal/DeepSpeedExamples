@@ -1,0 +1,288 @@
+"""Runs one global step at a time over the stage workers; owns global_steps.
+
+The coordinator never resolves tensors: only scalar losses and statuses. The
+step protocol is a ready/apply barrier. A failure before any stage applies its
+optimizer update raises StepFailed (retryable); a failure during apply poisons
+the pipeline until load_checkpoint() restores it. Every attempt runs under a new
+generation id, so results from failed attempts are never mistaken for current ones.
+"""
+
+import os
+from collections.abc import Callable, Iterator
+from typing import Any, Protocol
+
+from ray_deepspeed_pipeline import checkpoint as ckpt
+from ray_deepspeed_pipeline.data import take_microbatch_entries
+from ray_deepspeed_pipeline.errors import (
+    CheckpointError,
+    PipelinePoisoned,
+    RdspError,
+    StepFailed,
+)
+from ray_deepspeed_pipeline.plan import ExecutionPlan
+from ray_deepspeed_pipeline.protocols import Command, resolve
+from ray_deepspeed_pipeline.schedule import control_commands, generate_commands
+
+
+class StageWorkerClient(Protocol):
+    """One stage's endpoint (the stage's whole actor group).
+
+    submit() returns a handle or future resolving to one stage-level result.
+    A "step"/"eval_step" command carries the stage's whole op list in
+    control["ops"] and resolves to {"losses": [...] (last stage) or None,
+    "ready": bool}; apply/save/load resolve to a status or record.
+
+    Also required: a static reconnect_p2p(clients, epoch) that rebuilds the
+    stages' links after a failed step. Optional: alive() -> bool and
+    shutdown() -> None, used by recovery.
+    """
+
+    def submit(self, command: Command, *, inputs=None, labels=None,
+               control=None) -> Any: ...
+
+
+class PipelineCoordinator:
+    def __init__(self, plan: ExecutionPlan, workers: list[StageWorkerClient],
+                 *, rebuild: Callable[[], list[StageWorkerClient]] | None = None):
+        """rebuild: recreates every stage's workers from scratch. load_checkpoint()
+        needs it to recover from a dead worker."""
+        if len(workers) != len(plan.stages):
+            raise StepFailed(f"{len(plan.stages)} stages need {len(plan.stages)} "
+                             f"stage clients, got {len(workers)}")
+        self._plan = plan
+        self._workers = workers
+        self._rebuild = rebuild
+        self._global_steps = 0
+        self._generation = 0
+        self._poisoned = False
+        self._p2p_epoch = 0
+        self._p2p_dirty = False  # a failed stage-local step left the p2p links unusable
+
+    @property
+    def global_steps(self) -> int:
+        return self._global_steps
+
+    def train_batch(self, data_iter: Iterator) -> float:
+        return self._run(data_iter, train=True)
+
+    def eval_batch(self, data_iter: Iterator) -> float:
+        return self._run(data_iter, train=False)
+
+    def save_checkpoint(self, save_dir: str, tag: str | None = None, *,
+                        client_state=None, data_position=None,
+                        save_latest: bool = True) -> bool:
+        """Every rank of every stage saves; the manifest is published only after
+        all of them succeed, so a failed save commits nothing."""
+        if self._poisoned:
+            raise PipelinePoisoned(
+                "refusing to checkpoint a poisoned pipeline: its stages may "
+                "hold weights from different optimizer steps")
+        tag = ckpt.validate_tag(tag if tag is not None else f"global_step{self._global_steps}")
+        if os.path.exists(os.path.join(save_dir, tag, ckpt.MANIFEST_NAME)):
+            raise CheckpointError(f"checkpoint {tag!r} is already committed; tags are immutable")
+
+        self._generation += 1
+        cmds = control_commands(self._plan, self._generation, self._global_steps, "save")
+        control = {"root": save_dir, "tag": tag}
+        try:
+            handles = {s: self._submit(c, control=control) for s, c in cmds.items()}
+            records = [self._resolve(h, cmds[s]) for s, h in handles.items()]
+        except RdspError as e:
+            raise CheckpointError(
+                f"save of {tag!r} failed; no manifest was published and the "
+                f"last committed checkpoint is unchanged: {e}") from e
+
+        manifest = ckpt.build_manifest(
+            tag=tag, global_step=self._global_steps,
+            plan_hash=self._plan.plan_hash(), plan_json=self._plan.canonical_json(),
+            stage_records=records, data_position=data_position,
+            client_state=client_state if client_state is not None else {})
+        ckpt.check_complete(manifest, list(range(len(self._plan.stages))))
+        ckpt.publish(save_dir, manifest, update_latest=save_latest)
+        return True
+
+    def load_checkpoint(self, load_dir: str, tag: str | None = None, *,
+                        load_optimizer_states: bool = True,
+                        load_lr_scheduler_states: bool = True) -> dict:
+        """Restore the whole pipeline from a committed manifest.
+
+        Dead workers trigger a full rebuild; live ones reload in place. The
+        pipeline is un-poisoned only after every rank of every stage has loaded.
+        """
+        manifest = ckpt.read_and_verify(
+            load_dir, tag, plan_hash=self._plan.plan_hash(),
+            plan_stages=list(range(len(self._plan.stages))))
+        tag = manifest["tag"]
+
+        # invalidates handles from failed generations
+        self._generation += 1
+        if not self._all_alive():
+            self._poisoned = True  # fresh workers hold no committed state
+            if self._rebuild is None:
+                raise CheckpointError(
+                    "a stage worker is unreachable and this pipeline has no "
+                    "rebuild factory; cannot recover in place")
+            self._shutdown_workers()
+            self._workers = self._rebuild()
+            self._p2p_dirty = False  # fresh workers come with fresh groups
+        # Two phases: every stage verifies its shards on its own node first, so
+        # a rejected checkpoint leaves every worker untouched.
+        files = {r["index"]: r["files"] for r in manifest["stages"]}
+        self._load_phase(manifest, {"root": load_dir, "tag": tag, "verify": files},
+                         "verification")
+        self._poisoned = True  # until every stage has loaded
+        self._generation += 1
+        self._load_phase(manifest, {
+            "root": load_dir, "tag": tag,
+            "load_optimizer_states": load_optimizer_states,
+            "load_lr_scheduler_states": load_lr_scheduler_states}, "load")
+
+        self._global_steps = manifest["global_step"]
+        self._poisoned = False
+        return {"tag": tag, "global_step": manifest["global_step"],
+                "client_state": manifest["client_state"],
+                "data_position": manifest["data_position"],
+                "path": os.path.join(load_dir, tag)}
+
+    def _load_phase(self, manifest: dict, control: dict, what: str) -> None:
+        cmds = control_commands(self._plan, self._generation,
+                                manifest["global_step"], "load")
+        try:
+            handles = {s: self._submit(c, control=control) for s, c in cmds.items()}
+            results = {s: self._resolve(h, cmds[s]) for s, h in handles.items()}
+        except RdspError as e:
+            raise CheckpointError(
+                f"checkpoint {what} of {manifest['tag']!r} failed; the pipeline "
+                f"stays poisoned until a load succeeds: {e}") from e
+        for s, result in results.items():
+            if isinstance(result, str):  # a stage's own rejection reason
+                raise CheckpointError(result)
+            if result is False:
+                raise CheckpointError(f"stage {s} failed checkpoint {what}")
+
+    def _all_alive(self) -> bool:
+        return all(getattr(w, "alive", lambda: True)() for w in self._workers)
+
+    def _shutdown_workers(self) -> None:
+        for w in self._workers:
+            shutdown = getattr(w, "shutdown", None)
+            if shutdown is not None:
+                shutdown()
+
+    def _run(self, data_iter: Iterator, train: bool) -> float:
+        if self._poisoned:
+            raise PipelinePoisoned(
+                "a previous generation partially applied optimizer updates; "
+                "train/eval calls are rejected until load_checkpoint() restores "
+                "the last committed global checkpoint")
+        # consume exactly the step's microbatches before dispatching anything
+        entries = take_microbatch_entries(data_iter, self._plan.global_microbatches)
+        inputs = [e[0] for e in entries]
+        labels = [e[1] for e in entries]
+
+        self._generation += 1
+        sequences = generate_commands(self._plan, self._generation,
+                                      self._global_steps, train=train)
+        losses = self._run_step(sequences, inputs, labels, train)
+        return self._finish(sequences, losses, train)
+
+    def _run_step(self, sequences, inputs, labels, train: bool) -> list:
+        """Send each stage its whole op list as one command; stages exchange
+        boundary tensors among themselves. Returns per-microbatch losses."""
+        n_stages = len(self._plan.stages)
+        terminal = n_stages - 1
+        if self._p2p_dirty:
+            self._reconnect_p2p(strict=True)
+        kinds = ("forward", "backward", "eval", "ready")
+        cmds, handles = {}, {}
+        for s in range(n_stages):
+            ops = [(c.kind, c.microbatch, c.command_id)
+                   for c in sequences[s] if c.kind in kinds]
+            cmds[s] = Command(
+                command_id=f"g{self._generation}.t{self._global_steps}.s{s}.step",
+                generation=self._generation, global_step=self._global_steps, stage=s,
+                kind="step" if train else "eval_step", microbatch=None, predecessors=())
+            try:
+                handles[s] = self._submit(
+                    cmds[s], inputs=inputs if s == 0 else None,
+                    labels=labels if s == terminal else None, control={"ops": ops})
+            except StepFailed:
+                self._p2p_dirty = True
+                raise
+        results, errors = {}, []
+        for s, handle in handles.items():  # resolve all, so no stage is left mid-step
+            try:
+                results[s] = self._resolve(handle, cmds[s])
+            except StepFailed as e:
+                errors.append(e)
+        if errors:
+            self._p2p_dirty = True
+            # best effort now, to abort half-finished transfers instead of waiting
+            # for a timeout; retried strictly before the next step
+            self._reconnect_p2p(strict=False)
+            raise errors[0]
+        if train:
+            for s, result in results.items():
+                if not result["ready"]:
+                    raise self._not_ready(s)
+        return results[terminal]["losses"]
+
+    def _not_ready(self, stage: int) -> StepFailed:
+        return StepFailed(
+            f"stage {stage} not ready; generation {self._generation} "
+            f"aborted before any optimizer update (safe to retry)")
+
+    def _reconnect_p2p(self, strict: bool) -> None:
+        self._p2p_epoch += 1
+        try:
+            type(self._workers[0]).reconnect_p2p(self._workers, self._p2p_epoch)
+            self._p2p_dirty = False
+        except Exception as e:
+            if strict:
+                raise StepFailed(
+                    f"could not rebuild stage-to-stage links after a failed step "
+                    f"(a worker may be gone; load_checkpoint() rebuilds): {e}") from e
+
+    def _finish(self, sequences, losses, train: bool) -> float:
+        n_stages = len(self._plan.stages)
+        mean_loss = sum(float(x) for x in losses) / len(losses)
+        if not train:
+            return mean_loss
+
+        # once any apply is dispatched, stages may disagree on weights: poison on failure
+        apply_cmds = {s: next(c for c in sequences[s] if c.kind == "apply")
+                      for s in range(n_stages)}
+        try:
+            applied = {s: self._submit(apply_cmds[s]) for s in range(n_stages)}
+            for s, handle in applied.items():
+                if self._resolve(handle, apply_cmds[s]) is False:
+                    raise StepFailed(f"stage {s} failed its optimizer apply")
+        except Exception as e:
+            self._poisoned = True
+            raise PipelinePoisoned(
+                f"partial optimizer apply in generation {self._generation}: {e}; "
+                f"restore from the last committed checkpoint") from e
+
+        self._global_steps += 1
+        return mean_loss
+
+    def _submit(self, command: Command, **payload):
+        """Submit to the command's stage; failures become StepFailed, except
+        apply, whose failure the caller turns into PipelinePoisoned."""
+        try:
+            return self._workers[command.stage].submit(command, **payload)
+        except Exception as e:
+            if command.kind == "apply":
+                raise
+            raise StepFailed(
+                f"stage {command.stage} failed on {command.command_id}: {e}") from e
+
+    def _resolve(self, handle, command: Command | None):
+        """Resolve a worker result; worker/transport failures become StepFailed."""
+        try:
+            return resolve(handle)
+        except RdspError:
+            raise
+        except Exception as e:
+            where = f"on {command.command_id}" if command else "resolving a result"
+            raise StepFailed(f"worker failure {where}: {type(e).__name__}: {e}") from e

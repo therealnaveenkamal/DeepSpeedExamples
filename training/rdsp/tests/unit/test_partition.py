@@ -1,0 +1,149 @@
+"""Deterministic contiguous partitioning and name-based rebinding."""
+
+import pytest
+import torch
+import torch.nn as nn
+
+from ray_deepspeed_pipeline.config import ExplicitCuts, UniformTransformerBlocks
+from ray_deepspeed_pipeline.errors import ValidationError
+from ray_deepspeed_pipeline.partition import find_block_list, partition_parameters
+
+
+class Block(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.fc = nn.Linear(8, 8)
+
+    def forward(self, x):
+        return x + torch.tanh(self.fc(x))
+
+
+class ToyLM(nn.Module):
+    """The sequential LM layout the partitioner targets: embed, block list,
+    norm, head. Shared by the other unit and CPU integration tests."""
+
+    def __init__(self, n_blocks=6, tied=False):
+        super().__init__()
+        self.embed = nn.Embedding(20, 8)
+        self.blocks = nn.ModuleList(Block() for _ in range(n_blocks))
+        self.norm = nn.LayerNorm(8)
+        self.head = nn.Linear(8, 20, bias=False)
+        if tied:
+            self.head.weight = self.embed.weight
+
+    def forward(self, ids):
+        x = self.embed(ids)
+        for b in self.blocks:
+            x = b(x)
+        return self.head(self.norm(x))
+
+
+def test_find_block_list():
+    name, blocks = find_block_list(ToyLM())
+    assert name == "blocks" and len(blocks) == 6
+
+
+def test_uniform_split_is_even_and_contiguous():
+    parts = partition_parameters(ToyLM(), UniformTransformerBlocks(), 3)
+    assert [(p.block_start, p.block_stop) for p in parts] == [(0, 2), (2, 4), (4, 6)]
+
+
+def test_uneven_uniform_split_front_loads():
+    parts = partition_parameters(ToyLM(n_blocks=7), UniformTransformerBlocks(), 3)
+    assert [(p.block_start, p.block_stop) for p in parts] == [(0, 3), (3, 5), (5, 7)]
+
+
+def test_explicit_cuts():
+    parts = partition_parameters(ToyLM(), ExplicitCuts(cuts=(1, 5)), 3)
+    assert [(p.block_start, p.block_stop) for p in parts] == [(0, 1), (1, 5), (5, 6)]
+
+
+def test_pre_and_post_modules_land_on_first_and_last_stage():
+    parts = partition_parameters(ToyLM(), UniformTransformerBlocks(), 3)
+    assert "embed.weight" in parts[0].parameter_names
+    assert "norm.weight" in parts[2].parameter_names
+    assert "head.weight" in parts[2].parameter_names
+    assert "blocks.2.fc.weight" in parts[1].parameter_names
+    # every parameter assigned exactly once
+    all_names = [n for p in parts for n in p.parameter_names]
+    assert len(all_names) == len(set(all_names)) == len(list(ToyLM().named_parameters()))
+
+
+def test_single_stage_owns_everything():
+    (part,) = partition_parameters(ToyLM(), UniformTransformerBlocks(), 1)
+    assert part.block_start == 0 and part.block_stop == 6
+
+
+def test_cross_stage_tied_parameters_rejected():
+    with pytest.raises(ValidationError, match="tied"):
+        partition_parameters(ToyLM(tied=True), UniformTransformerBlocks(), 2)
+
+
+def test_tied_parameters_fine_on_one_stage():
+    (part,) = partition_parameters(ToyLM(tied=True), UniformTransformerBlocks(), 1)
+    # tied pair keeps both names, both on stage 0
+    assert "embed.weight" in part.parameter_names
+    assert "head.weight" in part.parameter_names
+
+
+def test_wrong_cut_count_rejected():
+    with pytest.raises(ValidationError, match="cuts"):
+        partition_parameters(ToyLM(), ExplicitCuts(cuts=(2,)), 3)
+
+
+def test_out_of_range_and_unordered_cuts_rejected():
+    with pytest.raises(ValidationError):
+        partition_parameters(ToyLM(), ExplicitCuts(cuts=(0, 3)), 3)
+    with pytest.raises(ValidationError):
+        partition_parameters(ToyLM(), ExplicitCuts(cuts=(4, 2)), 3)
+
+
+def test_no_block_list_rejected():
+    with pytest.raises(ValidationError, match="block list"):
+        partition_parameters(nn.Linear(4, 4), UniformTransformerBlocks(), 2)
+
+
+# --- stage builder selection ---------------------------------------------------
+
+def _tiny_qwen3():
+    transformers = pytest.importorskip("transformers")
+    torch.manual_seed(0)
+    cfg = transformers.Qwen3Config(
+        vocab_size=20, hidden_size=16, intermediate_size=32, num_hidden_layers=4,
+        num_attention_heads=4, num_key_value_heads=2, head_dim=4,
+        max_position_embeddings=64, tie_word_embeddings=False)
+    return transformers.Qwen3ForCausalLM(cfg).float()
+
+
+def test_plain_sequential_model_gets_the_generic_builder():
+    from ray_deepspeed_pipeline.partition import build_stage_module, select_stage_builder
+    assert select_stage_builder(ToyLM()) is build_stage_module
+
+
+def test_hf_causal_lm_gets_the_causal_lm_builder():
+    from ray_deepspeed_pipeline.partition import build_causal_lm_stage, select_stage_builder
+    assert select_stage_builder(_tiny_qwen3()) is build_causal_lm_stage
+
+
+def test_rotary_model_without_the_causal_lm_layout_is_rejected():
+    """A rotary embedding next to the blocks means the layers need positions;
+    without the rest of the llama-style layout neither builder is right."""
+    from ray_deepspeed_pipeline.partition import select_stage_builder
+
+    class Rotary(nn.Module):
+        def forward(self, x, position_ids):
+            return x
+
+    class Body(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = nn.ModuleList(Block() for _ in range(4))
+            self.rotary_emb = Rotary()
+
+    class RotaryOnly(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = Body()
+
+    with pytest.raises(ValidationError, match="rotary embedding"):
+        select_stage_builder(RotaryOnly())

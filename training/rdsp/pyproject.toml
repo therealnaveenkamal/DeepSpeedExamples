@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ray-deepspeed-pipeline"
+version = "0.0.1"
+description = "External pipeline engine connecting DeepSpeed stages on Ray (provisional name, see docs/P0.md)"
+requires-python = ">=3.12"
+dependencies = [
+    "torch",
+    "cloudpickle",
+    # ray is a runtime dependency of the actor phases (P5+) but is imported
+    # lazily: importing ray_deepspeed_pipeline must not import ray (see
+    # tests/architecture/test_import_boundaries.py).
+    "ray",
+]
+
+[project.optional-dependencies]
+# deepspeed is only importable on Linux+CUDA; the adapter (P5) imports it
+# lazily inside actors, never at package import time.
+gpu = ["deepspeed"]
+dev = ["pytest", "ruff"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ray_deepspeed_pipeline"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["bench/results", "docs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "E402",  # tests import after pytest.importorskip / sys.path setup
+    "B905",  # zip() without strict= is fine where lengths are checked
+]
