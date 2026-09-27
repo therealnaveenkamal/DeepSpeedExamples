@@ -141,6 +141,10 @@ class HFModelStage(nn.Module):
         self._input = self._received = self._hidden = None
         self._downstream = {}
 
+    def local_blocks(self):
+        start, stop = self._local
+        return [self.model.get_submodule(self._blocks_name)[i] for i in range(start, stop)]
+
     def _install_hooks(self):
         # installed on first use, so the pickled stage carries no bound hooks
         if self._hooked:

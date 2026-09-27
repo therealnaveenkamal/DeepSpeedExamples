@@ -147,3 +147,39 @@ def test_rotary_model_without_the_causal_lm_layout_is_rejected():
 
     with pytest.raises(ValidationError, match="rotary embedding"):
         select_stage_builder(RotaryOnly())
+
+
+def _saved_bytes(stage, x):
+    """Bytes autograd keeps for backward during one forward of `stage`."""
+    saved = []
+
+    def pack(t):
+        saved.append(t.numel() * t.element_size())
+        return t
+
+    with torch.autograd.graph.saved_tensors_hooks(pack, lambda t: t):
+        out = stage(x)
+    return sum(saved), out
+
+
+def test_recompute_keeps_less_for_backward_and_same_gradients():
+    from ray_deepspeed_pipeline.partition import build_stage_module, recompute_blocks
+
+    torch.manual_seed(0)
+    model = ToyLM(n_blocks=6)
+    middle = partition_parameters(model, ExplicitCuts((1, 5)), 3)[1]  # blocks only
+    plain = build_stage_module(model, 1, 5, middle.parameter_names)
+    lean = build_stage_module(model, 1, 5, middle.parameter_names)
+    recompute_blocks(lean)
+    hidden = torch.randn(4, 16, 8)
+
+    kept_plain, out_plain = _saved_bytes(plain, hidden)
+    kept_lean, out_lean = _saved_bytes(lean, hidden)
+    out_plain.sum().backward()
+    out_lean.sum().backward()
+
+    # each block keeps its input instead of its input, weight and output
+    assert kept_lean <= kept_plain / 2
+    assert torch.equal(out_lean, out_plain)
+    for (name, a), (_, b) in zip(plain.named_parameters(), lean.named_parameters()):
+        assert torch.allclose(a.grad, b.grad, atol=1e-6), name

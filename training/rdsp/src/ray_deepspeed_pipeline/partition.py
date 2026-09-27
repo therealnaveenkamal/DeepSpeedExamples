@@ -5,6 +5,7 @@ automatic search. Stages are described by fully qualified parameter names,
 never driver parameter objects.
 """
 
+import functools
 from dataclasses import dataclass
 
 import torch.nn as nn
@@ -147,6 +148,23 @@ class GenericSequentialStage(nn.Module):
             x = module(x)
         return x
 
+    def local_blocks(self):
+        return list(self.blocks)
+
+
+def _checkpointed(forward, *args, **kwargs):
+    import torch.utils.checkpoint
+    return torch.utils.checkpoint.checkpoint(forward, *args, use_reentrant=False, **kwargs)
+
+
+def recompute_blocks(stage: nn.Module) -> None:
+    """Keep only each of the stage's own blocks' inputs for backward and
+    recompute the rest there. Wraps each block's forward, not the block, so
+    parameter names (checkpoints, weight files) stay the same, and module
+    hooks still run once, outside the recomputed part."""
+    for block in stage.local_blocks():
+        block.forward = functools.partial(_checkpointed, block.forward)
+
 
 def build_stage_module(model: nn.Module, block_start: int, block_stop: int,
                        parameter_names: tuple[str, ...]) -> nn.Module:
@@ -202,6 +220,9 @@ class CausalLMStage(nn.Module):
         if self.head is not None:
             x = self.head(x)
         return x
+
+    def local_blocks(self):
+        return list(self.layers)
 
 
 def build_causal_lm_stage(model: nn.Module, block_start: int, block_stop: int,

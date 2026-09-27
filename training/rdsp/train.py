@@ -25,13 +25,13 @@ _STAGE_KEYS = {"gpus": "num_gpus", "zero": "zero_stage", "tp": "tp", "sp": "sp",
 
 def parse_stage(spec: str) -> StageOverride:
     """'1:gpus=2,tp=2' -> StageOverride(stage=1, num_gpus=2, tp=2). Keys: gpus,
-    zero, tp, sp, ep, fold."""
+    zero, tp, sp, ep, fold, recompute."""
     index, _, fields = spec.partition(":")
     kwargs = {"stage": int(index)}
     for field in filter(None, fields.split(",")):
         key, _, value = field.partition("=")
-        if key == "fold":
-            kwargs["fold"] = value.lower() in ("1", "true", "yes")
+        if key in ("fold", "recompute"):
+            kwargs[key] = value.lower() in ("1", "true", "yes")
         elif key in _STAGE_KEYS:
             kwargs[_STAGE_KEYS[key]] = int(value)
         else:

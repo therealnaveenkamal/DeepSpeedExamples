@@ -184,3 +184,18 @@ def test_first_cut_before_vision_injection_is_rejected(ray_ctx, stub_engines):
     model = transformers.Qwen3VLForConditionalGeneration(tiny_qwen3_vl())
     with pytest.raises(ValidationError, match="first cut at 2"):
         pipelined_losses(model, (1,), steps=1)
+
+
+def test_recompute_on_every_stage_matches_unsplit_model(ray_ctx, stub_engines):
+    """Blocks rerun their forward during backward; the injected rotary tables
+    and hidden state must be the ones the first run used."""
+    torch.manual_seed(3)
+    model = transformers.Qwen3VLForConditionalGeneration(tiny_qwen3_vl()).float()
+    reference = transformers.Qwen3VLForConditionalGeneration(tiny_qwen3_vl()).float()
+    reference.load_state_dict(model.state_dict())
+
+    expected = unsplit_losses(reference, make_batches(), steps=2)
+    got = pipelined_losses(model, (2, 4), steps=2, overrides=(
+        StageOverride(stage=0, num_gpus=2, recompute=True),
+        StageOverride(stage=1, recompute=True), StageOverride(stage=2, recompute=True)))
+    assert got == pytest.approx(expected, rel=1e-4)

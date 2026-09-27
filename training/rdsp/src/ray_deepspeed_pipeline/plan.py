@@ -33,6 +33,8 @@ class StageSpec:
     fold: bool = False
     # rows of one global microbatch each dp shard holds
     rows_per_rank: int = 1
+    # rerun blocks in backward instead of keeping their activations
+    recompute: bool = False
 
 
 @dataclass(frozen=True)

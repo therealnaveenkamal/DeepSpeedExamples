@@ -38,11 +38,13 @@ class CheckpointPolicy:
 
 @dataclass(frozen=True)
 class StageOverride:
-    """Per-stage GPU count and parallelism.
+    """Per-stage GPU count, parallelism and memory settings.
 
     The stage's ranks form a grid num_gpus = dp x sp x tp, with dp derived.
     ep (DeepSpeed AutoEP) folds onto those ranks and must divide num_gpus;
-    `fold` enables AutoEP Parallel Folding."""
+    `fold` enables AutoEP Parallel Folding. recompute: keep only each
+    block's input for backward and rerun the block there (activation
+    checkpointing), trading about a third more compute for memory."""
 
     stage: int
     num_gpus: int = 1
@@ -51,6 +53,7 @@ class StageOverride:
     sp: int = 1
     ep: int = 1
     fold: bool = False
+    recompute: bool = False
 
 
 @dataclass(frozen=True)
