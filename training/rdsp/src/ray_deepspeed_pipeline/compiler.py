@@ -143,6 +143,12 @@ def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> Exe
             f"gradient_clipping to 0 (rdsp also turns off DeepSpeed's default "
             f"of 1.0 for every stage)")
     partitions = partition_parameters(model, pipeline_config.partition, n)
+    first = next((o for o in pipeline_config.stage_overrides if o.stage == 0), None)
+    if first is not None and first.sp > 1 and \
+            getattr(getattr(model, "config", None), "vision_config", None) is not None:
+        raise ValidationError(
+            "stage 0: sequence parallelism on the first stage of a vision model is "
+            "unsupported; image positions depend on the whole sequence")
 
     overrides = {}
     for override in pipeline_config.stage_overrides:

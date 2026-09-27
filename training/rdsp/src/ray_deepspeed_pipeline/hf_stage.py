@@ -23,7 +23,11 @@ import torch
 import torch.nn as nn
 
 from ray_deepspeed_pipeline.errors import ValidationError
-from ray_deepspeed_pipeline.partition import find_block_list, vision_injection_depth
+from ray_deepspeed_pipeline.partition import (
+    attach_tp_plan,
+    find_block_list,
+    vision_injection_depth,
+)
 
 
 class _PassThrough(nn.Module):
@@ -201,19 +205,23 @@ class HFModelStage(nn.Module):
             return x
         return x.new_zeros(*x.shape[:2], dim)
 
-    def forward(self, x, extras=None):
+    def forward(self, x, extras=None, position_ids=None):
+        """position_ids: a sequence shard's global positions (Ulysses SP)."""
         self._install_hooks()
         extras = extras or {}
         if self._block_form[0] is None and _FORM_KEY in extras:
             self._block_form[0] = int(extras[_FORM_KEY][0, 0])  # once: it syncs
         self._input, self._received, self._downstream = x, _unpack(extras), {}
         try:
+            kw = {"use_cache": False}
+            if position_ids is not None:
+                kw["position_ids"] = position_ids
             if not self.is_first:
-                out = self.model(inputs_embeds=self._setup_input(x), use_cache=False)
+                out = self.model(inputs_embeds=self._setup_input(x), **kw)
             elif isinstance(x, dict):
-                out = self.model(**x, use_cache=False)
+                out = self.model(**x, **kw)
             else:
-                out = self.model(input_ids=x, use_cache=False)
+                out = self.model(input_ids=x, **kw)
             if self.is_last:
                 return out.logits if hasattr(out, "logits") else out[0]
             hidden = self._hidden
@@ -251,9 +259,36 @@ def build_hf_stage(model: nn.Module, block_start: int, block_stop: int,
             f"stage over blocks [{block_start}, {block_stop}) cannot be cut out cleanly: "
             f"a module mixes parameters of different stages "
             f"({sorted(kept ^ owned)[:3]}...)")
-    return HFModelStage(stage_model, blocks_name, block_start, block_stop,
-                        is_first=block_start == 0, is_last=block_stop == len(blocks),
-                        block_form=block_form)
+    stage = HFModelStage(stage_model, blocks_name, block_start, block_stop,
+                         is_first=block_start == 0, is_last=block_stop == len(blocks),
+                         block_form=block_form)
+    # what intra-stage parallelism reads: the AutoTP plan, head counts
+    # (Ulysses) and MoE settings (AutoEP), all on the text model's config
+    config = getattr(model, "config", None)
+    text_config = config.get_text_config() if hasattr(config, "get_text_config") else config
+    plan = getattr(text_config, "base_model_tp_plan", None) or _standard_tp_plan(model, blocks)
+    attach_tp_plan(stage, plan)
+    stage._rdsp_hf_config = text_config
+    return stage
+
+
+# projection names shared by most decoder families, and how Megatron-style
+# tensor parallelism splits them
+_STANDARD_TP = {"self_attn.q_proj": "colwise", "self_attn.k_proj": "colwise",
+                "self_attn.v_proj": "colwise", "self_attn.o_proj": "rowwise",
+                "mlp.gate_proj": "colwise", "mlp.up_proj": "colwise",
+                "mlp.down_proj": "rowwise",
+                # per-head norms: replicated, but each rank sees only its heads
+                "self_attn.q_norm": "replicated_with_grad_allreduce",
+                "self_attn.k_norm": "replicated_with_grad_allreduce"}
+
+
+def _standard_tp_plan(model: nn.Module, blocks) -> dict:
+    """A TP plan for models whose config has none (most do not, e.g.
+    Qwen3-VL): the standard projections that every block has."""
+    names = [{n for n, _ in block.named_modules()} for block in blocks]
+    return {f"layers.*.{name}": style for name, style in _STANDARD_TP.items()
+            if all(name in block_names for block_names in names)}
 
 
 def _checkpoint_files(weights_dir: str) -> dict:

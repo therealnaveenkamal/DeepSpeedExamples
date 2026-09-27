@@ -38,6 +38,7 @@ from ray_deepspeed_pipeline.compiler import lower
 from ray_deepspeed_pipeline.config import StageOverride
 from ray_deepspeed_pipeline.coordinator import PipelineCoordinator
 from ray_deepspeed_pipeline.errors import StepFailed, ValidationError
+from ray_deepspeed_pipeline.hf_stage import build_hf_stage
 from ray_deepspeed_pipeline.partition import build_causal_lm_stage
 from ray_deepspeed_pipeline.stage_group import create_stage_clients
 
@@ -123,6 +124,7 @@ class Row:
     rows_per_mb: int = 8
     n_mb: int = 4
     moe_layers: tuple = field(default=())
+    builder: str = "causal"  # causal (CausalLMStage) | hf (HFModelStage)
 
     @property
     def stages(self):
@@ -156,6 +158,12 @@ ROWS = [
     # stage-local AutoEP (ep=4) with and without Parallel Folding (tp=2)
     Row("p8-autoep-folding", (S(0, 1), S(1, 4, ep=4), S(2, 2, ep=2, tp=2, fold=True)),
         model="qwen3moe", moe_layers=(3, 4, 5, 6, 7)),
+    # the same three intra-stage layouts on HFModelStage (the model's own forward)
+    Row("p8-hf-autotp", (S(0, 1), S(1, 2, tp=2), S(2, 4, tp=2)), model="qwen3", builder="hf"),
+    Row("p8-hf-sequence-parallel", (S(0, 2, sp=2), S(1, 4, sp=2), S(2, 1)),
+        model="qwen3", builder="hf"),
+    Row("p8-hf-autoep-folding", (S(0, 1), S(1, 4, ep=4), S(2, 2, ep=2, tp=2, fold=True)),
+        model="qwen3moe", moe_layers=(3, 4, 5, 6, 7), builder="hf"),
     # the target composed topology, 32 GPUs on 4 nodes (one stage per node);
     # MoE layers only where the EP stage is (layers 4-5 = stage 2)
     Row("p8-four-stage-mixed", (S(0, 8, sp=2, zero_stage=2), S(1, 8, tp=4, zero_stage=1),
@@ -256,7 +264,8 @@ def runtime(ray_ctx, monkeypatch):
         if not use_gpu:
             factory_kw["engine_factory"] = stub_engine_factory
         if row.model != "toy":
-            factory_kw["stage_builder"] = build_causal_lm_stage
+            factory_kw["stage_builder"] = (build_hf_stage if row.builder == "hf"
+                                           else build_causal_lm_stage)
 
         def factory(*, model, pipeline_config, ds_config, loss_fn, weights=None):
             plan = lower(model, pipeline_config, ds_config)
@@ -380,7 +389,10 @@ def test_row_parity_global_microbatch_checkpoint_failure(row, runtime, tmp_path)
 # --- gradient parity, parameter by parameter ------------------------------------
 
 def _reference_name(stage_name: str, block_start: int) -> str | None:
-    """CausalLMStage parameter name -> the unsplit HF model's name."""
+    """Stage parameter name -> the unsplit HF model's name. HFModelStage keeps
+    the model's names under `model.`; CausalLMStage renames them."""
+    if stage_name.startswith("model."):
+        return stage_name[len("model."):]
     for prefix, target in (("emb.", "model.embed_tokens."), ("norm.", "model.norm."),
                            ("head.", "lm_head.")):
         if stage_name.startswith(prefix):

@@ -91,8 +91,9 @@ def _deepspeed_engine_factory(stage_module, ds_config: dict):
             ep_conf.setdefault("preset_model", getattr(hf_config, "model_type", None))
             ep_conf.setdefault("top_k", hf_config.num_experts_per_tok)
             ep_conf.setdefault("route_norm", bool(getattr(hf_config, "norm_topk_prob", True)))
-        # stage modules name layers `layers.<i>`, not the preset's `model.layers.<i>`
-        ep_conf.setdefault("moe_layer_pattern", r"layers\.\d+\.mlp")
+        # DeepSpeed full-matches module names; stages name layers `layers.<i>`
+        # (CausalLMStage) or `model.model.layers.<i>` (HFModelStage)
+        ep_conf.setdefault("moe_layer_pattern", r"(.*\.)?layers\.\d+\.mlp")
         ep_conf.setdefault("use_grouped_mm", torch.cuda.is_available())
         # no model_parameters: AutoEP creates the expert parameters inside
         # initialize(), and DeepSpeed collects them (and MoE groups) itself
@@ -209,7 +210,8 @@ class DeepSpeedStageAdapter:
             group = groups.get_tensor_model_parallel_group()
         except Exception:
             return  # not a DeepSpeed TP engine
-        globs = [p if p.endswith("*") else p + ".*" for p in patterns]
+        # plan keys are relative to the base model; stage names may carry a prefix
+        globs = ["*" + (p if p.endswith("*") else p + ".*") for p in patterns]
         for name, param in self.engine.module.named_parameters():
             if any(fnmatch.fnmatch(name, g) for g in globs):
                 param.register_hook(functools.partial(_all_reduce_sum, group=group))

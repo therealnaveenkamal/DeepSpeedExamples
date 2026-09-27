@@ -203,7 +203,7 @@ Automatic split: longest `ModuleList` of same-class modules, cut by layer count
 | Model | Builder | Status |
 |---|---|---|
 | Llama, Qwen3, Qwen3-MoE with SDPA/flash attention | `CausalLMStage` | GPU-validated, all intra-stage layouts |
-| Every other HF model (`config` attribute) | `HFModelStage` (`hf_stage.py`) | CPU-tested, DP/ZeRO stages only |
+| Every other HF model (`config` attribute) | `HFModelStage` (`hf_stage.py`) | CPU-tested; TP/SP/EP wired, GPU runs pending |
 | Plain sequential (each block takes only the previous output) | `GenericSequentialStage` | supported |
 
 `HFModelStage` families trained on CPU through `rdsp.initialize()` (3 stages,
@@ -240,8 +240,13 @@ Per-stage weights: build the driver model with `accelerate.init_empty_weights()`
 and pass `rdsp.initialize(..., weights="<HF checkpoint dir>")`. Each stage reads
 only its own tensors from the safetensors files; the driver holds no weights.
 
-Not yet supported with `HFModelStage`: TP, SP and EP inside a stage (AutoTP
-plan and HF config are not attached).
+TP/SP/EP inside an `HFModelStage`: the stage carries the text model's AutoTP
+plan (or, for the ~80% of configs without one, such as Qwen3-VL, a plan for
+the standard `q/k/v/o_proj`, `gate/up/down_proj`, `q_norm/k_norm` names its
+blocks have) and the text config (Ulysses head counts, AutoEP settings).
+Ulysses SP is rejected on the first stage of a vision model: image positions
+need the whole sequence. GPU parity rows `p8-hf-autotp`,
+`p8-hf-sequence-parallel`, `p8-hf-autoep-folding` are written but not yet run.
 
 ## Layout
 

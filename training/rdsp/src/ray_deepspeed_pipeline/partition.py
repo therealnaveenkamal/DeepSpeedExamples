@@ -331,7 +331,7 @@ def build_causal_lm_stage(model: nn.Module, block_start: int, block_stop: int,
             if any(n.startswith("lm_head.") for n in names) else None,
         rotary=copy.deepcopy(parent.rotary_emb),
     )
-    attach_tp_plan(stage, getattr(model, "config", None))
+    attach_tp_plan(stage, getattr(getattr(model, "config", None), "base_model_tp_plan", None))
     # attention implementation, head counts and MoE routing for the engine.
     # Not named `config`: DeepSpeed would prefer HF's unfiltered TP plan.
     stage._rdsp_hf_config = getattr(model, "config", None)
@@ -383,15 +383,15 @@ def select_stage_builder(model: nn.Module):
     return build_stage_module
 
 
-def attach_tp_plan(stage: nn.Module, config) -> None:
-    """Carry the HF model's tensor-parallel plan onto a stage module.
+def attach_tp_plan(stage: nn.Module, plan: dict | None) -> None:
+    """Carry an HF tensor-parallel plan onto a stage module.
 
     Only colwise/rowwise entries are kept: anything else makes AutoTP fall
     back to model-type presets, which do not recognize a stage module.
     `replicated_with_grad_allreduce` entries (Qwen3's q_norm/k_norm) stay
     replicated but see per-rank heads, so they are listed in
     `_rdsp_tp_grad_allreduce` for the adapter's TP gradient all-reduce."""
-    plan = dict(getattr(config, "base_model_tp_plan", None) or {})
+    plan = dict(plan or {})
     stage._tp_plan = {k: v for k, v in plan.items()
                       if v.lower() in ("colwise", "rowwise")}
     stage._rdsp_tp_grad_allreduce = tuple(

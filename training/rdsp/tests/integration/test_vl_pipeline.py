@@ -209,3 +209,29 @@ def test_balanced_cuts_keep_vision_injection_on_the_first_stage():
     for stages in (2, 3, 4):
         parts = partition_parameters(model, BalancedTransformerBlocks(), stages)
         assert parts[0].block_stop >= 2  # blocks 0-1 receive deepstack features
+
+
+def test_hf_stage_carries_what_intra_stage_parallelism_needs():
+    """AutoTP reads the text model's colwise/rowwise plan; Ulysses and AutoEP
+    read head counts and MoE settings from the text config."""
+    from ray_deepspeed_pipeline.hf_stage import build_hf_stage
+    from ray_deepspeed_pipeline.partition import partition_parameters
+
+    model = transformers.Qwen3VLForConditionalGeneration(tiny_qwen3_vl())
+    part = partition_parameters(model, rdsp.ExplicitCuts((3,)), 2)[1]
+    stage = build_hf_stage(model, part.block_start, part.block_stop, part.parameter_names)
+    assert stage._tp_plan["layers.*.self_attn.q_proj"] == "colwise"
+    assert stage._tp_plan["layers.*.self_attn.o_proj"] == "rowwise"
+    assert stage._rdsp_hf_config.num_attention_heads == 4
+
+
+def test_sequence_parallel_first_stage_of_a_vision_model_rejected():
+    """Image positions depend on the whole sequence, which a sequence shard
+    of stage 0 does not have."""
+    from ray_deepspeed_pipeline.compiler import lower
+
+    model = transformers.Qwen3VLForConditionalGeneration(tiny_qwen3_vl())
+    with pytest.raises(ValidationError, match="sequence parallelism"):
+        lower(model, rdsp.PipelineConfig(
+            stages=2, partition=rdsp.ExplicitCuts((3,)),
+            stage_overrides=(StageOverride(stage=0, num_gpus=2, sp=2),)), DS)
