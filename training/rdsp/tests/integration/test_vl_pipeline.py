@@ -199,3 +199,13 @@ def test_recompute_on_every_stage_matches_unsplit_model(ray_ctx, stub_engines):
         StageOverride(stage=0, num_gpus=2, recompute=True),
         StageOverride(stage=1, recompute=True), StageOverride(stage=2, recompute=True)))
     assert got == pytest.approx(expected, rel=1e-4)
+
+
+def test_balanced_cuts_keep_vision_injection_on_the_first_stage():
+    from ray_deepspeed_pipeline.config import BalancedTransformerBlocks
+    from ray_deepspeed_pipeline.partition import partition_parameters
+
+    model = transformers.Qwen3VLForConditionalGeneration(tiny_qwen3_vl())
+    for stages in (2, 3, 4):
+        parts = partition_parameters(model, BalancedTransformerBlocks(), stages)
+        assert parts[0].block_stop >= 2  # blocks 0-1 receive deepstack features

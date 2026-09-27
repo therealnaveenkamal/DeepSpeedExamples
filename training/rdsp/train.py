@@ -98,7 +98,9 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--model", default="Qwen/Qwen3-0.6B")
     p.add_argument("--stages", type=int, default=2)
-    p.add_argument("--cuts", default="", help="block indices where stages 1.. start, e.g. 9,18,27")
+    p.add_argument("--cuts", default="",
+                   help="block indices where stages 1.. start, e.g. 9,18,27; "
+                        "'balanced' for cost-balanced cuts; default: even layer counts")
     p.add_argument("--stage", type=parse_stage, action="append", default=[],
                    help="per-stage layout, e.g. 1:gpus=2,tp=2 (repeatable)")
     p.add_argument("--microbatches", type=int, default=8)
@@ -119,8 +121,12 @@ def main(argv=None):
     dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float32
     model = load_model(args.model, dtype)
     tokenizer = transformers.AutoTokenizer.from_pretrained(args.model)
-    partition = (rdsp.ExplicitCuts(tuple(int(c) for c in args.cuts.split(",")))
-                 if args.cuts else rdsp.UniformTransformerBlocks())
+    if args.cuts == "balanced":
+        partition = rdsp.BalancedTransformerBlocks()
+    elif args.cuts:
+        partition = rdsp.ExplicitCuts(tuple(int(c) for c in args.cuts.split(",")))
+    else:
+        partition = rdsp.UniformTransformerBlocks()
     engine, _, _, _ = rdsp.initialize(
         model=model, config=ds_config(args), loss_fn=loss_fn,
         pipeline_config=rdsp.PipelineConfig(stages=args.stages, partition=partition,

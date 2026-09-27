@@ -1,8 +1,8 @@
 """Deterministic contiguous model partitioning and stage-module builders.
 
-Policies: explicit cuts, uniform transformer blocks, uniform sequential; no
-automatic search. Stages are described by fully qualified parameter names,
-never driver parameter objects.
+Policies: explicit cuts, uniform transformer blocks, uniform sequential, and
+cost-balanced blocks (parameter counts as the cost estimate). Stages are
+described by fully qualified parameter names, never driver parameter objects.
 """
 
 import functools
@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import torch.nn as nn
 
 from ray_deepspeed_pipeline.config import (
+    BalancedTransformerBlocks,
     ExplicitCuts,
     UniformSequential,
     UniformTransformerBlocks,
@@ -72,6 +73,86 @@ def _cuts_for(policy, n_blocks: int, stages: int) -> list[int]:
     return cuts
 
 
+def vision_injection_depth(model: nn.Module) -> int:
+    """Number of leading blocks that receive vision features straight from
+    the vision encoder (Qwen3-VL's deepstack), which must share the first
+    stage with it; 0 for other models."""
+    vision = getattr(getattr(model, "config", None), "vision_config", None)
+    return len(getattr(vision, "deepstack_visual_indexes", None) or ())
+
+
+def _compute_costs(model: nn.Module, blocks_name: str, blocks) -> tuple[int, list[int], int]:
+    """(before the blocks, per block, after the blocks) cost estimates in
+    parameters, embeddings excluded, each shared parameter counted once."""
+    named = [n for n, _ in model.named_parameters()]
+    prefix = blocks_name + "."
+    first = min(i for i, n in enumerate(named) if n.startswith(prefix))
+    position = {n: i for i, n in enumerate(named)}
+    pre = post = 0
+    per_block = [0] * len(blocks)
+    seen = set()
+    for module_name, module in model.named_modules():
+        if isinstance(module, nn.Embedding):
+            continue
+        for leaf, param in module.named_parameters(recurse=False):
+            name = f"{module_name}.{leaf}" if module_name else leaf
+            if id(param) in seen or name not in position:
+                continue
+            seen.add(id(param))
+            if name.startswith(prefix):
+                per_block[int(name[len(prefix):].split(".", 1)[0])] += param.numel()
+            elif position[name] < first:
+                pre += param.numel()
+            else:
+                post += param.numel()
+    return pre, per_block, post
+
+
+def _balanced_cuts(costs: tuple, stages: int, min_first: int) -> list[int]:
+    """Contiguous split minimising the most expensive stage, then, among
+    splits that achieve it, the sum of squared stage costs (so no stage is
+    left nearly idle). Ties go to splits whose earlier stages take more."""
+    pre, per_block, post = costs
+    n = len(per_block)
+    if n - (stages - 1) < max(min_first, 1):
+        raise ValidationError(
+            f"{n} blocks cannot fill {stages} stages with at least {min_first} "
+            f"on the first")
+    total = [0]
+    for c in per_block:
+        total.append(total[-1] + c)
+
+    def stage_cost(s, j, i):
+        return (total[i] - total[j] + (pre if s == 0 else 0)
+                + (post if s == stages - 1 else 0))
+
+    def solve(score, limit):
+        # best[s][i]: score of blocks[:i] on stages 0..s; back: where stage s starts
+        inf = float("inf")
+        best = [[inf] * (n + 1) for _ in range(stages)]
+        back = [[0] * (n + 1) for _ in range(stages)]
+        for i in range(max(min_first, 1), n + 1):
+            if stage_cost(0, 0, i) <= limit:
+                best[0][i] = score(0, stage_cost(0, 0, i))
+        for s in range(1, stages):
+            for i in range(s + 1, n + 1):
+                for j in range(i - 1, s - 1, -1):
+                    if best[s - 1][j] == inf or stage_cost(s, j, i) > limit:
+                        continue
+                    value = score(best[s - 1][j], stage_cost(s, j, i))
+                    if value < best[s][i]:
+                        best[s][i], back[s][i] = value, j
+        return best[stages - 1][n], back
+
+    slowest, _ = solve(max, float("inf"))
+    _, back = solve(lambda acc, c: acc + c * c, slowest)
+    cuts, i = [], n
+    for s in range(stages - 1, 0, -1):
+        i = back[s][i]
+        cuts.append(i)
+    return cuts[::-1]
+
+
 def partition_parameters(model: nn.Module, policy, stages: int) -> tuple[StagePartition, ...]:
     """Assign every parameter name to exactly one stage. Blocks map by cut
     range; parameters before the block list go to the first stage, those
@@ -80,7 +161,11 @@ def partition_parameters(model: nn.Module, policy, stages: int) -> tuple[StagePa
     if stages < 1:
         raise ValidationError(f"stages must be >= 1, got {stages}")
     blocks_name, blocks = find_block_list(model)
-    cuts = _cuts_for(policy, len(blocks), stages) if stages > 1 else []
+    if isinstance(policy, BalancedTransformerBlocks) and stages > 1:
+        cuts = _balanced_cuts(_compute_costs(model, blocks_name, blocks), stages,
+                              vision_injection_depth(model))
+    else:
+        cuts = _cuts_for(policy, len(blocks), stages) if stages > 1 else []
     bounds = [0] + cuts + [len(blocks)]
 
     def stage_of_block(b: int) -> int:

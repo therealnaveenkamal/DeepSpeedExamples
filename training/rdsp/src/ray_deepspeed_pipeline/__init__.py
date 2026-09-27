@@ -1,5 +1,6 @@
 from ray_deepspeed_pipeline.api import initialize
 from ray_deepspeed_pipeline.config import (
+    BalancedTransformerBlocks,
     ExplicitCuts,
     PipelineConfig,
     UniformTransformerBlocks,
@@ -12,4 +13,5 @@ __all__ = [
     "RayPipelineEngine",
     "UniformTransformerBlocks",
     "ExplicitCuts",
+    "BalancedTransformerBlocks",
 ]

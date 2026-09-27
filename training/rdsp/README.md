@@ -32,7 +32,7 @@ python demo.py                            # CPU only, ~10 s, pipeline vs unsplit
 |---|---|---|
 | `--model` | `Qwen/Qwen3-0.6B` | HF causal LM; tied embeddings are untied automatically |
 | `--stages` | 2 | pipeline stages |
-| `--cuts` | even split | block index where each stage after the first starts, e.g. `7,14,21` |
+| `--cuts` | even split | block index where each stage after the first starts, e.g. `7,14,21`; `balanced`: cost-balanced |
 | `--stage` | 1 GPU, no parallelism | per-stage layout, repeatable: `<i>:gpus=N,zero=Z,tp=T,sp=S,ep=E,fold=1,recompute=1` |
 | `--microbatches` | 8 | microbatches per optimizer step |
 | `--rows` | 4 | sequences per microbatch |
@@ -72,7 +72,7 @@ engine.save_checkpoint("ckpt/")           # engine.load_checkpoint("ckpt/")
 | `PipelineConfig` field | |
 |---|---|
 | `stages` | number of stages |
-| `partition` | `UniformTransformerBlocks()` or `ExplicitCuts((i, ...))` |
+| `partition` | `UniformTransformerBlocks()` (equal layer counts), `BalancedTransformerBlocks()` (equal estimated cost), or `ExplicitCuts((i, ...))` |
 | `microbatches` | optional; must equal `gradient_accumulation_steps` |
 | `stage_overrides` | `StageOverride(stage, num_gpus=1, zero_stage=None, tp=1, sp=1, ep=1, fold=False, recompute=False)`; `recompute`: rerun each block in backward instead of keeping its activations |
 | `checkpoint` | `CheckpointPolicy(save_optimizer_state=True)` |
@@ -192,7 +192,7 @@ stage at 0.6B: 0.91–0.97×. Details: `docs/BENCHMARK_RESULTS.md`,
 - Single node, ≤ 8 GPUs validated; multi-node path untested on real hardware.
 - 1F1B only; no interleaved stages.
 - No global-norm gradient clipping.
-- `UniformTransformerBlocks` balances layer count, not cost.
+- `BalancedTransformerBlocks` estimates cost from parameter counts (embeddings free, vision encoder on the first stage, head on the last). It reproduces the hand-picked 9·9·9·1 for Qwen3-0.6B on 4 stages and gives 7·9·9·8·8·8·8·7 for Qwen3-VL-32B on 8; the vision encoder's real cost grows with image resolution, and the output head measured at about 5–6 layers of time against its 10-layer parameter estimate, so measure and tune with `ExplicitCuts`. MoE experts are counted in full, not by the active fraction.
 - Node-local checkpoints survive actor loss, not node loss.
 
 ### Model coverage

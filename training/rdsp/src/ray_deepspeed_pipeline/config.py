@@ -19,6 +19,15 @@ class UniformSequential:
 
 
 @dataclass(frozen=True)
+class BalancedTransformerBlocks:
+    """Cut so the most expensive stage is as cheap as possible. A block's cost
+    is estimated by its parameter count (compute per token scales with it);
+    embeddings are lookups and count as nothing. The first stage also carries
+    what precedes the blocks (a vision encoder), the last what follows them
+    (norm, output head). An estimate: measure, then tune with ExplicitCuts."""
+
+
+@dataclass(frozen=True)
 class ExplicitCuts:
     """Contiguous partition at explicit block boundaries."""
 
@@ -28,7 +37,8 @@ class ExplicitCuts:
         object.__setattr__(self, "cuts", tuple(self.cuts))
 
 
-PartitionConfig = UniformTransformerBlocks | UniformSequential | ExplicitCuts
+PartitionConfig = (UniformTransformerBlocks | UniformSequential | BalancedTransformerBlocks
+                   | ExplicitCuts)
 
 
 @dataclass(frozen=True)
@@ -84,11 +94,11 @@ class PipelineConfig:
             raise ValidationError(f"unsupported schedule {self.schedule!r}; v1 supports '1f1b'")
         if self.microbatches is not None and self.microbatches < 1:
             raise ValidationError(f"microbatches must be positive, got {self.microbatches}")
-        if not isinstance(self.partition, (UniformTransformerBlocks,
-                                           UniformSequential, ExplicitCuts)):
+        if not isinstance(self.partition, (UniformTransformerBlocks, UniformSequential,
+                                           BalancedTransformerBlocks, ExplicitCuts)):
             raise ValidationError(
                 "partition must be a partition policy (UniformTransformerBlocks, "
-                "UniformSequential, or ExplicitCuts)")
+                "UniformSequential, BalancedTransformerBlocks, or ExplicitCuts)")
         for override in self.stage_overrides:
             if not isinstance(override, StageOverride):
                 raise ValidationError(

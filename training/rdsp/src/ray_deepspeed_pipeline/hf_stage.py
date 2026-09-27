@@ -23,7 +23,7 @@ import torch
 import torch.nn as nn
 
 from ray_deepspeed_pipeline.errors import ValidationError
-from ray_deepspeed_pipeline.partition import find_block_list
+from ray_deepspeed_pipeline.partition import find_block_list, vision_injection_depth
 
 
 class _PassThrough(nn.Module):
@@ -200,20 +200,13 @@ class HFModelStage(nn.Module):
             self._downstream = {}
 
 
-def _vision_injection_depth(model) -> int:
-    """Number of leading blocks that receive vision features straight from
-    the vision encoder (Qwen3-VL's deepstack); 0 for other models."""
-    vision = getattr(getattr(model, "config", None), "vision_config", None)
-    return len(getattr(vision, "deepstack_visual_indexes", None) or ())
-
-
 def build_hf_stage(model: nn.Module, block_start: int, block_stop: int,
                    parameter_names: tuple[str, ...]) -> HFModelStage:
     """One stage of an HF model as an HFModelStage. Modules it does not own
     are never copied, so building from a full model costs only the stage's
     own share of memory."""
     blocks_name, blocks = find_block_list(model)
-    depth = _vision_injection_depth(model)
+    depth = vision_injection_depth(model)
     if block_start == 0 and block_stop < depth:
         raise ValidationError(
             f"{type(model).__name__} adds vision features inside blocks 0-{depth - 1}, "

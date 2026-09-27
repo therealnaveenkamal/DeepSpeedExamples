@@ -183,3 +183,24 @@ def test_recompute_keeps_less_for_backward_and_same_gradients():
     assert torch.equal(out_lean, out_plain)
     for (name, a), (_, b) in zip(plain.named_parameters(), lean.named_parameters()):
         assert torch.allclose(a.grad, b.grad, atol=1e-6), name
+
+
+def test_balanced_cuts_give_the_heavy_head_stage_fewer_blocks():
+    """ToyLM: blocks cost 72 parameters each, the norm and head 176, the
+    embedding nothing (a lookup). Three stages: uniform 2|2|2 costs
+    144|144|320; the best split is 3|2|1 at 216|144|248 (ties go to the
+    earlier stages)."""
+    from ray_deepspeed_pipeline.config import BalancedTransformerBlocks
+
+    parts = partition_parameters(ToyLM(n_blocks=6), BalancedTransformerBlocks(), 3)
+    assert [(p.block_start, p.block_stop) for p in parts] == [(0, 3), (3, 5), (5, 6)]
+
+
+
+def test_balanced_cuts_spread_the_slack_evenly():
+    """Eight ToyLM blocks on four stages: 3|3|1|1 and 3|2|2|1 both cap the
+    slowest stage at 248, but the first leaves stage 2 nearly idle (72)."""
+    from ray_deepspeed_pipeline.config import BalancedTransformerBlocks
+
+    parts = partition_parameters(ToyLM(n_blocks=8), BalancedTransformerBlocks(), 4)
+    assert [(p.block_start, p.block_stop) for p in parts] == [(0, 3), (3, 5), (5, 7), (7, 8)]
