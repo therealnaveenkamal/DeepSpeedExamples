@@ -91,11 +91,16 @@ def _with_block_tensors(args: tuple, kwargs: dict, tensors: dict) -> tuple[tuple
     return tuple(args), kwargs
 
 
-def _pack(per_block: dict, rows: int) -> dict:
+_FORM_KEY = "@block_form"
+
+
+def _pack(per_block: dict, rows: int, block_form: int | None) -> dict:
     """{block: {arg: tensor}} as boundary extras keyed "6+7+9/arg": blocks
     receiving the same tensors share one entry. Tensors are laid out rows
     first like the hidden state, so the boundary code can split them per
-    rank; a broadcast row is expanded."""
+    rank; a broadcast row is expanded. Tuple-returning blocks also send their
+    tuple length, which the next stage's pass-throughs need before any of its
+    own blocks has run."""
     groups = {}
     for block, tensors in sorted(per_block.items()):
         signature = tuple(sorted((k, id(v)) for k, v in tensors.items()))
@@ -111,12 +116,16 @@ def _pack(per_block: dict, rows: int) -> dict:
                     f"block argument {name!r} of shape {tuple(t.shape)} has no leading "
                     f"row dimension of size {rows}, so it cannot cross a stage boundary")
             out[f"{'+'.join(blocks)}/{name}"] = t.detach()
+    if block_form:
+        out[_FORM_KEY] = torch.full((rows, 1), block_form, dtype=torch.int64)
     return out
 
 
 def _unpack(extras: dict) -> dict:
     per_block = {}
     for key, t in extras.items():
+        if key == _FORM_KEY:
+            continue
         blocks, _, name = key.partition("/")
         for block in blocks.split("+"):
             per_block.setdefault(int(block), {})[name] = t
@@ -181,12 +190,26 @@ class HFModelStage(nn.Module):
             return args, kwargs
         return hook
 
+    def _setup_input(self, x):
+        """What the model's setup code gets as inputs_embeds on a later stage:
+        the hidden state itself when it is embedding-shaped, else zeros of
+        that shape (GLM-5.3's hidden state has 4 streams). Blocks never see
+        it: the first local block gets the hidden state from the hook."""
+        embed = self.model.get_input_embeddings()
+        dim = getattr(embed, "_embedding_dim", None) or getattr(embed, "embedding_dim", None)
+        if dim is None or tuple(x.shape[2:]) == (dim,):
+            return x
+        return x.new_zeros(*x.shape[:2], dim)
+
     def forward(self, x, extras=None):
         self._install_hooks()
-        self._input, self._received, self._downstream = x, _unpack(extras or {}), {}
+        extras = extras or {}
+        if self._block_form[0] is None and _FORM_KEY in extras:
+            self._block_form[0] = int(extras[_FORM_KEY][0, 0])  # once: it syncs
+        self._input, self._received, self._downstream = x, _unpack(extras), {}
         try:
             if not self.is_first:
-                out = self.model(inputs_embeds=x, use_cache=False)
+                out = self.model(inputs_embeds=self._setup_input(x), use_cache=False)
             elif isinstance(x, dict):
                 out = self.model(**x, use_cache=False)
             else:
@@ -194,7 +217,7 @@ class HFModelStage(nn.Module):
             if self.is_last:
                 return out.logits if hasattr(out, "logits") else out[0]
             hidden = self._hidden
-            return hidden, _pack(self._downstream, hidden.shape[0])
+            return hidden, _pack(self._downstream, hidden.shape[0], self._block_form[0])
         finally:
             self._input = self._received = self._hidden = None
             self._downstream = {}

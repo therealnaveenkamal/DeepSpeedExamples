@@ -211,7 +211,9 @@ middle one data-parallel, loss equal to the unsplit model over 2 steps,
 `tests/integration/test_hf_families.py`): Llama, Mistral, Qwen2, Qwen3,
 Qwen3-MoE, Qwen3.5, Mixtral, Gemma, Gemma2, Gemma3, Phi-3, OLMo2, Granite,
 Cohere, StarCoder2, StableLM, DeepSeek-V3, GLM-4, GLM-4-MoE, GPT-2, GPT-NeoX,
-Falcon, Bloom, Mamba; plus Qwen3-VL (`test_vl_pipeline.py`).
+Falcon, Bloom, Mamba, GLM-5.3 (4-stream hidden state, blocks handing top-k
+indices to the next); plus Qwen3-VL (`test_vl_pipeline.py`). Tested with
+transformers 5.17.
 
 How it works: every stage runs the model's own `forward`. Blocks outside the
 stage return their input (shaped like the real blocks' output); modules whose
@@ -239,8 +241,7 @@ and pass `rdsp.initialize(..., weights="<HF checkpoint dir>")`. Each stage reads
 only its own tensors from the safetensors files; the driver holds no weights.
 
 Not yet supported with `HFModelStage`: TP, SP and EP inside a stage (AutoTP
-plan and HF config are not attached); blocks that return more than the hidden
-state for the next block to use (GLM-5.3's `(hidden, topk_indices)`).
+plan and HF config are not attached).
 
 ## Layout
 

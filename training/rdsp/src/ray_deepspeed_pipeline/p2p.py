@@ -24,7 +24,8 @@ import datetime
 import torch
 import torch.distributed as dist
 
-_DTYPES = [torch.float32, torch.bfloat16, torch.float16, torch.float64, torch.int64]
+_DTYPES = [torch.float32, torch.bfloat16, torch.float16, torch.float64, torch.int64,
+           torch.bool, torch.int32]
 _HEADER_LEN = 10  # dtype code, ndim, up to 7 dims, extras count
 _SLOTS = 64  # messages per microbatch and direction: hidden, extras' names, extras
 
