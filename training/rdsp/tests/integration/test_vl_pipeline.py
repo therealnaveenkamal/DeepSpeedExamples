@@ -253,3 +253,34 @@ def test_tied_checkpoint_loads_into_an_untied_skeleton(ray_ctx, stub_engines, tm
         skeleton = transformers.Qwen3VLForConditionalGeneration(tiny_qwen3_vl()).float()
     got = pipelined_losses(skeleton, (3,), steps=1, weights=str(tmp_path))
     assert got == pytest.approx(expected, rel=1e-4)
+
+
+def test_recompute_covers_the_vision_encoder_blocks():
+    """With high-resolution images the vision encoder holds most of stage 0's
+    activations, so recompute must cover its blocks too (not only the
+    decoder's): 10x less kept here, against 2.3x for the decoder alone.
+    Gradients are unchanged."""
+    from ray_deepspeed_pipeline.hf_stage import build_hf_stage
+    from ray_deepspeed_pipeline.partition import partition_parameters, recompute_blocks
+
+    torch.manual_seed(5)
+    model = transformers.Qwen3VLForConditionalGeneration(tiny_qwen3_vl()).float()
+    part = partition_parameters(model, rdsp.ExplicitCuts((3,)), 2)[0]
+    plain, lean = (build_hf_stage(model, 0, 3, part.parameter_names) for _ in range(2))
+    recompute_blocks(lean)
+    inputs, _ = make_batches()[0]
+    full = {k: torch.cat(v) if isinstance(v, list) else v for k, v in inputs.items()}
+
+    kept, grads = [], []
+    for stage in (plain, lean):
+        sizes = []
+        with torch.autograd.graph.saved_tensors_hooks(
+                lambda t, sizes=sizes: sizes.append(t.numel() * t.element_size()) or t,
+                lambda t: t):
+            hidden, _ = stage(**full)
+        hidden.sum().backward()
+        kept.append(sum(sizes))
+        grads.append({n: p.grad for n, p in stage.named_parameters()})
+    assert kept[1] <= kept[0] / 5
+    for name, g in grads[0].items():
+        assert torch.allclose(g, grads[1][name], atol=1e-6), name

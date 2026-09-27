@@ -381,6 +381,23 @@ Throughput numbers come from **clean** runs: CUDA events on (cheap, no sync), no
 
 ## 7. Modal specifics
 
+**Superseded for the active phase (user decision, 2026-09-26/27).** The Qwen3-0.6B
+benchmark in this plan ran on Modal as described below. The 30B vision-language
+phase (top of this file) runs on the DeepSpeed-provided AWS account instead:
+
+- Credentials: CLI profile `deepspeed`, region us-east-1; quotas 768 spot vCPUs
+  for G instances.
+- Execution: one-time spot EC2 instances on the Deep Learning Base OSS Nvidia
+  Driver AMI (Ubuntu 22.04), launched per run and terminated after it, with a
+  150-minute self-terminate timer. g6.12xlarge = 4xL4, g6.48xlarge = 8xL4,
+  g6e.48xlarge = 8xL40S. Stack: Python 3.12 venv, latest torch, DeepSpeed at the
+  pinned `53a2ac4`, transformers 5.17.
+- Cost: billed per instance-hour at the spot price of the zone that has
+  capacity (quoted before each run; 8xL4 ran at ~$10/h in us-east-1d, 4xL4 is
+  ~$1.5/h in us-east-1f). Each run is approved by the user beforehand.
+- Completed: full GPU suite on 8xL4, 2026-09-27, 40 passed. Next: `train_vl.py`
+  with Qwen3-VL-2B on 4xL4 (parity against the unsplit model, then layouts).
+
 ### 7.1 Image
 
 - **One NGC-based image for both frameworks** (§9.4): `modal.Image.from_registry("nvcr.io/nvidia/pytorch:26.01-py3")`. It ships Python 3.12, which rdsp needs (≥3.12).

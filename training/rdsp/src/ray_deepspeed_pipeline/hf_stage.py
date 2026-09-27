@@ -156,8 +156,21 @@ class HFModelStage(nn.Module):
         self._downstream = {}
 
     def local_blocks(self):
+        """The stage's own blocks: its range of the pipeline's block list, plus
+        every other block list it owns whole (a vision encoder's blocks), not
+        counting lists nested inside those (MoE experts)."""
         start, stop = self._local
-        return [self.model.get_submodule(self._blocks_name)[i] for i in range(start, stop)]
+        pipeline = self.model.get_submodule(self._blocks_name)
+        blocks, taken = [pipeline[i] for i in range(start, stop)], [self._blocks_name + "."]
+        for name, module in self.model.named_modules():
+            if (isinstance(module, nn.ModuleList) and len(module) >= 2
+                    and not name.startswith(tuple(taken)) and module is not pipeline
+                    and len({type(b) for b in module}) == 1
+                    and not isinstance(module[0], (_PassThrough, _Unowned))
+                    and next(module.parameters(), None) is not None):
+                blocks.extend(module)
+                taken.append(name + ".")
+        return blocks
 
     def _install_hooks(self):
         # installed on first use, so the pickled stage carries no bound hooks

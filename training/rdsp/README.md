@@ -173,6 +173,27 @@ modal run scripts/modal_tests.py --gpus L4:8 \
 GPU tests skip on CPU and run on Modal (billed). `scripts/modal_cluster.py` runs
 multi-node layouts.
 
+Real model, Qwen3-VL-2B on 4×L4 (`train_vl.py`, 448² images, 4 rows × 256
+tokens × 8 microbatches, bf16, ZeRO-1 + optimizer offload), 2026-09-27:
+
+| Layout | Pipeline loss vs unsplit | tok/s | Peak GPU GB |
+|---|---|---|---|
+| 4 stages, `--check` (2 rows × 4 microbatches) | 2.32701 vs 2.32701 (2.6e-8) | — | 14.8 · 5.9 · 5.0 · 8.8 |
+| 4 stages | — | 1,660 | 22.2 · 7.9 · 6.2 · 9.4 |
+| 4 stages, stage 0 recompute (vision blocks included) | — | 1,530 | 9.8 · 7.9 · 6.2 · 9.4 |
+| stage 0 on 2 GPUs (ZeRO-2) + 2 stages | — | 770 | 12.8 + 13.2 · 7.9 · 11.2 |
+
+The last row is not a fair per-stage-layout result: balanced cuts ignore a
+stage's GPU count, so the 14-block middle stage bottlenecks. Without offload a
+bf16 stage holds ~18 bytes per parameter (weights, fp32 master, fp32 grads,
+Adam), so 2B needs offload on L4s; with offload the host holds ~16 bytes per
+parameter, so Qwen3-VL-8B (~140 GB) does not fit a 192 GB g6.12xlarge.
+
+Environment notes: DeepSpeed's CPU Adam (optimizer offload) does not compile
+against torch 2.14 headers (C++20) at the pinned revision; use torch 2.13. On
+the AWS Deep Learning Base AMI clear `LD_LIBRARY_PATH`: its CUDA 13.2/12.9
+libraries break torch's bundled cuDNN (Qwen3-VL's patch-embedding Conv3d).
+
 Last full GPU run, 2026-09-27: AWS g6.48xlarge (8×L4), torch 2.14 + CUDA 13.0,
 DeepSpeed 0.19.3 at `53a2ac4`, transformers 5.17. 40 passed, 2 skipped (the
 32-GPU four-stage row), after the flat-keyword fix above.
