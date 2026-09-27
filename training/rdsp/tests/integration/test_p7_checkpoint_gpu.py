@@ -98,16 +98,21 @@ def faulty_factory(module, conf):
 
 
 def ds_config(zero, optimizer="AdamW"):
+    """zero: a ZeRO stage, or "2+offload" for ZeRO-2 with the optimizer in
+    host memory (SGD there needs zero_force_ds_cpu_optimizer off)."""
     opt = ({"type": "AdamW", "params": {"lr": 1e-2, "torch_adam": True}}
            if optimizer == "AdamW" else
            {"type": "SGD", "params": {"lr": 0.1, "momentum": 0.9}})
-    return {"train_micro_batch_size_per_gpu": ROWS,
+    zero_conf = {"stage": zero}
+    if zero == "2+offload":
+        zero_conf = {"stage": 2, "offload_optimizer": {"device": "cpu"}}
+    return {"zero_force_ds_cpu_optimizer": False,"train_micro_batch_size_per_gpu": ROWS,
             "gradient_accumulation_steps": N_MB,
             "optimizer": opt, "zero_allow_untested_optimizer": True,
             "scheduler": {"type": "WarmupLR",
                           "params": {"warmup_min_lr": 0.0, "warmup_max_lr": 1e-2,
                                      "warmup_num_steps": 10}},
-            "zero_optimization": {"stage": zero},
+            "zero_optimization": zero_conf,
             "steps_per_print": 10**6}
 
 
@@ -246,7 +251,7 @@ def test_last_committed_whole_pipeline_recovery(runtime, tmp_path):
     assert recovered == pytest.approx(clean3, rel=1e-6, abs=1e-6)
 
 
-@pytest.mark.parametrize("zero", [0, 1, 2])
+@pytest.mark.parametrize("zero", [0, 1, 2, "2+offload"])
 def test_abandoned_step_retry_is_exact(runtime, tmp_path, zero):
     """A step that fails mid-backward (after some microbatches were already
     accumulated/reduced — under ZeRO-2 into its running sum) is retried

@@ -245,3 +245,21 @@ def test_abandoned_generation_leaves_no_gradients_behind():
     assert a0.drained() and a1.drained()
     assert all(p.grad is None for p in a0.engine.module.parameters())
     assert all(p.grad is None for p in a1.engine.module.parameters())
+
+
+def test_abandoned_generation_clears_offloaded_gradient_sums():
+    """Under ZeRO optimizer offload the partial sum of an abandoned step sits
+    in host buffers and a micro-step counter says whether the next backward
+    adds to it; both must be reset, or a retry adds onto the failed step."""
+    torch.manual_seed(0)
+    a0, a1, _ = make_adapters(ToyLM())
+    ids, labels = make_data()
+    h = a0.forward(0, ids[:ROWS])
+    a1.forward(0, h, labels=labels[:ROWS])
+    a0.backward(0, grad=a1.backward(0))
+    optimizer = a0.engine.optimizer
+    optimizer.cpu_offload = True  # the state ZeRO-Offload keeps mid-step
+    optimizer.accumulated_grads_in_cpu = {0: torch.ones(3)}
+    optimizer.micro_step_id = 0
+    a0.begin_generation()
+    assert optimizer.accumulated_grads_in_cpu == {} and optimizer.micro_step_id == -1

@@ -343,6 +343,11 @@ class DeepSpeedStageAdapter:
             if isinstance(running, dict):
                 for key in list(running):
                     running[key] = None
+            # with optimizer offload the running sum lives in host buffers, and
+            # the micro-step counter decides whether a backward adds to them
+            if getattr(optimizer, "cpu_offload", False):
+                optimizer.accumulated_grads_in_cpu = {}
+                optimizer.micro_step_id = -1  # DeepSpeed's INITIAL_MICRO_STEP_ID
 
     def begin_generation(self) -> None:
         """Call on a new generation's first command. Leftovers of an abandoned

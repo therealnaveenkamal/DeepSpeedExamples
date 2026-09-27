@@ -110,3 +110,25 @@ def test_per_stage_gradient_clipping_never_silently_on():
                for st in plan.stages)
     with pytest.raises(ValidationError, match="global"):
         lower(ToyLM(), simple_config(), dict(DS, gradient_clipping=1.0))
+
+
+def test_optimizer_offload_only_on_the_stage_that_asks():
+    plan = lower(ToyLM(), simple_config(stage_overrides=(
+        StageOverride(stage=0, zero_stage=2, offload_optimizer=True),)), DS)
+    zero0 = json.loads(plan.stages[0].ds_config_json)["zero_optimization"]
+    assert zero0["offload_optimizer"] == {"device": "cpu", "pin_memory": True}
+    assert "offload_optimizer" not in json.loads(plan.stages[1].ds_config_json).get(
+        "zero_optimization", {})
+
+
+def test_optimizer_offload_inherits_zero_from_the_config():
+    plan = lower(ToyLM(), simple_config(stage_overrides=(
+        StageOverride(stage=1, offload_optimizer=True),)),
+        {**DS, "zero_optimization": {"stage": 1}})
+    assert json.loads(plan.stages[1].ds_config_json)["zero_optimization"]["stage"] == 1
+
+
+def test_optimizer_offload_without_zero_rejected():
+    with pytest.raises(ValidationError, match="ZeRO stage 1 or 2"):
+        lower(ToyLM(), simple_config(stage_overrides=(
+            StageOverride(stage=0, offload_optimizer=True),)), DS)

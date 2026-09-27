@@ -25,13 +25,14 @@ _STAGE_KEYS = {"gpus": "num_gpus", "zero": "zero_stage", "tp": "tp", "sp": "sp",
 
 def parse_stage(spec: str) -> StageOverride:
     """'1:gpus=2,tp=2' -> StageOverride(stage=1, num_gpus=2, tp=2). Keys: gpus,
-    zero, tp, sp, ep, fold, recompute."""
+    zero, tp, sp, ep, fold, recompute, offload."""
     index, _, fields = spec.partition(":")
     kwargs = {"stage": int(index)}
     for field in filter(None, fields.split(",")):
         key, _, value = field.partition("=")
-        if key in ("fold", "recompute"):
-            kwargs[key] = value.lower() in ("1", "true", "yes")
+        if key in ("fold", "recompute", "offload"):
+            name = "offload_optimizer" if key == "offload" else key
+            kwargs[name] = value.lower() in ("1", "true", "yes")
         elif key in _STAGE_KEYS:
             kwargs[_STAGE_KEYS[key]] = int(value)
         else:
@@ -84,9 +85,11 @@ def ds_config(args) -> dict:
     return {
         "train_batch_size": args.rows * args.microbatches,
         "gradient_accumulation_steps": args.microbatches,
-        # torch_adam: PyTorch's AdamW, not DeepSpeed's JIT-compiled CUDA op
+        # torch_adam: PyTorch's AdamW, not DeepSpeed's JIT-compiled CUDA op.
+        # Optimizer offload needs DeepSpeed's CPU Adam (compiled on first use)
         "optimizer": {"type": "AdamW",
-                      "params": {"lr": args.lr, "weight_decay": 0.0, "torch_adam": True}},
+                      "params": {"lr": args.lr, "weight_decay": 0.0,
+                                 "torch_adam": not any(o.offload_optimizer for o in args.stage)}},
         "bf16": {"enabled": args.dtype == "bf16"},
         "zero_optimization": {"stage": args.zero},
         "gradient_clipping": 0.0,

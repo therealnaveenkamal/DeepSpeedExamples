@@ -86,6 +86,14 @@ def _apply_override(conf: dict, override) -> None:
         ep_conf = dict(conf.get("expert_parallel", {}))
         ep_conf.update(enabled=True, autoep_size=override.ep)
         conf["expert_parallel"] = ep_conf
+    if override.offload_optimizer:
+        zero = dict(conf.get("zero_optimization", {}))
+        if int(zero.get("stage", 0)) not in (1, 2):
+            raise ValidationError(
+                f"stage {override.stage}: optimizer offload needs ZeRO stage 1 or 2, "
+                f"got {zero.get('stage', 0)}; set StageOverride(zero_stage=...)")
+        zero["offload_optimizer"] = {"device": "cpu", "pin_memory": True}
+        conf["zero_optimization"] = zero
 
 
 def _stage_grid(override, index: int, n_stages: int, rows: int) -> tuple[Grid, int]:

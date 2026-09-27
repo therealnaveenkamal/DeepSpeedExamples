@@ -33,7 +33,7 @@ python demo.py                            # CPU only, ~10 s, pipeline vs unsplit
 | `--model` | `Qwen/Qwen3-0.6B` | HF causal LM; tied embeddings are untied automatically |
 | `--stages` | 2 | pipeline stages |
 | `--cuts` | even split | block index where each stage after the first starts, e.g. `7,14,21`; `balanced`: cost-balanced |
-| `--stage` | 1 GPU, no parallelism | per-stage layout, repeatable: `<i>:gpus=N,zero=Z,tp=T,sp=S,ep=E,fold=1,recompute=1` |
+| `--stage` | 1 GPU, no parallelism | per-stage layout, repeatable: `<i>:gpus=N,zero=Z,tp=T,sp=S,ep=E,fold=1,recompute=1,offload=1` |
 | `--microbatches` | 8 | microbatches per optimizer step |
 | `--rows` | 4 | sequences per microbatch |
 | `--seq` | 512 | tokens per sequence |
@@ -74,7 +74,7 @@ engine.save_checkpoint("ckpt/")           # engine.load_checkpoint("ckpt/")
 | `stages` | number of stages |
 | `partition` | `UniformTransformerBlocks()` (equal layer counts), `BalancedTransformerBlocks()` (equal estimated cost), or `ExplicitCuts((i, ...))` |
 | `microbatches` | optional; must equal `gradient_accumulation_steps` |
-| `stage_overrides` | `StageOverride(stage, num_gpus=1, zero_stage=None, tp=1, sp=1, ep=1, fold=False, recompute=False)`; `recompute`: rerun each block in backward instead of keeping its activations |
+| `stage_overrides` | `StageOverride(stage, num_gpus=1, zero_stage=None, tp=1, sp=1, ep=1, fold=False, recompute=False, offload_optimizer=False)`; `recompute`: rerun each block in backward instead of keeping its activations; `offload_optimizer`: optimizer state in host memory, stepped on the CPU (ZeRO 1 or 2; bf16 needs DeepSpeed's CPU Adam, not `torch_adam`) |
 | `checkpoint` | `CheckpointPolicy(save_optimizer_state=True)` |
 
 DeepSpeed config rules:

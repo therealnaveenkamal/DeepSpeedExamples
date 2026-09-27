@@ -54,7 +54,10 @@ class StageOverride:
     ep (DeepSpeed AutoEP) folds onto those ranks and must divide num_gpus;
     `fold` enables AutoEP Parallel Folding. recompute: keep only each
     block's input for backward and rerun the block there (activation
-    checkpointing), trading about a third more compute for memory."""
+    checkpointing), trading about a third more compute for memory.
+    offload_optimizer: keep the stage's optimizer state (fp32 master weights
+    and Adam moments) in host memory and step it on the CPU (ZeRO-Offload;
+    needs ZeRO stage 1 or 2)."""
 
     stage: int
     num_gpus: int = 1
@@ -64,6 +67,7 @@ class StageOverride:
     ep: int = 1
     fold: bool = False
     recompute: bool = False
+    offload_optimizer: bool = False
 
 
 @dataclass(frozen=True)
