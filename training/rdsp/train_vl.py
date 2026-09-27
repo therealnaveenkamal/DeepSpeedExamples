@@ -85,15 +85,16 @@ def loss_fn(logits, labels):
 
 
 def unsplit_loss(weights: str, batches) -> float:
-    """Mean loss of the whole model on one GPU: the reference for --check."""
+    """Mean loss of the whole model, unsplit: the reference for --check.
+    Spread over the GPUs when it does not fit one (32B); freed afterwards."""
     import transformers
     model = transformers.AutoModelForImageTextToText.from_pretrained(
-        weights, dtype=torch.bfloat16).cuda().eval()
+        weights, dtype=torch.bfloat16, device_map="auto").eval()
     losses = []
     with torch.no_grad():
         for inputs, labels in batches:
             full = {k: torch.cat(v) if isinstance(v, list) else v for k, v in inputs.items()}
-            full = {k: v.cuda() for k, v in full.items()}
+            full = {k: v.to(model.device) for k, v in full.items()}
             losses.append(float(loss_fn(model(**full, use_cache=False).logits, labels)))
     del model
     torch.cuda.empty_cache()

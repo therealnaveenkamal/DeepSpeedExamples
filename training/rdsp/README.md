@@ -190,6 +190,20 @@ bf16 stage holds ~18 bytes per parameter (weights, fp32 master, fp32 grads,
 Adam), so 2B needs offload on L4s; with offload the host holds ~16 bytes per
 parameter, so Qwen3-VL-8B (~140 GB) does not fit a 192 GB g6.12xlarge.
 
+Qwen3-VL-8B on 8×L4 (same data, ZeRO-1 + optimizer offload on every stage,
+stage 0 recompute), 2026-09-27:
+
+| Layout (blocks per stage) | Pipeline loss vs unsplit | tok/s | Peak GPU GB |
+|---|---|---|---|
+| 8 stages 3·6·5·5·5·5·5·2, `--check` (2 rows × 4 microbatches) | 1.47424 vs 1.47424 (2.0e-8) | — | 18.4 · 11.5 · 10.5 · 10.5 · 10.5 · 10.5 · 9.4 · 19.3 |
+| 8 stages 3·6·5·5·5·5·5·2 | — | ~640 | 20.8 · 16.2 · 12.7 · 11.6 · 10.4 · 9.3 · 8.5 · 18.2 |
+| stage 0 on 2 GPUs (ZeRO-2) · 6 stages, 9×2·5·5·5·5·5·2 | — | ~240 | 22.3 + 14.6 · 12.8 · 11.6 · 10.4 · 9.3 · 8.5 · 18.2 |
+
+The two-GPU vision stage was 2.7× slower; its cause is not yet profiled
+(candidates: the vision encoder's cost is underestimated by parameter count,
+so stage 0 got too many blocks; ZeRO-2 gradient reduction plus offload over
+PCIe on that stage).
+
 Environment notes: DeepSpeed's CPU Adam (optimizer offload) does not compile
 against torch 2.14 headers (C++20) at the pinned revision; use torch 2.13. On
 the AWS Deep Learning Base AMI clear `LD_LIBRARY_PATH`: its CUDA 13.2/12.9
