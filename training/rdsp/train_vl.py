@@ -133,6 +133,8 @@ def main(argv=None):
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--check", action="store_true",
                    help="first compare the pipeline's loss with the unsplit model on one GPU")
+    p.add_argument("--profile", action="store_true",
+                   help="print per-stage phase times (RDSP_PROFILE=1; slows steps)")
     args = p.parse_args(argv)
 
     import accelerate
@@ -155,12 +157,18 @@ def main(argv=None):
         skeleton = transformers.AutoModelForImageTextToText.from_config(config,
                                                                          dtype=torch.bfloat16)
     if args.cuts == "balanced":
-        partition = rdsp.BalancedTransformerBlocks()
+        # the vision encoder's cost scales with the patches it sees per text token
+        patches = sum(p.shape[0] for p in first[0][0]["pixel_values"])
+        partition = rdsp.BalancedTransformerBlocks(
+            vision_token_ratio=patches / (args.rows * args.seq))
     elif args.cuts == "even":
         partition = rdsp.UniformTransformerBlocks()
     else:
         partition = rdsp.ExplicitCuts(tuple(int(c) for c in args.cuts.split(",")))
 
+    if args.profile:
+        import os
+        os.environ["RDSP_PROFILE"] = "1"  # before ray.init: actors inherit it
     ray.init(ignore_reinit_error=True)
     engine, _, _, _ = rdsp.initialize(
         model=skeleton, config=ds_config(args), loss_fn=loss_fn, weights=weights,

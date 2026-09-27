@@ -88,6 +88,10 @@ DeepSpeed config rules:
 | `gradient_clipping` | must be 0 (per-stage clipping ≠ global clipping) |
 | pipeline / Ray keys | rejected |
 
+Profiling: `RDSP_PROFILE=1` prints, per rank and step, the time in forward,
+backward, waiting on neighbours and the optimizer step (one JSON line each;
+the compute stream is synchronised per reading, so steps run slower).
+
 Engine surface: `train_batch`, `eval_batch`, `save_checkpoint`, `load_checkpoint`,
 `global_steps`. `forward`, `backward`, `step` and `module` raise
 `UnsupportedEngineMethod`.
@@ -198,11 +202,21 @@ stage 0 recompute), 2026-09-27:
 | 8 stages 3·6·5·5·5·5·5·2, `--check` (2 rows × 4 microbatches) | 1.47424 vs 1.47424 (2.0e-8) | — | 18.4 · 11.5 · 10.5 · 10.5 · 10.5 · 10.5 · 9.4 · 19.3 |
 | 8 stages 3·6·5·5·5·5·5·2 | — | ~640 | 20.8 · 16.2 · 12.7 · 11.6 · 10.4 · 9.3 · 8.5 · 18.2 |
 | stage 0 on 2 GPUs (ZeRO-2) · 6 stages, 9×2·5·5·5·5·5·2 | — | ~240 | 22.3 + 14.6 · 12.8 · 11.6 · 10.4 · 9.3 · 8.5 · 18.2 |
+| stage 0 on 2 GPUs (ZeRO-1) · 6 stages, 3×2·6·6·6·6·6·3 (`vision_token_ratio`) | — | ~660 | 19.2 + 19.1 · 14.9 · 13.5 · 12.1 · 10.7 · 9.7 · 16.6 |
 
-The two-GPU vision stage was 2.7× slower; its cause is not yet profiled
-(candidates: the vision encoder's cost is underestimated by parameter count,
-so stage 0 got too many blocks; ZeRO-2 gradient reduction plus offload over
-PCIe on that stage).
+Profiling (`RDSP_PROFILE=1`, `train_vl.py --profile`) found two causes of the
+~240 tok/s row. (1) The vision encoder's cost was estimated from its
+parameters, but it processes 784 patches per 448-pixel image against 256 text
+tokens per row: stage 0 did ~5.3 s of compute per step against ~1.8 s for
+other stages, and the two-GPU split gave it 9 blocks on top.
+`BalancedTransformerBlocks(vision_token_ratio=...)` scales its estimate
+(train_vl.py measures it from the data). (2) ZeRO-2 with optimizer offload on
+a data-parallel stage reduces gradients over PCIe after every microbatch's
+backward and round-trips the running sum through host memory: backward went
+from 4.2 s to 25.5 s. Use ZeRO-1 on data-parallel stages in a pipeline: one
+reduction per step. With both, the two-GPU vision stage runs at ~660 tok/s
+against ~640 for eight single-GPU stages. The remaining limiter is the CPU
+optimizer step under offload (2.6–5.3 s per step on every stage).
 
 Environment notes: DeepSpeed's CPU Adam (optimizer offload) does not compile
 against torch 2.14 headers (C++20) at the pinned revision; use torch 2.13. On

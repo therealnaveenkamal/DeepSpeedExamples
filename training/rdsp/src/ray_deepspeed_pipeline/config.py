@@ -24,7 +24,14 @@ class BalancedTransformerBlocks:
     is estimated by its parameter count (compute per token scales with it);
     embeddings are lookups and count as nothing. The first stage also carries
     what precedes the blocks (a vision encoder), the last what follows them
-    (norm, output head). An estimate: measure, then tune with ExplicitCuts."""
+    (norm, output head). An estimate: measure, then tune with ExplicitCuts.
+
+    vision_token_ratio: tokens the vision encoder processes per text token
+    (patches per row / sequence length; ~3 for one 448-pixel image in 256
+    tokens). Its cost is its parameters times the tokens it sees, so its
+    estimate is scaled by this ratio."""
+
+    vision_token_ratio: float = 1.0
 
 
 @dataclass(frozen=True)

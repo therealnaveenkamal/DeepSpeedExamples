@@ -6,8 +6,12 @@ run_step(), carrying the rank's whole 1F1B op list; activations and gradients
 then move rank to rank over the p2p groups, never through the driver.
 """
 
+import collections
+import contextlib
+import json
 import os
 import socket
+import time
 
 import torch
 
@@ -29,6 +33,43 @@ def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("", 0))
         return sock.getsockname()[1]
+
+
+class _PhaseTimer:
+    """Wall time per phase of a step when RDSP_PROFILE=1, printed as one JSON
+    line per rank. Pending compute is waited for before each reading, so a
+    phase's time is its own; profiling makes steps slower."""
+
+    def __init__(self, device):
+        self.on = os.environ.get("RDSP_PROFILE") == "1"
+        self.device = device
+        self.totals = collections.defaultdict(float)
+
+    def _sync(self):
+        # the compute stream only: a device-wide sync would also wait for this
+        # rank's async sends, which finish only when the neighbour receives,
+        # and two neighbours waiting on each other's sends deadlock
+        if self.device.type == "cuda":
+            torch.cuda.current_stream(self.device).synchronize()
+
+    @contextlib.contextmanager
+    def phase(self, name: str):
+        if not self.on:
+            yield
+            return
+        self._sync()
+        start = time.perf_counter()
+        try:
+            yield
+        finally:
+            self._sync()
+            self.totals[name] += time.perf_counter() - start
+
+    def report(self, **where) -> None:
+        if self.on:
+            ms = {k: round(v * 1e3, 1) for k, v in self.totals.items()}
+            print(json.dumps({"rdsp_profile": where, **ms}), flush=True)
+        self.totals.clear()
 
 
 class StageWorkerActor:
@@ -78,6 +119,7 @@ class StageWorkerActor:
             init["is_first"], init["is_last"], loss_fn=init["loss_fn"],
             engine_factory=init["engine_factory"])
         self._init = None  # drop the driver-built module copy
+        self._timer = _PhaseTimer(self.adapter.device)
         return observed_mesh(self.adapter.engine)
 
     def ping(self) -> bool:
@@ -118,7 +160,10 @@ class StageWorkerActor:
         self.executed.append(command_id)
         self._enter_generation(generation, begin=kind != "load")
         if kind == "apply":
-            return self.adapter.apply()
+            with self._timer.phase("apply"):
+                applied = self.adapter.apply()
+            self._timer.report(stage=self.stage, rank=self.rank, kind="apply")
+            return applied
         if kind == "save":
             return self._save(control["root"], control["tag"])
         if kind == "load" and "verify" in control:
@@ -192,7 +237,7 @@ class StageWorkerActor:
         last stage only)."""
         self._enter_generation(generation)
         prev, next_ = self._peers()
-        adapter, p2p = self.adapter, self.p2p
+        adapter, p2p, timer = self.adapter, self.p2p, self._timer
         # DeepSpeed averages gradients over DP and sums over SP, so the gradient
         # entering this stage must be dp_s x dL/d(output): scale by dp_s/dp_{s+1}
         scale = gradient_scale(self._grids[self.stage + 1].dp, self.grid.dp) if next_ else 1.0
@@ -207,11 +252,13 @@ class StageWorkerActor:
                     continue
                 if kind in ("forward", "eval"):
                     if prev:
-                        x, extras = self._receive_forward(prev[0], mb)
+                        with timer.phase("wait_fwd"):
+                            x, extras = self._receive_forward(prev[0], mb)
                     else:
                         x, extras = inputs[mb], None
                     mb_labels = labels[mb] if labels is not None else None
-                    out = self._forward(kind, mb, x, mb_labels, extras)
+                    with timer.phase("forward"):
+                        out = self._forward(kind, mb, x, mb_labels, extras)
                     if next_:
                         hidden, out_extras = out if isinstance(out, tuple) else (out, {})
                         for peer in next_[0]:
@@ -221,17 +268,21 @@ class StageWorkerActor:
                 else:  # backward
                     grad = None
                     if next_:
-                        grad = assemble([(cell, p2p.recv("bwd", peer, mb))
-                                         for peer, cell in next_[1]], self.cell)
+                        with timer.phase("wait_bwd"):
+                            grad = assemble([(cell, p2p.recv("bwd", peer, mb))
+                                             for peer, cell in next_[1]], self.cell)
                         if scale != 1.0:
                             grad = grad * scale
-                    input_grad = adapter.backward(mb, grad=grad)
+                    with timer.phase("backward"):
+                        input_grad = adapter.backward(mb, grad=grad)
                     if prev:
                         for peer in prev[1]:
                             p2p.send("bwd", input_grad, peer, mb)
-            p2p.end_step()
+            with timer.phase("wait_sends"):
+                p2p.end_step()
         finally:
             p2p.begin_step()  # drop per-step shape records either way
+            timer.report(stage=self.stage, rank=self.rank, kind="step")
         return {"losses": [losses[k] for k in sorted(losses)] if adapter.is_last else None,
                 "ready": ready}
 

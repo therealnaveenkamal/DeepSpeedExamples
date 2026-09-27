@@ -165,7 +165,10 @@ def partition_parameters(model: nn.Module, policy, stages: int,
         raise ValidationError(f"stages must be >= 1, got {stages}")
     blocks_name, blocks = find_block_list(model)
     if isinstance(policy, BalancedTransformerBlocks) and stages > 1:
-        cuts = _balanced_cuts(_compute_costs(model, blocks_name, blocks), stages,
+        pre, per_block, post = _compute_costs(model, blocks_name, blocks)
+        # what precedes the blocks, embeddings aside, is the vision encoder
+        pre *= policy.vision_token_ratio
+        cuts = _balanced_cuts((pre, per_block, post), stages,
                               vision_injection_depth(model), stage_gpus or (1,) * stages)
     else:
         cuts = _cuts_for(policy, len(blocks), stages) if stages > 1 else []

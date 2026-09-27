@@ -284,3 +284,17 @@ def test_recompute_covers_the_vision_encoder_blocks():
     assert kept[1] <= kept[0] / 5
     for name, g in grads[0].items():
         assert torch.allclose(g, grads[1][name], atol=1e-6), name
+
+
+def test_vision_token_ratio_shifts_blocks_off_the_vision_stage():
+    """The vision encoder's cost is its parameters times the patches it sees,
+    which per row can be several times the text tokens: weighting it by that
+    ratio leaves the first stage only the blocks it must keep."""
+    from ray_deepspeed_pipeline.config import BalancedTransformerBlocks
+    from ray_deepspeed_pipeline.partition import partition_parameters
+
+    model = transformers.Qwen3VLForConditionalGeneration(tiny_qwen3_vl())
+    light = partition_parameters(model, BalancedTransformerBlocks(vision_token_ratio=0.01), 2)
+    heavy = partition_parameters(model, BalancedTransformerBlocks(vision_token_ratio=100.0), 2)
+    assert heavy[0].block_stop == 2  # the deepstack blocks, nothing more
+    assert light[0].block_stop > heavy[0].block_stop
