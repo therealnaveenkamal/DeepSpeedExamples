@@ -132,3 +132,16 @@ def test_optimizer_offload_without_zero_rejected():
     with pytest.raises(ValidationError, match="ZeRO stage 1 or 2"):
         lower(ToyLM(), simple_config(stage_overrides=(
             StageOverride(stage=0, offload_optimizer=True),)), DS)
+
+
+def test_balanced_cuts_give_a_multi_gpu_stage_more_blocks():
+    """ToyLM blocks cost 72, the norm and head 176. With the middle stage on 2
+    GPUs its cost counts half: every split keeping all stages within 248 (the
+    head stage's minimum) is 1|4|1, 2|3|1 or 3|2|1, and 1|4|1 (72, 144/2, 248)
+    spreads the rest most evenly. On single-GPU stages it would be 3|2|1."""
+    from ray_deepspeed_pipeline.config import BalancedTransformerBlocks
+
+    plan = lower(ToyLM(n_blocks=6), PipelineConfig(
+        stages=3, partition=BalancedTransformerBlocks(),
+        stage_overrides=(StageOverride(stage=1, num_gpus=2),)), DS)
+    assert [(s.block_start, s.block_stop) for s in plan.stages] == [(0, 1), (1, 5), (5, 6)]

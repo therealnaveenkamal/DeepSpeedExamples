@@ -183,8 +183,9 @@ tokens × 8 microbatches, bf16, ZeRO-1 + optimizer offload), 2026-09-27:
 | 4 stages, stage 0 recompute (vision blocks included) | — | 1,530 | 9.8 · 7.9 · 6.2 · 9.4 |
 | stage 0 on 2 GPUs (ZeRO-2) + 2 stages | — | 770 | 12.8 + 13.2 · 7.9 · 11.2 |
 
-The last row is not a fair per-stage-layout result: balanced cuts ignore a
-stage's GPU count, so the 14-block middle stage bottlenecks. Without offload a
+The last row is not a fair per-stage-layout result: balanced cuts then ignored
+a stage's GPU count, so the 14-block middle stage bottlenecked (fixed since:
+cuts now divide a stage's cost by its GPU count). Without offload a
 bf16 stage holds ~18 bytes per parameter (weights, fp32 master, fp32 grads,
 Adam), so 2B needs offload on L4s; with offload the host holds ~16 bytes per
 parameter, so Qwen3-VL-8B (~140 GB) does not fit a 192 GB g6.12xlarge.
@@ -218,7 +219,7 @@ stage at 0.6B: 0.91–0.97×. Details: `docs/BENCHMARK_RESULTS.md`,
 - Single node, ≤ 8 GPUs validated; multi-node path untested on real hardware.
 - 1F1B only; no interleaved stages.
 - No global-norm gradient clipping.
-- `BalancedTransformerBlocks` estimates cost from parameter counts (embeddings free, vision encoder on the first stage, head on the last). It reproduces the hand-picked 9·9·9·1 for Qwen3-0.6B on 4 stages and gives 7·9·9·8·8·8·8·7 for Qwen3-VL-32B on 8; the vision encoder's real cost grows with image resolution, and the output head measured at about 5–6 layers of time against its 10-layer parameter estimate, so measure and tune with `ExplicitCuts`. MoE experts are counted in full, not by the active fraction.
+- `BalancedTransformerBlocks` estimates cost from parameter counts (embeddings free, vision encoder on the first stage, head on the last), divided by each stage's GPU count. It reproduces the hand-picked 9·9·9·1 for Qwen3-0.6B on 4 stages and gives 7·9·9·8·8·8·8·7 for Qwen3-VL-32B on 8; the vision encoder's real cost grows with image resolution, and the output head measured at about 5–6 layers of time against its 10-layer parameter estimate, so measure and tune with `ExplicitCuts`. MoE experts are counted in full, not by the active fraction.
 - Node-local checkpoints survive actor loss, not node loss.
 
 ### Model coverage

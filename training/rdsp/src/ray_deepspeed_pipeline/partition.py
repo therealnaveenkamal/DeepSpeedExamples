@@ -108,10 +108,12 @@ def _compute_costs(model: nn.Module, blocks_name: str, blocks) -> tuple[int, lis
     return pre, per_block, post
 
 
-def _balanced_cuts(costs: tuple, stages: int, min_first: int) -> list[int]:
-    """Contiguous split minimising the most expensive stage, then, among
-    splits that achieve it, the sum of squared stage costs (so no stage is
-    left nearly idle). Ties go to splits whose earlier stages take more."""
+def _balanced_cuts(costs: tuple, stages: int, min_first: int,
+                   stage_gpus: tuple[int, ...]) -> list[int]:
+    """Contiguous split minimising the most expensive stage, a stage's cost
+    divided by its GPU count; then, among splits that achieve it, the sum of
+    squared stage costs (so no stage is left nearly idle). Ties go to splits
+    whose earlier stages take more."""
     pre, per_block, post = costs
     n = len(per_block)
     if n - (stages - 1) < max(min_first, 1):
@@ -124,7 +126,7 @@ def _balanced_cuts(costs: tuple, stages: int, min_first: int) -> list[int]:
 
     def stage_cost(s, j, i):
         return (total[i] - total[j] + (pre if s == 0 else 0)
-                + (post if s == stages - 1 else 0))
+                + (post if s == stages - 1 else 0)) / stage_gpus[s]
 
     def solve(score, limit):
         # best[s][i]: score of blocks[:i] on stages 0..s; back: where stage s starts
@@ -153,7 +155,8 @@ def _balanced_cuts(costs: tuple, stages: int, min_first: int) -> list[int]:
     return cuts[::-1]
 
 
-def partition_parameters(model: nn.Module, policy, stages: int) -> tuple[StagePartition, ...]:
+def partition_parameters(model: nn.Module, policy, stages: int,
+                         stage_gpus: tuple[int, ...] | None = None) -> tuple[StagePartition, ...]:
     """Assign every parameter name to exactly one stage. Blocks map by cut
     range; parameters before the block list go to the first stage, those
     after it to the last. Rejects parameters tied across stages: each stage
@@ -163,7 +166,7 @@ def partition_parameters(model: nn.Module, policy, stages: int) -> tuple[StagePa
     blocks_name, blocks = find_block_list(model)
     if isinstance(policy, BalancedTransformerBlocks) and stages > 1:
         cuts = _balanced_cuts(_compute_costs(model, blocks_name, blocks), stages,
-                              vision_injection_depth(model))
+                              vision_injection_depth(model), stage_gpus or (1,) * stages)
     else:
         cuts = _cuts_for(policy, len(blocks), stages) if stages > 1 else []
     bounds = [0] + cuts + [len(blocks)]
