@@ -124,7 +124,7 @@ def ray_ctx():
 def runtime(ray_ctx, monkeypatch):
     made = []
 
-    def factory(*, model, pipeline_config, ds_config, loss_fn):
+    def factory(*, model, pipeline_config, ds_config, loss_fn, weights=None):
         plan = lower(model, pipeline_config, ds_config)
 
         def build():

@@ -1,7 +1,28 @@
 # Benchmark plan: rdsp vs NVIDIA Megatron pipeline parallelism
 
-Status: **plan only**. Nothing here has run on a GPU. No rdsp source was changed.
-Written 2026-09-22.
+## Active phase (2026-09-26): 30B vision-language on one node
+
+The Qwen3-0.6B benchmark below is finished (results in `docs/BENCHMARK_RESULTS.md`).
+Following review feedback (target a ~30B VL model, non-NVLink GPUs), the current
+phase changes rdsp source, CPU-tested first, in this order:
+
+1. **Per-stage weight loading.** `rdsp.initialize(weights=<HF dir>)`: the driver
+   model may be a meta-device skeleton; each stage reads only its own tensors
+   from the safetensors files.
+2. **HF stage builder** (`hf_stage.py`): every stage runs the model's own
+   forward; blocks outside its range pass through, unowned modules are Identity.
+3. **Multi-tensor boundaries**: the hidden state plus the tensor keyword
+   arguments the model passes to its blocks (e.g. Qwen3-VL rotary tables).
+4. **VL data path**: stage-0 inputs may be a dict; non-row-shaped values
+   (pixels, image grids) are given per row and concatenated per rank.
+5. Later: optimizer offload, activation recompute, cost-balanced cuts; then GPU
+   runs (Qwen3-VL-2B/8B on 4xL4, Qwen3-VL-32B on 8xL40S). Multi-node is out of scope.
+
+Tests: tiny Qwen3-VL on Ray CPU actors must match the unsplit model's losses.
+
+---
+
+Status of the original benchmark plan below: **plan only** when written. Written 2026-09-22.
 
 How each claim was checked:
 
@@ -310,6 +331,8 @@ PP ∈ {2, 4} × m ∈ {4, 8, 16} × s ∈ {512, 2048}, with (b, s) = (4, 512) o
 When this plan was written, the public `rdsp.initialize()` always used the generic `build_stage_module`. That builder cannot run Qwen3, which needs per-call rotary position inputs. So, like the P6 test, the benchmark assembles the engine from the same internal pieces: `lower()` → `create_stage_clients(..., stage_builder=..., engine_factory=...)` → `PipelineCoordinator` → `RayPipelineEngine`. These are existing keyword seams. Nothing is patched.
 
 **Update 2026-09-25 (user decision):** `create_stage_clients` now picks the stage builder from the model when none is passed (`partition.select_stage_builder`). HF llama-style causal LMs (`embed_tokens`, `norm` and `rotary_emb` next to the block list, plus a top-level `lm_head`) get `build_causal_lm_stage`; other models keep `build_stage_module`. So `rdsp.initialize()` and recovery rebuilds now work on Qwen3/Llama directly. An explicit `stage_builder=` (as the benchmark and tests pass) still takes precedence.
+
+**Update 2026-09-26 (active phase, top of this file):** a third outcome. HF llama-style causal LMs whose parameters are *only* embedding, blocks, norm and head keep `build_causal_lm_stage`. Any other HF model (it has a `config`, e.g. Qwen3-VL with its vision encoder) gets `hf_stage.build_hf_stage`, which runs the model's own forward. Non-HF models keep `build_stage_module`. Refined the same day: `build_causal_lm_stage` is kept only for the model types it was validated on (`qwen3`, `qwen3_moe`, `llama`); every other HF model, including Llama-shaped ones such as Gemma (embedding scaling), Gemma2/Cohere (logit soft-capping) and Qwen3.5/Gemma3 (per-layer-type arguments), gets `build_hf_stage`. `tests/integration/test_hf_families.py` checks 24 families through the default routing.
 
 ### 5.1 Engine proxy (`engine_factory` seam)
 

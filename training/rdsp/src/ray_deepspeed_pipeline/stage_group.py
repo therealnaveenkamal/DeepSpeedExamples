@@ -16,6 +16,7 @@ from ray_deepspeed_pipeline.boundary import (
     rank_cell,
     rank_coords,
     representatives,
+    slice_inputs,
 )
 from ray_deepspeed_pipeline.errors import ValidationError
 from ray_deepspeed_pipeline.partition import select_stage_builder
@@ -92,7 +93,7 @@ class StageGroupClient:
             cell = rank_cell(self.grid, rank)
             refs.append(actor.run_step.remote(
                 command.generation, control["ops"], command.kind == "step",
-                inputs=[cell_slice(x, cell) for x in inputs] if inputs is not None else None,
+                inputs=[slice_inputs(x, cell) for x in inputs] if inputs is not None else None,
                 labels=[cell_slice(y, cell) for y in labels] if labels is not None else None))
         reps = representatives(self.grid)
 
@@ -184,7 +185,7 @@ def connect_p2p(clients, epoch: int) -> None:
 
 def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
                          use_gpu: bool | None = None, stage_builder=None,
-                         prefer_nodes: list | None = None):
+                         prefer_nodes: list | None = None, weights: str | None = None):
     """Start one actor group per plan stage and return their clients.
 
     Needs an attached Ray context. Each stage gets its own STRICT_PACK
@@ -192,7 +193,9 @@ def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
     the node's interconnect and its checkpoint shards land on one disk), its
     own rendezvous and its own stage-local world. prefer_nodes: per-stage node
     ids to reuse on a rebuild, so node-local shards stay reachable after an
-    actor (not node) failure. On any failure every started stage is shut down.
+    actor (not node) failure. weights: HF checkpoint dir each stage loads its
+    meta-device parameters from. On any failure every started stage is shut
+    down.
     """
     import ray
     from ray.util.placement_group import placement_group
@@ -245,7 +248,7 @@ def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
                     backend=backend, n_microbatches=plan.global_microbatches,
                     is_first=spec.index == 0, is_last=is_last,
                     loss_fn=loss_fn if is_last else None,
-                    engine_factory=engine_factory))
+                    engine_factory=engine_factory, weights=weights))
             clients.append(StageGroupClient(actors, stage=spec.index, grid=grid,
                                             is_last=is_last, placement_group=pg))
 

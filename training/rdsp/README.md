@@ -163,7 +163,7 @@ gradient clipping.
 ## Tests
 
 ```bash
-pytest -q            # CPU: full runtime on Ray with a torch stub engine (301 tests, ~5 min)
+pytest -q            # CPU: full runtime on Ray with a torch stub engine (336 tests, ~6 min)
 ruff check .
 modal run scripts/modal_tests.py --gpus L4:8 \
     --tests "tests/integration/test_p6_first_row.py tests/integration/test_p7_checkpoint_gpu.py tests/integration/test_heterogeneous_pipeline.py"
@@ -200,30 +200,47 @@ stage at 0.6B: 0.91–0.97×. Details: `docs/BENCHMARK_RESULTS.md`,
 Automatic split: longest `ModuleList` of same-class modules, cut by layer count
 (or `ExplicitCuts`). Stage builders:
 
-| Model shape | Builder | Status |
+| Model | Builder | Status |
 |---|---|---|
-| HF Llama-style causal LM (`embed_tokens`, `layers`, `norm`, `rotary_emb`, `lm_head`): Qwen3, Llama | `CausalLMStage` | supported |
+| Llama, Qwen3, Qwen3-MoE with SDPA/flash attention | `CausalLMStage` | GPU-validated, all intra-stage layouts |
+| Every other HF model (`config` attribute) | `HFModelStage` (`hf_stage.py`) | CPU-tested, DP/ZeRO stages only |
 | Plain sequential (each block takes only the previous output) | `GenericSequentialStage` | supported |
-| Anything else | — | not supported |
 
-Checked on tiny CPU configs (transformers 5.17):
+`HFModelStage` families trained on CPU through `rdsp.initialize()` (3 stages,
+middle one data-parallel, loss equal to the unsplit model over 2 steps,
+`tests/integration/test_hf_families.py`): Llama, Mistral, Qwen2, Qwen3,
+Qwen3-MoE, Qwen3.5, Mixtral, Gemma, Gemma2, Gemma3, Phi-3, OLMo2, Granite,
+Cohere, StarCoder2, StableLM, DeepSeek-V3, GLM-4, GLM-4-MoE, GPT-2, GPT-NeoX,
+Falcon, Bloom, Mamba; plus Qwen3-VL (`test_vl_pipeline.py`).
 
-| Model | Failure |
-|---|---|
-| Qwen3.5 | 3-D mRoPE position ids and per-layer-type masks; `CausalLMStage` passes 2-D ids → `IndexError` in rotary |
-| GLM-5.3 (`glm5_next`) | 4-stream hyper-connected hidden state, layers return `(hidden, topk_indices)`, no RoPE, vision encoder declared before the embedding → generic builder feeds token ids to the patch embed |
-| VL checkpoints | block-list heuristic picks `visual.blocks` when it is longer than the decoder, refuses on a tie |
+How it works: every stage runs the model's own `forward`. Blocks outside the
+stage return their input (shaped like the real blocks' output); modules whose
+parameters the stage does not own return their input, or zeros for an
+embedding. A pre-hook on each block injects what arrived from upstream; the
+stage's output is what the loop hands the next block, so work the model does
+between blocks counts and work after the last block (norm, head,
+soft-capping) does not.
 
-The driver builds the full model in CPU memory before slicing, so models of
-hundreds of billions of parameters cannot be loaded.
+Boundary: the hidden state plus the tensor arguments the model passes to each
+downstream block (rotary tables, masks, position ids, ALiBi); blocks receiving
+the same tensors share one entry. Extra traffic per token over the hidden
+state: 2 × head_dim values plus position ids, about 5% for Qwen3-VL-32B
+(head_dim 128, hidden 5120). Eager attention also sends a `[rows, 1, seq, seq]`
+mask; SDPA sends none. CPU cost of the hooks: about 0.1 ms per stage and
+microbatch.
 
-Planned fix: run the model's own `forward` on every stage; a pre-hook on the
-first local layer injects the tensors received from upstream (all positional and
-keyword tensor args), a hook on the last local layer captures the output and
-stops the forward; stages load only their own layers from safetensors onto a
-`meta`-initialised model. Covers any decoder whose forward loops over one layer
-list. Megatron-Core instead supports a fixed set of architectures re-implemented
-in its own model code.
+VL inputs: stage-0 inputs may be a dict. Row-shaped values are split per rank
+like any tensor; values that are not (`pixel_values`, `image_grid_thw`) are
+given as per-row lists and concatenated per rank. Qwen3-VL adds vision features
+inside its first blocks (deepstack), so the first cut must come after them.
+
+Per-stage weights: build the driver model with `accelerate.init_empty_weights()`
+and pass `rdsp.initialize(..., weights="<HF checkpoint dir>")`. Each stage reads
+only its own tensors from the safetensors files; the driver holds no weights.
+
+Not yet supported with `HFModelStage`: TP, SP and EP inside a stage (AutoTP
+plan and HF config are not attached); blocks that return more than the hidden
+state for the next block to use (GLM-5.3's `(hidden, topk_indices)`).
 
 ## Layout
 
@@ -235,6 +252,7 @@ src/ray_deepspeed_pipeline/
   schedule.py coordinator.py engine.py data.py           driver-side step
   stage_group.py                                         start-up, per-stage client
   stage_worker.py deepspeed_adapter.py p2p.py boundary.py per-GPU worker
+  hf_stage.py                                            HF model stages, per-stage weights
   checkpoint.py protocols.py errors.py support_matrix.py
 tests/                unit, contract, architecture, integration (GPU tests skip on CPU)
 scripts/              Modal harnesses for GPU tests

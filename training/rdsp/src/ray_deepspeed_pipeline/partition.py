@@ -233,24 +233,38 @@ def build_causal_lm_stage(model: nn.Module, block_start: int, block_stop: int,
 
 
 _CAUSAL_LM_PARTS = ("embed_tokens", "norm", "rotary_emb")
+# model types whose forward CausalLMStage reproduces, checked on GPU with
+# every intra-stage layout; other llama-shaped models differ in details it
+# would silently drop (Gemma's embedding scale, Gemma2's logit soft-capping)
+_CAUSAL_LM_TYPES = ("llama", "qwen3", "qwen3_moe")
 
 
 def select_stage_builder(model: nn.Module):
     """The stage builder a model needs, decided from its structure.
 
-    HF llama-style causal LMs (`embed_tokens`, `norm` and `rotary_emb` next to
-    the block list, `lm_head` at the top) get build_causal_lm_stage: their
-    layers take position embeddings, which the generic chain cannot supply.
-    Everything else gets build_stage_module. A rotary embedding without the
-    rest of that layout raises ValidationError, since the generic chain would
-    silently drop the positions."""
+    HF causal LMs of a _CAUSAL_LM_TYPES type with the llama-style layout
+    (`embed_tokens`, `norm` and `rotary_emb` next to the block list, `lm_head`
+    at the top) get build_causal_lm_stage, unless they use eager attention:
+    that stage passes no mask, which SDPA and flash attention read as causal
+    but eager attention reads as none. Other HF models (a `config`
+    attribute) get build_hf_stage, which runs the model's own forward.
+    Everything else gets build_stage_module. A rotary embedding outside an HF
+    model raises ValidationError, since the generic chain would silently drop
+    the positions."""
     blocks_name, _ = find_block_list(model)
     parent_path = blocks_name.rsplit(".", 1)[0] if "." in blocks_name else ""
     parent = model.get_submodule(parent_path) if parent_path else model
     present = {p for p in _CAUSAL_LM_PARTS if isinstance(getattr(parent, p, None), nn.Module)}
     has_head = isinstance(getattr(model, "lm_head", None), nn.Module)
-    if present == set(_CAUSAL_LM_PARTS) and has_head:
+    config = getattr(model, "config", None)
+    model_type = getattr(config, "model_type", None)
+    eager = getattr(config, "_attn_implementation", None) == "eager"
+    if (model_type in _CAUSAL_LM_TYPES and not eager
+            and present == set(_CAUSAL_LM_PARTS) and has_head):
         return build_causal_lm_stage
+    if hasattr(model, "config"):
+        from ray_deepspeed_pipeline.hf_stage import build_hf_stage  # imports this module
+        return build_hf_stage
     if "rotary_emb" in present:
         missing = [p for p in _CAUSAL_LM_PARTS if p not in present]
         if not has_head:

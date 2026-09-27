@@ -47,8 +47,8 @@ class StubEngine:
                 self.optimizer, step_size=1, gamma=gamma)
         self.global_steps = 0
 
-    def __call__(self, x):
-        return self.module(x)
+    def __call__(self, *args, **kwargs):
+        return self.module(*args, **kwargs)
 
     def backward(self, loss):
         # fault injection: while $RDSP_TEST_FAIL_BACKWARD names an existing

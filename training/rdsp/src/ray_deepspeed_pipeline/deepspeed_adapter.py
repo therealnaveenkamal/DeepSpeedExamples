@@ -133,6 +133,13 @@ def observed_mesh(engine) -> dict | None:
     return {k: v for k, v in mesh.items() if v is not None}
 
 
+def _to_device(x, device):
+    """A tensor, or a dict of tensors (first-stage inputs, boundary extras)."""
+    if isinstance(x, dict):
+        return {k: v.to(device) for k, v in x.items()}
+    return x.to(device) if x is not None else None
+
+
 def _all_reduce_sum(grad, group):
     grad = grad.clone()
     torch.distributed.all_reduce(grad, group=group)
@@ -223,7 +230,9 @@ class DeepSpeedStageAdapter:
 
     # -- forward ------------------------------------------------------------
 
-    def _call(self, x, position_offset):
+    def _call(self, x, position_offset, extras):
+        if extras:
+            return self.engine(x, extras=extras)
         if position_offset is None:
             return self.engine(x)
         # a sequence shard: rotary and Ulysses need its GLOBAL positions
@@ -231,24 +240,32 @@ class DeepSpeedStageAdapter:
                                     device=self.device).unsqueeze(0)
         return self.engine(x, position_ids=position_ids)
 
-    def forward(self, mb: int, x, labels=None, position_offset=None):
-        x = x.to(self.device)
+    def forward(self, mb: int, x, labels=None, position_offset=None, extras=None):
+        """Returns the loss on the last stage, otherwise the boundary output:
+        the hidden state, or (hidden, extras) if the stage module adds block
+        arguments for the next stage. x may be a dict on the first stage."""
+        x = _to_device(x, self.device)
         if not self.is_first:
             x = x.detach().requires_grad_(True)  # the cut
-        out = self._call(x, position_offset)
-        self._acts[mb] = (None if self.is_first else x, out)
+        out = self._call(x, position_offset, _to_device(extras, self.device))
+        hidden = out[0] if isinstance(out, tuple) else out
+        self._acts[mb] = (None if self.is_first else x, hidden)
         if self.is_last:
-            loss = self.loss_fn(out, labels.to(self.device))
+            loss = self.loss_fn(hidden, labels.to(self.device))
             self._losses[mb] = loss
             return float(loss.detach())
         return self._boundary(out)
 
-    def _boundary(self, t):
-        return t.detach()  # stays on the device: it leaves over NCCL
+    def _boundary(self, out):
+        # stays on the device: it leaves over NCCL
+        if isinstance(out, tuple):
+            return out[0].detach(), out[1]
+        return out.detach()
 
-    def eval_forward(self, mb: int, x, labels=None, position_offset=None):
+    def eval_forward(self, mb: int, x, labels=None, position_offset=None, extras=None):
         with torch.no_grad():
-            out = self._call(x.to(self.device), position_offset)
+            out = self._call(_to_device(x, self.device), position_offset,
+                             _to_device(extras, self.device))
             if self.is_last:
                 return float(self.loss_fn(out, labels.to(self.device)))
             return self._boundary(out)

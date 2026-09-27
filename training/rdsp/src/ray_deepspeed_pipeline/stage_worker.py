@@ -22,6 +22,7 @@ from ray_deepspeed_pipeline.boundary import (
 )
 from ray_deepspeed_pipeline.deepspeed_adapter import DeepSpeedStageAdapter, observed_mesh
 from ray_deepspeed_pipeline.errors import ValidationError
+from ray_deepspeed_pipeline.hf_stage import load_meta_parameters
 
 
 def _free_port() -> int:
@@ -36,7 +37,8 @@ class StageWorkerActor:
 
     def __init__(self, stage_module, ds_config_json: str, *, stage: int, rank: int,
                  grid: Grid, backend: str, n_microbatches: int,
-                 is_first: bool, is_last: bool, loss_fn=None, engine_factory=None):
+                 is_first: bool, is_last: bool, loss_fn=None, engine_factory=None,
+                 weights: str | None = None):
         self.stage, self.rank, self.grid = stage, rank, grid
         self.p2p = None
         self._p2p_store = None
@@ -44,7 +46,7 @@ class StageWorkerActor:
         self._init = dict(stage_module=stage_module, ds_config_json=ds_config_json,
                           backend=backend, n_microbatches=n_microbatches,
                           is_first=is_first, is_last=is_last, loss_fn=loss_fn,
-                          engine_factory=engine_factory)
+                          engine_factory=engine_factory, weights=weights)
         self.adapter = None
         self.executed = []  # command ids in execution order
         self.generation = None
@@ -64,6 +66,7 @@ class StageWorkerActor:
         os.environ["MASTER_ADDR"] = master_addr
         os.environ["MASTER_PORT"] = str(master_port)
         module = init["stage_module"]
+        load_meta_parameters(module, init["weights"])
         if init["backend"] == "nccl":
             torch.cuda.set_device(0)
             module = module.to("cuda")
@@ -97,10 +100,18 @@ class StageWorkerActor:
         if begin:
             self.adapter.begin_generation()
 
-    def _forward(self, kind: str, mb: int, x, labels):
+    def _forward(self, kind: str, mb: int, x, labels, extras):
         offset = self.cell.sp_index * x.shape[1] if self.grid.sp > 1 else None
         run = self.adapter.forward if kind == "forward" else self.adapter.eval_forward
-        return run(mb, x, labels=labels, position_offset=offset)
+        return run(mb, x, labels=labels, position_offset=offset, extras=extras)
+
+    def _receive_forward(self, sources, mb: int):
+        """This rank's cell of the upstream hidden state and extras."""
+        pieces = [(cell, self.p2p.recv_boundary("fwd", peer, mb)) for peer, cell in sources]
+        x = assemble([(cell, hidden) for cell, (hidden, _) in pieces], self.cell)
+        extras = {name: assemble([(cell, got[name]) for cell, (_, got) in pieces], self.cell)
+                  for name in pieces[0][1][1]}
+        return x, extras
 
     def execute(self, command_id: str, kind: str, generation=None, control=None):
         """Run one control command: apply, save or load (verify or load)."""
@@ -196,15 +207,15 @@ class StageWorkerActor:
                     continue
                 if kind in ("forward", "eval"):
                     if prev:
-                        x = assemble([(cell, p2p.recv("fwd", peer, mb))
-                                      for peer, cell in prev[0]], self.cell)
+                        x, extras = self._receive_forward(prev[0], mb)
                     else:
-                        x = inputs[mb]
+                        x, extras = inputs[mb], None
                     mb_labels = labels[mb] if labels is not None else None
-                    out = self._forward(kind, mb, x, mb_labels)
+                    out = self._forward(kind, mb, x, mb_labels, extras)
                     if next_:
+                        hidden, out_extras = out if isinstance(out, tuple) else (out, {})
                         for peer in next_[0]:
-                            p2p.send("fwd", out, peer, mb)
+                            p2p.send_boundary("fwd", hidden, out_extras, peer, mb)
                     else:
                         losses[mb] = out
                 else:  # backward

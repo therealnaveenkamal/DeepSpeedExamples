@@ -120,7 +120,7 @@ def test_through_public_initialize(ray_ctx, monkeypatch):
     """rdsp.initialize wired to the real Ray runtime (stub engines)."""
     from ray_deepspeed_pipeline import api
 
-    def factory(*, model, pipeline_config, ds_config, loss_fn):
+    def factory(*, model, pipeline_config, ds_config, loss_fn, weights=None):
         plan = lower(model, pipeline_config, ds_config)
         clients = create_stage_clients(model, plan, loss_fn,
                                        engine_factory=stub_engine_factory,

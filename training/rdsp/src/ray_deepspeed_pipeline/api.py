@@ -17,7 +17,7 @@ _RESERVED_CONFIG_KEYS = frozenset({
 })
 
 
-def _default_coordinator_factory(*, model, pipeline_config, ds_config, loss_fn):
+def _default_coordinator_factory(*, model, pipeline_config, ds_config, loss_fn, weights):
     """Lower to an ExecutionPlan and start stage actor groups in the current
     Ray context (never initializing one)."""
     from ray_deepspeed_pipeline.compiler import lower
@@ -26,12 +26,14 @@ def _default_coordinator_factory(*, model, pipeline_config, ds_config, loss_fn):
 
     config = ds_config if isinstance(ds_config, dict) else {}
     plan = lower(model, pipeline_config, config)
-    coordinator = PipelineCoordinator(plan, create_stage_clients(model, plan, loss_fn))
+    coordinator = PipelineCoordinator(plan, create_stage_clients(model, plan, loss_fn,
+                                                                weights=weights))
 
     def rebuild():
         # prefer each stage's previous node: its checkpoint shards may be node-local
         previous_nodes = [getattr(w, "node_id", None) for w in coordinator._workers]
-        return create_stage_clients(model, plan, loss_fn, prefer_nodes=previous_nodes)
+        return create_stage_clients(model, plan, loss_fn, weights=weights,
+                                    prefer_nodes=previous_nodes)
 
     coordinator._rebuild = rebuild
     return coordinator
@@ -108,11 +110,14 @@ def initialize(
     config=None,
     pipeline_config,
     loss_fn,
+    weights=None,
 ):
     """deepspeed.initialize() for a pipeline of stage actors.
 
     Returns (engine, None, training_dataloader_or_None, None): the optimizer and
-    scheduler live inside the stage actors, so they are never returned."""
+    scheduler live inside the stage actors, so they are never returned.
+    weights: an HF checkpoint directory; model parameters still on the meta
+    device are loaded from it by each stage, only the stage's own tensors."""
     if optimizer is not None:
         raise UnsupportedInV1(
             "optimizer must be None in v1: a driver-side optimizer object "
@@ -152,6 +157,7 @@ def initialize(
         pipeline_config=pipeline_config,
         ds_config=ds_config,
         loss_fn=loss_fn,
+        weights=weights,
     )
     engine = RayPipelineEngine(coordinator, training_dataloader)
     return engine, None, training_dataloader, None

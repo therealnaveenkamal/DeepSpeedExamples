@@ -78,7 +78,7 @@ def stub_runtime(ray_ctx, monkeypatch):
     the rebuild factory recovery uses."""
     made = []
 
-    def factory(*, model, pipeline_config, ds_config, loss_fn):
+    def factory(*, model, pipeline_config, ds_config, loss_fn, weights=None):
         plan = lower(model, pipeline_config, ds_config)
 
         def build():

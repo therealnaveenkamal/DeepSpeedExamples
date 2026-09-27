@@ -90,6 +90,26 @@ def cell_slice(tensor: torch.Tensor, cell: Cell) -> torch.Tensor:
     return out
 
 
+def slice_inputs(inputs, cell: Cell):
+    """The cell's share of a first-stage input: a tensor, or a dict whose
+    values are row-shaped tensors or per-row lists. A per-row list holds
+    values that are not row-shaped (a row's packed image patches); the cell's
+    rows are concatenated along dim 0."""
+    if not isinstance(inputs, dict):
+        return cell_slice(inputs, cell)
+    out = {}
+    for name, value in inputs.items():
+        if not isinstance(value, list):
+            out[name] = cell_slice(value, cell)
+            continue
+        if cell.sp > 1:
+            raise StepFailed(f"input {name!r} is given per row and cannot be "
+                             f"split across sequence shards")
+        r0, r1 = _span(cell.dp_index, cell.dp, len(value), "row")
+        out[name] = torch.cat(value[r0:r1])
+    return out
+
+
 def assemble(pieces: list[tuple[Cell, torch.Tensor]], dest: Cell) -> torch.Tensor:
     """Build dest's region from source pieces that together cover it."""
     if not pieces:

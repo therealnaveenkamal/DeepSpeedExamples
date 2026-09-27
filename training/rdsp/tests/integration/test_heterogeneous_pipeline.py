@@ -254,7 +254,7 @@ def runtime(ray_ctx, monkeypatch):
         if row.model != "toy":
             factory_kw["stage_builder"] = build_causal_lm_stage
 
-        def factory(*, model, pipeline_config, ds_config, loss_fn):
+        def factory(*, model, pipeline_config, ds_config, loss_fn, weights=None):
             plan = lower(model, pipeline_config, ds_config)
 
             def build():

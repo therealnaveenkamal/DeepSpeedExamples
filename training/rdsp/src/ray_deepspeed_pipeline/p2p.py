@@ -12,9 +12,11 @@ direction per group keeps each group's dependencies acyclic. Sends are async
 and kept alive until the step ends; receives block, and 1F1B order
 guarantees each one's matching send is eventually issued.
 
-Microbatches are equal-sized, so each (direction, peer) pair sends its shape
-header once per step; both ends walk microbatches in the same order, so they
-agree on which message carries it.
+Microbatches are equal-sized, so each (direction, peer, slot) sends its
+shape header once per step; both ends walk microbatches in the same order, so
+they agree on which message carries it. A forward boundary is the hidden state
+(slot 0) plus named extra tensors (slots 2+); the hidden state's header
+carries their count and slot 1 their names, once per step.
 """
 
 import datetime
@@ -23,17 +25,24 @@ import torch
 import torch.distributed as dist
 
 _DTYPES = [torch.float32, torch.bfloat16, torch.float16, torch.float64, torch.int64]
-_HEADER_LEN = 10  # dtype code, ndim, up to 8 dims
+_HEADER_LEN = 10  # dtype code, ndim, up to 7 dims, extras count
+_SLOTS = 64  # messages per microbatch and direction: hidden, extras' names, extras
 
 
-def _encode(t: torch.Tensor) -> torch.Tensor:
+def _tag(mb: int, slot: int) -> int:
+    return 2 * (mb * _SLOTS + slot)
+
+
+def _encode(t: torch.Tensor, n_extras: int = 0) -> torch.Tensor:
     header = [_DTYPES.index(t.dtype), t.dim(), *t.shape]
-    return torch.tensor(header + [0] * (_HEADER_LEN - len(header)), dtype=torch.int64)
+    assert len(header) < _HEADER_LEN, f"boundary tensors have at most 7 dims, got {t.dim()}"
+    header += [0] * (_HEADER_LEN - 1 - len(header)) + [n_extras]
+    return torch.tensor(header, dtype=torch.int64)
 
 
-def _decode(header: torch.Tensor) -> tuple[torch.dtype, tuple[int, ...]]:
+def _decode(header: torch.Tensor) -> tuple[torch.dtype, tuple[int, ...], int]:
     vals = header.tolist()
-    return _DTYPES[vals[0]], tuple(vals[2:2 + vals[1]])
+    return _DTYPES[vals[0]], tuple(vals[2:2 + vals[1]]), vals[-1]
 
 
 class PipelineP2P:
@@ -46,8 +55,9 @@ class PipelineP2P:
         self.fwd = self._group(dist.PrefixStore(f"e{epoch}/fwd", store), timeout)
         self.bwd = self._group(dist.PrefixStore(f"e{epoch}/bwd", store), timeout)
         self._pending = []       # (work, tensor) sends in flight this step
-        self._shapes = {}        # (direction, peer) -> (dtype, shape) received this step
-        self._announced = set()  # (direction, peer) already sent a header this step
+        self._shapes = {}        # (direction, peer, slot) -> decoded header, this step
+        self._announced = set()  # (direction, peer, slot) already sent a header this step
+        self._names = {}         # (direction, peer) -> extras' names, this step
 
     def _group(self, store, timeout):
         if self.device.type == "cuda":
@@ -76,6 +86,7 @@ class PipelineP2P:
     def begin_step(self) -> None:
         self._shapes.clear()
         self._announced.clear()
+        self._names.clear()
 
     def end_step(self) -> None:
         """Wait for every send of this step, so nothing crosses into the next."""
@@ -88,26 +99,49 @@ class PipelineP2P:
     def _pg(self, direction: str):
         return self.fwd if direction == "fwd" else self.bwd
 
-    def send(self, direction: str, t: torch.Tensor, peer: int, mb: int) -> None:
+    def send(self, direction: str, t: torch.Tensor, peer: int, mb: int,
+             slot: int = 0, n_extras: int = 0) -> None:
         pg = self._pg(direction)
         t = t.detach().contiguous()
-        if (direction, peer) not in self._announced:
-            self._announced.add((direction, peer))
-            header = _encode(t).to(self.device)
-            self._pending.append((pg.send([header], peer, 2 * mb), header))
-        self._pending.append((pg.send([t], peer, 2 * mb + 1), t))
+        if (direction, peer, slot) not in self._announced:
+            self._announced.add((direction, peer, slot))
+            header = _encode(t, n_extras).to(self.device)
+            self._pending.append((pg.send([header], peer, _tag(mb, slot)), header))
+        self._pending.append((pg.send([t], peer, _tag(mb, slot) + 1), t))
 
-    def recv(self, direction: str, peer: int, mb: int) -> torch.Tensor:
+    def recv(self, direction: str, peer: int, mb: int, slot: int = 0) -> torch.Tensor:
         pg = self._pg(direction)
-        key = (direction, peer)
+        key = (direction, peer, slot)
         if key not in self._shapes:
             header = torch.empty(_HEADER_LEN, dtype=torch.int64, device=self.device)
-            pg.recv([header], peer, 2 * mb).wait()
+            pg.recv([header], peer, _tag(mb, slot)).wait()
             self._shapes[key] = _decode(header.cpu())
-        dtype, shape = self._shapes[key]
+        dtype, shape, _ = self._shapes[key]
         buf = torch.empty(shape, dtype=dtype, device=self.device)
-        pg.recv([buf], peer, 2 * mb + 1).wait()
+        pg.recv([buf], peer, _tag(mb, slot) + 1).wait()
         return buf
+
+    def send_boundary(self, direction: str, hidden: torch.Tensor, extras: dict,
+                      peer: int, mb: int) -> None:
+        """The hidden state plus named extra tensors, which carry no gradient."""
+        assert len(extras) <= _SLOTS - 2, f"at most {_SLOTS - 2} extra tensors"
+        self.send(direction, hidden, peer, mb, n_extras=len(extras))
+        if extras and (direction, peer, 1) not in self._announced:
+            names = list(",".join(extras).encode())
+            self.send(direction, torch.tensor(names, dtype=torch.int64, device=self.device),
+                      peer, mb, slot=1)
+        for i, t in enumerate(extras.values()):
+            self.send(direction, t, peer, mb, slot=2 + i)
+
+    def recv_boundary(self, direction: str, peer: int, mb: int) -> tuple[torch.Tensor, dict]:
+        hidden = self.recv(direction, peer, mb)
+        if not self._shapes[(direction, peer, 0)][2]:
+            return hidden, {}
+        if (direction, peer) not in self._names:
+            names = self.recv(direction, peer, mb, slot=1).tolist()
+            self._names[(direction, peer)] = bytes(names).decode().split(",")
+        return hidden, {name: self.recv(direction, peer, mb, slot=2 + i)
+                        for i, name in enumerate(self._names[(direction, peer)])}
 
 
 def make_store(host: str, port: int, world: int, is_master: bool, timeout_s: float):

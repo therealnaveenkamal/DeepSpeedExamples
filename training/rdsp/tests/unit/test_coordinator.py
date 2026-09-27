@@ -164,7 +164,7 @@ def test_facade_integration_with_real_coordinator():
 
     model = ToyLM()
 
-    def factory(*, model, pipeline_config, ds_config, loss_fn):
+    def factory(*, model, pipeline_config, ds_config, loss_fn, weights=None):
         plan = lower(model, pipeline_config, ds_config)
         workers = [FakeStageWorker(s, s == len(plan.stages) - 1)
                    for s in range(len(plan.stages))]

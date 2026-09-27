@@ -15,6 +15,7 @@ from ray_deepspeed_pipeline.boundary import (
     rank_cell,
     rank_coords,
     representatives,
+    slice_inputs,
 )
 from ray_deepspeed_pipeline.errors import StepFailed
 
@@ -95,3 +96,30 @@ def test_p2p_routing_is_symmetric_and_complete(src, dest):
     for d in range(dest.world):
         cells = [c for _, c in p2p_sources(src, dest, d)]
         assert cells == overlapping_cells(src, rank_cell(dest, d))
+
+
+def test_stage_inputs_dict_split_per_rank():
+    """Row-shaped values are sliced like any boundary tensor; per-row lists
+    (images packed per row) are cut by row and concatenated per rank."""
+    ids = torch.arange(12).reshape(4, 3)
+    pixels = [torch.full((n, 2), float(r)) for r, n in enumerate((1, 0, 2, 3))]
+    inputs = {"input_ids": ids, "pixel_values": pixels}
+
+    first = slice_inputs(inputs, Cell(0, 2))
+    second = slice_inputs(inputs, Cell(1, 2))
+
+    assert torch.equal(first["input_ids"], ids[:2])
+    assert torch.equal(second["input_ids"], ids[2:])
+    assert first["pixel_values"].tolist() == [[0.0, 0.0]]
+    assert second["pixel_values"].tolist() == [[2.0, 2.0]] * 2 + [[3.0, 3.0]] * 3
+
+
+def test_stage_inputs_tensor_unchanged_behaviour():
+    x = torch.arange(8).reshape(4, 2)
+    assert torch.equal(slice_inputs(x, Cell(1, 2)), cell_slice(x, Cell(1, 2)))
+
+
+def test_per_row_lists_cannot_be_sequence_split():
+    inputs = {"input_ids": torch.zeros(2, 4), "pixel_values": [torch.zeros(1, 2)] * 2}
+    with pytest.raises(StepFailed, match="sequence"):
+        slice_inputs(inputs, Cell(0, 1, 0, 2))

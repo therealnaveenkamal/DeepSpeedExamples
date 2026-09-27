@@ -14,6 +14,7 @@ EXPECTED_PARAMS = [
     ("config", None),
     ("pipeline_config", inspect.Parameter.empty),
     ("loss_fn", inspect.Parameter.empty),
+    ("weights", None),
 ]
 
 
