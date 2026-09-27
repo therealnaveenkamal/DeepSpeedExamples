@@ -177,3 +177,37 @@ def test_glm5_blocks_handing_values_to_the_next_block(ray_ctx, hf_stages):
             stage_overrides=(StageOverride(stage=1, num_gpus=2),)))
     got = [float(engine.train_batch(data_iter=iter(batches()))) for _ in range(2)]
     assert got == pytest.approx(expected, rel=1e-4)
+
+
+def test_engine_gets_only_top_level_tensors():
+    """Under AutoTP, DeepSpeed's first-forward check that TP ranks got the
+    same inputs compares only top-level tensors; a nested dict makes it
+    raise on some ranks and hang the rest."""
+    from test_deepspeed_adapter import stub_engine_factory
+
+    from ray_deepspeed_pipeline.deepspeed_adapter import DeepSpeedStageAdapter
+    from ray_deepspeed_pipeline.partition import partition_parameters
+
+    model = tiny("llama")
+    parts = partition_parameters(model, rdsp.ExplicitCuts((3,)), 2)
+    stages = [build_hf_stage(model, p.block_start, p.block_stop, p.parameter_names)
+              for p in parts]
+    calls = []
+
+    def recording_factory(module, conf):
+        engine = stub_engine_factory(module, conf)
+        call = engine.__call__
+        engine.__class__ = type("Recording", (type(engine),), {
+            "__call__": lambda self, *a, **k: (calls.append((a, k)), call(*a, **k))[1]})
+        return engine
+
+    first = DeepSpeedStageAdapter(stages[0], {}, 1, is_first=True, is_last=False,
+                                  engine_factory=recording_factory)
+    last = DeepSpeedStageAdapter(stages[1], {}, 1, is_first=False, is_last=True,
+                                 loss_fn=lm_loss, engine_factory=recording_factory)
+    ids = batches()[0][0]
+    hidden, extras = first.forward(0, ids)
+    last.forward(0, hidden, labels=ids, extras=extras)
+    assert calls[1][1], "the second stage received block arguments"
+    for args, kwargs in calls:
+        assert all(torch.is_tensor(v) for v in (*args, *kwargs.values()))

@@ -163,7 +163,7 @@ gradient clipping.
 ## Tests
 
 ```bash
-pytest -q            # CPU: full runtime on Ray with a torch stub engine (336 tests, ~6 min)
+pytest -q            # CPU: full runtime on Ray with a torch stub engine (349 tests, ~6 min)
 ruff check .
 modal run scripts/modal_tests.py --gpus L4:8 \
     --tests "tests/integration/test_p6_first_row.py tests/integration/test_p7_checkpoint_gpu.py tests/integration/test_heterogeneous_pipeline.py"
@@ -171,6 +171,10 @@ modal run scripts/modal_tests.py --gpus L4:8 \
 
 GPU tests skip on CPU and run on Modal (billed). `scripts/modal_cluster.py` runs
 multi-node layouts.
+
+Last full GPU run, 2026-09-27: AWS g6.48xlarge (8×L4), torch 2.14 + CUDA 13.0,
+DeepSpeed 0.19.3 at `53a2ac4`, transformers 5.17. 40 passed, 2 skipped (the
+32-GPU four-stage row), after the flat-keyword fix above.
 
 ## Results (Qwen3-0.6B, H100, vs Megatron-Core 0.19.2)
 
@@ -203,7 +207,7 @@ Automatic split: longest `ModuleList` of same-class modules, cut by layer count
 | Model | Builder | Status |
 |---|---|---|
 | Llama, Qwen3, Qwen3-MoE with SDPA/flash attention | `CausalLMStage` | GPU-validated, all intra-stage layouts |
-| Every other HF model (`config` attribute) | `HFModelStage` (`hf_stage.py`) | CPU-tested; TP/SP/EP wired, GPU runs pending |
+| Every other HF model (`config` attribute) | `HFModelStage` (`hf_stage.py`) | 24 families + GLM-5.3 + Qwen3-VL CPU-tested; AutoTP, Ulysses SP, AutoEP+folding GPU-validated (Qwen3/Qwen3-MoE) |
 | Plain sequential (each block takes only the previous output) | `GenericSequentialStage` | supported |
 
 `HFModelStage` families trained on CPU through `rdsp.initialize()` (3 stages,
@@ -245,8 +249,10 @@ plan (or, for the ~80% of configs without one, such as Qwen3-VL, a plan for
 the standard `q/k/v/o_proj`, `gate/up/down_proj`, `q_norm/k_norm` names its
 blocks have) and the text config (Ulysses head counts, AutoEP settings).
 Ulysses SP is rejected on the first stage of a vision model: image positions
-need the whole sequence. GPU parity rows `p8-hf-autotp`,
-`p8-hf-sequence-parallel`, `p8-hf-autoep-folding` are written but not yet run.
+need the whole sequence. Boundary tensors reach the engine as flat keyword
+tensors: DeepSpeed's first-forward AutoTP check that TP ranks got identical
+inputs compares only top-level tensors, and a nested dict made it raise on
+some ranks and hang the others.
 
 ## Layout
 

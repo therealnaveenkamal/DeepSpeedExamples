@@ -233,14 +233,17 @@ class DeepSpeedStageAdapter:
     # -- forward ------------------------------------------------------------
 
     def _call(self, x, position_offset, extras):
-        if extras:
-            return self.engine(x, extras=extras)
-        if position_offset is None:
-            return self.engine(x)
-        # a sequence shard: rotary and Ulysses need its GLOBAL positions
-        position_ids = torch.arange(position_offset, position_offset + x.shape[1],
-                                    device=self.device).unsqueeze(0)
-        return self.engine(x, position_ids=position_ids)
+        # everything as flat keyword tensors: under AutoTP, DeepSpeed's
+        # first-forward check that TP ranks got the same inputs compares only
+        # top-level tensors and raises on a nested dict, on some ranks only
+        kwargs = dict(extras or {})
+        if position_offset is not None:
+            # a sequence shard: rotary and Ulysses need its GLOBAL positions
+            kwargs["position_ids"] = torch.arange(
+                position_offset, position_offset + x.shape[1], device=self.device).unsqueeze(0)
+        if isinstance(x, dict):
+            return self.engine(**x, **kwargs)
+        return self.engine(x, **kwargs)
 
     def forward(self, mb: int, x, labels=None, position_offset=None, extras=None):
         """Returns the loss on the last stage, otherwise the boundary output:

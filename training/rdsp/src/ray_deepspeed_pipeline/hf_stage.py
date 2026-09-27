@@ -137,10 +137,11 @@ def _unpack(extras: dict) -> dict:
 
 
 class HFModelStage(nn.Module):
-    """forward(x, extras=None). Stage 0: x is the model's inputs (a dict, or
-    input ids). Later stages: x is the hidden state and `extras` the block
-    arguments from upstream. Returns the logits on the last stage, otherwise
-    (hidden, extras) for the next stage."""
+    """forward(x=None, position_ids=None, **kwargs). Stage 0: the model's
+    inputs, as x (input ids) or as keyword tensors. Later stages: x is the
+    hidden state and the keyword tensors are the block arguments from
+    upstream (their keys contain "/"). Returns the logits on the last stage,
+    otherwise (hidden, extras) for the next stage."""
 
     def __init__(self, model, blocks_name: str, block_start: int, block_stop: int,
                  is_first: bool, is_last: bool, block_form: list):
@@ -205,10 +206,12 @@ class HFModelStage(nn.Module):
             return x
         return x.new_zeros(*x.shape[:2], dim)
 
-    def forward(self, x, extras=None, position_ids=None):
+    def forward(self, x=None, position_ids=None, **kwargs):
         """position_ids: a sequence shard's global positions (Ulysses SP)."""
         self._install_hooks()
-        extras = extras or {}
+        extras = {k: v for k, v in kwargs.items() if "/" in k or k == _FORM_KEY}
+        if x is None:
+            x = {k: v for k, v in kwargs.items() if k not in extras}
         if self._block_form[0] is None and _FORM_KEY in extras:
             self._block_form[0] = int(extras[_FORM_KEY][0, 0])  # once: it syncs
         self._input, self._received, self._downstream = x, _unpack(extras), {}
