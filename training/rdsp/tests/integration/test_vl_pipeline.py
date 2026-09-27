@@ -235,3 +235,21 @@ def test_sequence_parallel_first_stage_of_a_vision_model_rejected():
         lower(model, rdsp.PipelineConfig(
             stages=2, partition=rdsp.ExplicitCuts((3,)),
             stage_overrides=(StageOverride(stage=0, num_gpus=2, sp=2),)), DS)
+
+
+def test_tied_checkpoint_loads_into_an_untied_skeleton(ray_ctx, stub_engines, tmp_path):
+    """Qwen3-VL-2B ties its embeddings, so its checkpoint has no lm_head.
+    rdsp needs them untied (they sit on different stages); the head is then
+    loaded from the embedding the model's tied-weights map names."""
+    accelerate = pytest.importorskip("accelerate")
+    tied_cfg = tiny_qwen3_vl()
+    tied_cfg.tie_word_embeddings = tied_cfg.text_config.tie_word_embeddings = True
+    torch.manual_seed(4)
+    tied = transformers.Qwen3VLForConditionalGeneration(tied_cfg).float()
+    tied.save_pretrained(tmp_path)
+    expected = unsplit_losses(tied, make_batches(), steps=1)
+
+    with accelerate.init_empty_weights():
+        skeleton = transformers.Qwen3VLForConditionalGeneration(tiny_qwen3_vl()).float()
+    got = pipelined_losses(skeleton, (3,), steps=1, weights=str(tmp_path))
+    assert got == pytest.approx(expected, rel=1e-4)

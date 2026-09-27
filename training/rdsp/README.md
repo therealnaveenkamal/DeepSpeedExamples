@@ -24,6 +24,7 @@ python train.py --stages 4 --cuts 7,14,21 \
     --stage 0:gpus=2,zero=2 --stage 1:gpus=2,tp=2 \
     --stage 2:gpus=2,sp=2  --stage 3:gpus=2          # 8 GPUs, four layouts (not yet run at this size)
 python demo.py                            # CPU only, ~10 s, pipeline vs unsplit model
+python train_vl.py --stages 3 --stage 0:gpus=2 --check   # Qwen3-VL-2B, image-caption rows
 ```
 
 `train.py` flags:
@@ -258,6 +259,7 @@ some ranks and hang the others.
 
 ```
 train.py, run.sh      training example
+train_vl.py           vision-language example (Qwen3-VL, weights loaded per stage)
 demo.py               CPU walkthrough
 src/ray_deepspeed_pipeline/
   api.py config.py compiler.py plan.py partition.py     planning

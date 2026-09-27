@@ -325,9 +325,15 @@ def load_meta_parameters(stage: nn.Module, weights_dir: str | None) -> None:
             "buffers are on the meta device too; build the model skeleton with "
             "accelerate.init_empty_weights(), which keeps buffers real")
     files = _checkpoint_files(weights_dir)
+    # a tied checkpoint stores only one of each tied pair (Qwen3-VL-2B has no
+    # lm_head); the untied copy is read from the tensor it was tied to
+    tied = getattr(stage.model, "_tied_weights_keys", None)
+    tied = tied if isinstance(tied, dict) else {}
     by_file = {}
     for name, param in meta:
         key = name.removeprefix("model.")
+        if key not in files:
+            key = tied.get(key, key)
         if key not in files:
             raise ValidationError(f"{key!r} is not in the checkpoint at {weights_dir!r}")
         by_file.setdefault(files[key], []).append((name, key, param))
