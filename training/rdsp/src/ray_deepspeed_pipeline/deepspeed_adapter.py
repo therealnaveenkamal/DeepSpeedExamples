@@ -16,6 +16,12 @@ import json
 
 import torch
 
+# TP plan style -> AutoTP layer spec fields
+_TP_SPECS = {"colwise": {"partition_type": "column"},
+             "rowwise": {"partition_type": "row"},
+             "colwise_gather_output": {"partition_type": "column", "gather_output": True},
+             "qkv_colwise": {"partition_type": "column", "shape": [3, -1]}}
+
 
 def _tp_partition_config(stage_module) -> dict | None:
     """DeepSpeed AutoTP layer rules from the stage's HF TP plan, or None.
@@ -23,11 +29,11 @@ def _tp_partition_config(stage_module) -> dict | None:
     plan = getattr(stage_module, "_tp_plan", None) or {}
     specs = []
     for pattern, style in plan.items():
-        if ".experts" in pattern or style.lower() not in ("colwise", "rowwise"):
+        style = style.lower()
+        if ".experts" in pattern or style not in _TP_SPECS:
             continue
         regex = ".*" + pattern.replace(".", r"\.").replace("*", r"[^.]+") + r"\.weight$"
-        specs.append({"patterns": [regex],
-                      "partition_type": "column" if style.lower() == "colwise" else "row"})
+        specs.append({"patterns": [regex], **_TP_SPECS[style]})
     return {"use_default_specs": False, "layer_specs": specs} if specs else None
 
 

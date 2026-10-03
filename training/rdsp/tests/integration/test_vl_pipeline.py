@@ -46,6 +46,29 @@ def tiny_qwen3_vl():
     return cfg
 
 
+def tiny_qwen3_5_vl():
+    """Qwen3.5: linear-attention (Gated DeltaNet) and full-attention layers,
+    and a vision encoder with no deepstack, so nothing it computes enters the
+    decoder past the input embeddings."""
+    cfg = transformers.Qwen3_5Config(
+        text_config=dict(vocab_size=VOCAB, hidden_size=64, intermediate_size=128,
+                         num_hidden_layers=6, num_attention_heads=4, num_key_value_heads=2,
+                         head_dim=16, linear_num_key_heads=2, linear_num_value_heads=4,
+                         linear_key_head_dim=16, linear_value_head_dim=16,
+                         layer_types=["linear_attention", "linear_attention",
+                                      "full_attention"] * 2,
+                         rope_parameters={"rope_type": "default", "rope_theta": 10000.0,
+                                          "mrope_section": [2, 1, 1], "mrope_interleaved": True,
+                                          "partial_rotary_factor": 0.5}),
+        vision_config=dict(depth=4, hidden_size=32, intermediate_size=64, num_heads=2,
+                           out_hidden_size=64, patch_size=4, spatial_merge_size=2,
+                           temporal_patch_size=1, num_position_embeddings=16),
+        image_token_id=IMAGE_PAD, video_token_id=251, vision_start_token_id=VISION_START,
+        tie_word_embeddings=False)
+    cfg._attn_implementation = "sdpa"
+    return cfg
+
+
 def make_batches(seed=0):
     """N_MB microbatches of ROWS rows, one image per row at the same place, so
     every row has the same number of masked label positions."""
@@ -154,6 +177,25 @@ def test_data_parallel_vision_stage_matches_unsplit_model(ray_ctx, stub_engines)
     assert got == pytest.approx(expected, rel=1e-4)
 
 
+def qwen3_5_vl_pair(seed):
+    """A tiny Qwen3.5-VL and an identical copy for the unsplit reference."""
+    torch.manual_seed(seed)
+    model = transformers.Qwen3_5ForConditionalGeneration(tiny_qwen3_5_vl()).float()
+    reference = transformers.Qwen3_5ForConditionalGeneration(tiny_qwen3_5_vl()).float()
+    reference.load_state_dict(model.state_dict())
+    return model, reference
+
+
+@pytest.mark.skipif(not hasattr(transformers, "Qwen3_5ForConditionalGeneration"),
+                    reason="transformers without Qwen3.5")
+def test_qwen3_5_vl_with_data_parallel_vision_stage_matches_unsplit_model(ray_ctx, stub_engines):
+    model, reference = qwen3_5_vl_pair(seed=6)
+    expected = unsplit_losses(reference, make_batches(), steps=2)
+    got = pipelined_losses(model, (1, 4), steps=2,
+                           overrides=(StageOverride(stage=0, num_gpus=2),))
+    assert got == pytest.approx(expected, rel=1e-4)
+
+
 def test_meta_skeleton_loads_weights_per_stage(ray_ctx, stub_engines, tmp_path):
     """The driver holds only a meta-device skeleton; each stage reads its own
     tensors from the checkpoint directory and trains like the real model."""
@@ -223,6 +265,40 @@ def test_hf_stage_carries_what_intra_stage_parallelism_needs():
     assert stage._tp_plan["layers.*.self_attn.q_proj"] == "colwise"
     assert stage._tp_plan["layers.*.self_attn.o_proj"] == "rowwise"
     assert stage._rdsp_hf_config.num_attention_heads == 4
+
+
+@pytest.mark.skipif(not hasattr(transformers, "Qwen3_5ForConditionalGeneration"),
+                    reason="transformers without Qwen3.5")
+def test_tensor_parallel_rules_cover_the_vision_encoder_and_linear_attention():
+    """Under AutoTP the first stage splits its vision blocks too (fused qkv
+    by thirds), not only the decoder; linear-attention projections split
+    their output and gather it. The patch merger stays whole."""
+    autotp = pytest.importorskip("deepspeed.module_inject.autotp_config")
+    from ray_deepspeed_pipeline.deepspeed_adapter import _tp_partition_config
+    from ray_deepspeed_pipeline.hf_stage import build_hf_stage
+    from ray_deepspeed_pipeline.partition import partition_parameters
+
+    model = transformers.Qwen3_5ForConditionalGeneration(tiny_qwen3_5_vl())
+    part = partition_parameters(model, rdsp.ExplicitCuts((3,)), 2)[0]
+    stage = build_hf_stage(model, 0, 3, part.parameter_names)
+    rules = autotp.AutoTPConfig.from_dict(_tp_partition_config(stage))
+
+    def spec(name):
+        found = rules.find_matching_spec(f"model.{name}.weight", None)
+        if found is None:
+            return None
+        return (found.partition_type.value, found.shape, found.gather_output)
+
+    visual = "model.visual.blocks.1"
+    assert spec(f"{visual}.attn.qkv") == ("column", (3, -1), False)
+    assert spec(f"{visual}.attn.proj") == ("row", None, False)
+    assert spec(f"{visual}.mlp.linear_fc1") == ("column", None, False)
+    assert spec(f"{visual}.mlp.linear_fc2") == ("row", None, False)
+    assert spec("model.visual.merger.linear_fc1") is None
+    text = "model.language_model.layers"
+    assert spec(f"{text}.0.linear_attn.in_proj_qkv") == ("column", None, True)
+    assert spec(f"{text}.2.self_attn.q_proj") == ("column", None, False)
+    assert spec(f"{text}.2.mlp.down_proj") == ("row", None, False)
 
 
 def test_sequence_parallel_first_stage_of_a_vision_model_rejected():

@@ -282,7 +282,10 @@ def build_hf_stage(model: nn.Module, block_start: int, block_stop: int,
     # (Ulysses) and MoE settings (AutoEP), all on the text model's config
     config = getattr(model, "config", None)
     text_config = config.get_text_config() if hasattr(config, "get_text_config") else config
-    plan = getattr(text_config, "base_model_tp_plan", None) or _standard_tp_plan(model, blocks)
+    plan = dict(getattr(text_config, "base_model_tp_plan", None)
+                or _standard_tp_plan(blocks_name, blocks, _STANDARD_TP))
+    for name, vision_blocks in _vision_block_lists(model, blocks_name):
+        plan.update(_standard_tp_plan(name, vision_blocks, _VISION_TP))
     attach_tp_plan(stage, plan)
     stage._rdsp_hf_config = text_config
     return stage
@@ -299,12 +302,31 @@ _STANDARD_TP = {"self_attn.q_proj": "colwise", "self_attn.k_proj": "colwise",
                 "self_attn.k_norm": "replicated_with_grad_allreduce"}
 
 
-def _standard_tp_plan(model: nn.Module, blocks) -> dict:
-    """A TP plan for models whose config has none (most do not, e.g.
-    Qwen3-VL): the standard projections that every block has."""
+# the same for vision encoder blocks (Qwen-VL family); qkv is one fused
+# projection, split by thirds so every rank keeps whole heads of q, k and v
+_VISION_TP = {"attn.qkv": "qkv_colwise", "attn.proj": "rowwise",
+              "mlp.linear_fc1": "colwise", "mlp.linear_fc2": "rowwise"}
+
+
+def _standard_tp_plan(blocks_name: str, blocks, table: dict) -> dict:
+    """TP plan entries for a block list from `table`: the projections that
+    every block has. Used for decoders whose config has no plan (most, e.g.
+    Qwen3-VL), and for vision encoders, which never have one."""
     names = [{n for n, _ in block.named_modules()} for block in blocks]
-    return {f"layers.*.{name}": style for name, style in _STANDARD_TP.items()
+    prefix = blocks_name.rsplit(".", 1)[-1]
+    return {f"{prefix}.*.{name}": style for name, style in table.items()
             if all(name in block_names for block_names in names)}
+
+
+def _vision_block_lists(model: nn.Module, blocks_name: str) -> list:
+    """(name, ModuleList) of a vision model's other block lists: lists of
+    >=2 same-class blocks outside the decoder's."""
+    if getattr(getattr(model, "config", None), "vision_config", None) is None:
+        return []
+    return [(name, module) for name, module in model.named_modules()
+            if isinstance(module, nn.ModuleList) and len(module) >= 2
+            and len({type(b) for b in module}) == 1
+            and name != blocks_name and not name.startswith(blocks_name + ".")]
 
 
 def _checkpoint_files(weights_dir: str) -> dict:

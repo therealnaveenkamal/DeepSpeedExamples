@@ -389,16 +389,20 @@ def select_stage_builder(model: nn.Module):
     return build_stage_module
 
 
+_TP_STYLES = ("colwise", "rowwise", "colwise_gather_output", "qkv_colwise")
+
+
 def attach_tp_plan(stage: nn.Module, plan: dict | None) -> None:
     """Carry an HF tensor-parallel plan onto a stage module.
 
-    Only colwise/rowwise entries are kept: anything else makes AutoTP fall
-    back to model-type presets, which do not recognize a stage module.
-    `replicated_with_grad_allreduce` entries (Qwen3's q_norm/k_norm) stay
-    replicated but see per-rank heads, so they are listed in
-    `_rdsp_tp_grad_allreduce` for the adapter's TP gradient all-reduce."""
+    Kept: colwise, rowwise, colwise_gather_output (split the output, then
+    gather it on every rank: Qwen3.5's linear-attention projections) and
+    qkv_colwise (a fused q/k/v projection split by thirds). Anything else
+    makes AutoTP fall back to model-type presets, which do not recognize a
+    stage module. `replicated_with_grad_allreduce` entries (Qwen3's
+    q_norm/k_norm) stay replicated but see per-rank heads, so they are listed
+    in `_rdsp_tp_grad_allreduce` for the adapter's TP gradient all-reduce."""
     plan = dict(plan or {})
-    stage._tp_plan = {k: v for k, v in plan.items()
-                      if v.lower() in ("colwise", "rowwise")}
+    stage._tp_plan = {k: v for k, v in plan.items() if v.lower() in _TP_STYLES}
     stage._rdsp_tp_grad_allreduce = tuple(
         k for k, v in plan.items() if v.lower() == "replicated_with_grad_allreduce")
