@@ -23,6 +23,17 @@ _TP_SPECS = {"colwise": {"partition_type": "column"},
              "qkv_colwise": {"partition_type": "column", "shape": [3, -1]}}
 
 
+def _autotp_can_gather() -> bool:
+    """Whether this DeepSpeed's AutoTP layer specs take gather_output (older
+    versions ignore the key and leave the output split)."""
+    import dataclasses
+    try:
+        from deepspeed.module_inject.autotp_config import TPLayerSpec
+    except ImportError:
+        return False
+    return "gather_output" in {f.name for f in dataclasses.fields(TPLayerSpec)}
+
+
 def _tp_partition_config(stage_module) -> dict | None:
     """DeepSpeed AutoTP layer rules from the stage's HF TP plan, or None.
     Expert weights are AutoEP's and never TP-split."""
@@ -32,9 +43,31 @@ def _tp_partition_config(stage_module) -> dict | None:
         style = style.lower()
         if ".experts" in pattern or style not in _TP_SPECS:
             continue
+        if _TP_SPECS[style].get("gather_output") and not _autotp_can_gather():
+            continue  # left whole: correct, just not split
         regex = ".*" + pattern.replace(".", r"\.").replace("*", r"[^.]+") + r"\.weight$"
         specs.append({"patterns": [regex], **_TP_SPECS[style]})
     return {"use_default_specs": False, "layer_specs": specs} if specs else None
+
+
+def _keep_unsplit_module_sizes(stage_module, rules: dict) -> None:
+    """Mark every module that directly holds no projection the AutoTP rules
+    split as already handled, so AutoTP leaves its size attributes
+    (embed_dim, hidden_size, num_heads, ...) whole. Some DeepSpeed versions
+    divide them on every module they walk, which breaks modules that read
+    them in forward but keep their weights whole (a vision patch embedding,
+    a patch merger)."""
+    import re
+
+    patterns = [re.compile(p) for spec in rules["layer_specs"] for p in spec["patterns"]]
+    for name, module in stage_module.named_modules():
+        if isinstance(module, torch.nn.Linear):
+            continue
+        split = any(isinstance(child, torch.nn.Linear)
+                    and any(p.match(f"{name}.{child_name}.weight") for p in patterns)
+                    for child_name, child in module.named_children())
+        if not split:
+            module.replaced = True
 
 
 def _ulysses_mpu(stage_module, micro_batch_size: int, sp: int, backend: str):
@@ -84,6 +117,7 @@ def _deepspeed_engine_factory(stage_module, ds_config: dict):
         rules = _tp_partition_config(stage_module)
         if rules is not None:
             tp_conf["partition_config"] = rules
+            _keep_unsplit_module_sizes(stage_module, rules)
 
     sp = int(conf.get("sequence_parallel_size", 1) or 1)
     if sp > 1:

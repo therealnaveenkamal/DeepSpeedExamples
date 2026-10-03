@@ -32,6 +32,14 @@ from ray_deepspeed_pipeline.hf_stage import load_meta_parameters
 _VISION_FILE = "colocated_vision.pt"
 
 
+def _channel(source: int, dest: int) -> str:
+    """The p2p group for a message between two global ranks: towards higher
+    ranks on "fwd", lower on "bwd", like the pipeline's own traffic. NCCL
+    runs a rank pair's sends and receives in issue order, so two ranks that
+    both send before receiving on one group would wait on each other."""
+    return "fwd" if source < dest else "bwd"
+
+
 def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("", 0))
@@ -217,6 +225,8 @@ class StageWorkerActor:
         self.p2p = PipelineP2P(self._p2p_store, global_rank, offsets[-1], epoch, timeout_s,
                                self.adapter.device, collective=self.vision is not None)
         self._warm_up_links()
+        if self.vision is not None:
+            self._warm_up_vision_links()
         return True
 
     def _peers(self):
@@ -250,6 +260,26 @@ class StageWorkerActor:
         if next_:
             for peer, _ in next_[1]:
                 self.p2p.recv("bwd", peer, 0)
+        self.p2p.end_step()
+
+    def _warm_up_vision_links(self):
+        """Colocated vision sends between every first-stage rank and every
+        other rank, both ways. NCCL sets up a rank pair's link on first use,
+        with both ranks taking part; doing it here, pair by pair in one
+        global order, keeps two ranks from each waiting on the other's
+        setup inside a step."""
+        me, world, first = self._global_rank(), self._offsets[-1], self._grids[0].world
+        pairs = sorted({(min(a, b), max(a, b)) for a in range(first) for b in range(world)
+                        if a != b})
+        dummy = torch.zeros(1, device=self.adapter.device)
+        self.p2p.begin_step()
+        for low, high in pairs:
+            if me == low:
+                self.p2p.send("fwd", dummy, high, 0)
+                self.p2p.recv("bwd", high, 0)
+            elif me == high:
+                self.p2p.recv("fwd", low, 0)
+                self.p2p.send("bwd", dummy, low, 0)
         self.p2p.end_step()
 
     def run_step(self, generation: int, ops: list, train: bool, inputs=None,
@@ -337,11 +367,12 @@ class StageWorkerActor:
         for image, _, _, dests, _ in vision["own"]:
             for dest in dests:
                 if dest != me:
-                    p2p.send_sized("fwd", features[image], dest, image)
+                    p2p.send_sized(_channel(me, dest), features[image], dest, image)
         per_mb = collections.defaultdict(list)
         self._image_rows = []  # (microbatch, image, owner, feature rows) for the way back
         for mb, image, owner in vision["need"]:
-            got = features[image] if owner == me else p2p.recv_sized("fwd", owner, image)
+            got = (features[image] if owner == me
+                   else p2p.recv_sized(_channel(owner, me), owner, image))
             per_mb[mb].append(got)
             self._image_rows.append((mb, image, owner, got.shape[0]))
         return {mb: torch.cat(parts) for mb, parts in per_mb.items()}
@@ -363,10 +394,10 @@ class StageWorkerActor:
                     if owner == me:
                         mine[image] = grad
                     else:
-                        p2p.send_sized("bwd", grad, owner, image)
+                        p2p.send_sized(_channel(me, owner), grad, owner, image)
         for image, _, _, _, source in vision["own"]:
             if source != me:
-                mine[image] = p2p.recv_sized("bwd", source, image)
+                mine[image] = p2p.recv_sized(_channel(source, me), source, image)
         self.vision.backward(mine)
         # the first stage's gradients carry its data-parallel degree
         self.vision.reduce_gradients(p2p.all, divide_by=self._grids[0].dp)

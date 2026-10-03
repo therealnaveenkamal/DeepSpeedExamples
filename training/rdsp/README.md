@@ -195,10 +195,14 @@ encoders whose output enters only the input embeddings (Qwen3.5); Qwen3-VL's
 deepstack features enter its first blocks, so it keeps the encoder on the first
 stage. bf16 or fp32, not fp16.
 
+All three placements match the unsplit model on 4×L40S with real DeepSpeed
+(`tests/integration/test_vl_layouts_gpu.py`, tiny Qwen3.5-VL, fp32, SGD):
+shared layout TP2·TP2, vision stage DP2 then TP2, colocated with TP2·DP2.
+
 ## Tests
 
 ```bash
-pytest -q            # CPU: full runtime on Ray with a torch stub engine (371 tests, ~7 min)
+pytest -q            # CPU: full runtime on Ray with a torch stub engine (373 tests, ~7 min)
 ruff check .
 modal run scripts/modal_tests.py --gpus L4:8 \
     --tests "tests/integration/test_p6_first_row.py tests/integration/test_p7_checkpoint_gpu.py tests/integration/test_heterogeneous_pipeline.py"

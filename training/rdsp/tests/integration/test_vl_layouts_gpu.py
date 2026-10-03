@@ -30,6 +30,10 @@ from test_vl_pipeline import lm_loss, make_batches, tiny_qwen3_5_vl  # noqa: E40
 import ray_deepspeed_pipeline as rdsp  # noqa: E402
 from ray_deepspeed_pipeline.config import StageOverride  # noqa: E402
 
+# first steps compile the linear-attention Triton kernels, which takes far
+# longer than the CPU suite's stage-to-stage wait (tests/conftest.py)
+os.environ["RDSP_P2P_TIMEOUT_S"] = "600"
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 N_MB, ROWS, LR = 2, 2, 0.05
 DS = {"train_batch_size": N_MB * ROWS, "gradient_accumulation_steps": N_MB,
@@ -40,7 +44,7 @@ DS = {"train_batch_size": N_MB * ROWS, "gradient_accumulation_steps": N_MB,
 LAYOUTS = {
     "shared-layout": dict(cuts=(3,), overrides=(StageOverride(stage=0, num_gpus=2, tp=2),
                                                 StageOverride(stage=1, num_gpus=2, tp=2))),
-    "vision-stage": dict(cuts=(0, 3), overrides=(StageOverride(stage=0, num_gpus=2),
+    "vision-stage": dict(cuts=(0,), overrides=(StageOverride(stage=0, num_gpus=2),
                                                  StageOverride(stage=1, num_gpus=2, tp=2))),
     "colocated": dict(cuts=(3,), overrides=(StageOverride(stage=0, num_gpus=2, tp=2),
                                             StageOverride(stage=1, num_gpus=2)),
@@ -48,8 +52,9 @@ LAYOUTS = {
 }
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture()
 def ray_ctx():
+    """A fresh Ray per case: a failed case's actors cannot hold the GPUs."""
     unit = os.path.abspath(os.path.join(HERE, "..", "unit"))
     ray.init(include_dashboard=False, log_to_driver=False,
              runtime_env={"env_vars": {"PYTHONPATH": f"{HERE}:{unit}"}})

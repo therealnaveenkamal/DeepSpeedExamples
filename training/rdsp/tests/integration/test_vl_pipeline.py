@@ -456,6 +456,46 @@ def test_tensor_parallel_rules_cover_the_vision_encoder_and_linear_attention():
     assert spec(f"{text}.2.mlp.down_proj") == ("row", None, False)
 
 
+@needs_qwen3_5
+def test_gathered_projections_stay_whole_where_autotp_cannot_gather(monkeypatch):
+    """A DeepSpeed whose AutoTP has no gather_output would split those
+    projections and silently skip the gather; they stay whole instead."""
+    from ray_deepspeed_pipeline import deepspeed_adapter
+    from ray_deepspeed_pipeline.hf_stage import build_hf_stage
+    from ray_deepspeed_pipeline.partition import partition_parameters
+
+    model = transformers.Qwen3_5ForConditionalGeneration(tiny_qwen3_5_vl())
+    part = partition_parameters(model, rdsp.ExplicitCuts((3,)), 2)[0]
+    stage = build_hf_stage(model, 0, 3, part.parameter_names)
+    monkeypatch.setattr(deepspeed_adapter, "_autotp_can_gather", lambda: False)
+    specs = deepspeed_adapter._tp_partition_config(stage)["layer_specs"]
+    assert not any("linear_attn" in p for spec in specs for p in spec["patterns"])
+    assert any("self_attn" in p for spec in specs for p in spec["patterns"])
+
+
+@needs_qwen3_5
+def test_tensor_parallel_resizes_only_modules_holding_split_projections():
+    """AutoTP divides size attributes (num_heads, embed_dim, hidden_size) of
+    the modules it walks; some DeepSpeed versions do so even where nothing
+    was split. The patch embedding and merger read theirs in forward, so
+    only modules holding a split projection may be resized."""
+    from ray_deepspeed_pipeline.deepspeed_adapter import (
+        _keep_unsplit_module_sizes,
+        _tp_partition_config,
+    )
+    from ray_deepspeed_pipeline.hf_stage import build_hf_stage
+    from ray_deepspeed_pipeline.partition import partition_parameters
+
+    model = transformers.Qwen3_5ForConditionalGeneration(tiny_qwen3_5_vl())
+    part = partition_parameters(model, rdsp.ExplicitCuts((3,)), 2)[0]
+    stage = build_hf_stage(model, 0, 3, part.parameter_names)
+    _keep_unsplit_module_sizes(stage, _tp_partition_config(stage))
+    visual = stage.model.model.visual
+    assert visual.patch_embed.replaced and visual.merger.replaced
+    assert not getattr(visual.blocks[0].attn, "replaced", False)  # num_heads must shrink
+    assert not getattr(stage.model.model.language_model.layers[2].self_attn, "replaced", False)
+
+
 def test_sequence_parallel_first_stage_of_a_vision_model_rejected():
     """Image positions depend on the whole sequence, which a sequence shard
     of stage 0 does not have."""
