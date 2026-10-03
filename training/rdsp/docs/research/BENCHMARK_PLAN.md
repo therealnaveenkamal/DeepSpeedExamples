@@ -1,6 +1,33 @@
 # Benchmark plan: rdsp vs NVIDIA Megatron pipeline parallelism
 
-## Active phase (2026-09-26): 30B vision-language on one node
+## Next phase (2026-10-03): placement-matched comparison with MegatronMIMO
+
+MegatronMIMO (Megatron-LM, arXiv 2605.27678) gives the vision encoder and the
+LLM separate layouts, either on shared GPUs (colocated) or on disjoint ones
+(non-colocated). rdsp now has the same three placements, so every MIMO run
+gets an rdsp run with the identical GPU layout:
+
+| Placement | MIMO | rdsp |
+|---|---|---|
+| Shared layout | encoder inherits LLM TP2·PP2·DP2 | 2 stages, each TP2×DP2, encoder on stage 0 split by AutoTP |
+| Colocated | encoder TP1·DP8 on all 8 GPUs; LLM TP2·PP2·DP2 | `ColocatedVision()`; 2 stages TP2×DP2; encoder on all 8 ranks |
+| Non-colocated | encoder island TP1·DP2; LLM TP2·PP3 | first cut at 0, stage 0 DP2; 3 stages TP2 |
+| rdsp only | (each module has one layout) | per-stage layouts, e.g. vision stage DP2 then 6 single-GPU stages |
+
+- Model: Qwen3.5-9B (full fine-tune; ~162 GB of bf16 training state fits
+  8×L40S without offload; 27B does not). Data: CORD-v2, seq 2048, global batch
+  64, bf16, AdamW, no offload, no clipping, both systems.
+- Hardware: one 8×L40S node (g6e.48xlarge), PCIe, no NVLink.
+- Report: tokens/s, $/M tokens, peak memory per GPU, loss over the same first
+  50 steps against the Hugging Face model; each system also against its own
+  shared-layout run (kernel and optimizer differences cancel there).
+- Known differences that stay: Transformer Engine vs Hugging Face kernels;
+  Megatron's distributed optimizer vs ZeRO; rdsp's colocated encoder keeps
+  its optimizer state replicated (MIMO can shard it).
+- Gate before any timed run: `tests/integration/test_vl_layouts_gpu.py`
+  (all three placements against the unsplit model on 4 GPUs).
+
+## Previous phase (2026-09-26): 30B vision-language on one node
 
 The Qwen3-0.6B benchmark below is finished (results in `docs/BENCHMARK_RESULTS.md`).
 Following review feedback (target a ~30B VL model, non-NVLink GPUs), the current

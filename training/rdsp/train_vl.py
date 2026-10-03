@@ -1,15 +1,19 @@
-"""Train a Qwen3-VL model with rdsp on image-caption rows.
+"""Train a Qwen3-VL or Qwen3.5 model with rdsp on image-caption rows.
 
 The driver holds only an empty model skeleton; each stage reads its own
 weights from the downloaded checkpoint. Rows are synthetic images of coloured
-shapes with their captions, built by the model's own processor; the loss
-covers the caption tokens only.
+shapes with their captions, or CORD-v2 receipts with their parse as JSON,
+built by the model's own processor; the loss covers the caption tokens only.
 
     python train_vl.py --model Qwen/Qwen3-VL-2B-Instruct --stages 4 --check
     python train_vl.py --stages 3 --stage 0:gpus=2 --stage 1:recompute=1
+    python train_vl.py --model Qwen/Qwen3.5-9B --dataset cord-v2 --seq 2048 \
+        --stages 2 --stage 0:gpus=4,tp=2 --stage 1:gpus=4,tp=2 --colocated-vision
 """
 
 import argparse
+import itertools
+import json
 import random
 import time
 
@@ -40,8 +44,30 @@ def shape_image(size: int, rng: random.Random):
     return image, f"A {fg} {shape} on a {bg} background."
 
 
+def synthetic_rows(image_size: int, seed: int):
+    rng = random.Random(seed)
+    while True:
+        yield shape_image(image_size, rng)
+
+
+def cord_rows(max_pixels: int, seed: int):
+    """CORD-v2 receipts (train split, shuffled, repeated): the image scaled
+    to at most max_pixels, and its ground-truth parse as JSON text."""
+    import datasets
+    data = datasets.load_dataset("naver-clova-ix/cord-v2", split="train").shuffle(seed=seed)
+    for row in itertools.cycle(data):
+        image = row["image"].convert("RGB")
+        scale = (max_pixels / (image.width * image.height)) ** 0.5
+        if scale < 1:
+            image = image.resize((max(28, int(image.width * scale)),
+                                  max(28, int(image.height * scale))))
+        caption = json.dumps(json.loads(row["ground_truth"])["gt_parse"], ensure_ascii=False)
+        yield image, caption
+
+
 def encode_row(processor, image, caption: str, seq: int) -> tuple[dict, torch.Tensor]:
-    """One row: inputs padded to `seq` tokens, labels on the caption only."""
+    """One row: inputs padded to `seq` tokens, labels on the caption only;
+    None if it does not fit."""
     user = {"role": "user", "content": [{"type": "image"},
                                         {"type": "text", "text": "Describe the image."}]}
     answer = {"role": "assistant", "content": [{"type": "text", "text": caption}]}
@@ -51,7 +77,7 @@ def encode_row(processor, image, caption: str, seq: int) -> tuple[dict, torch.Te
     n_prompt = processor(text=[prompt], images=[image], return_tensors="pt")["input_ids"].shape[1]
     ids = enc["input_ids"][0]
     if len(ids) > seq:
-        raise ValueError(f"a row needs {len(ids)} tokens; raise --seq")
+        return None
     pad = seq - len(ids)
     labels = ids.clone()
     labels[:n_prompt] = -100
@@ -65,13 +91,14 @@ def encode_row(processor, image, caption: str, seq: int) -> tuple[dict, torch.Te
     return row, F.pad(labels, (0, pad), value=-100)
 
 
-def microbatches(processor, rows: int, seq: int, image_size: int, seed: int):
-    """Endless (inputs, labels) microbatches: row-shaped values stacked,
-    images given per row (rdsp concatenates each rank's rows)."""
-    rng = random.Random(seed)
+def microbatches(processor, rows: int, seq: int, source):
+    """Endless (inputs, labels) microbatches from (image, caption) pairs:
+    row-shaped values stacked, images given per row (rdsp concatenates each
+    rank's rows). Pairs too long for `seq` are skipped."""
+    encoded_rows = (encode_row(processor, image, caption, seq) for image, caption in source)
+    fitting = (row for row in encoded_rows if row is not None)
     while True:
-        encoded = [encode_row(processor, *shape_image(image_size, rng), seq)
-                   for _ in range(rows)]
+        encoded = [next(fitting) for _ in range(rows)]
         inputs = {k: torch.stack([r[k] for r, _ in encoded])
                   for k in ("input_ids", "attention_mask", "mm_token_type_ids")}
         inputs["pixel_values"] = [r["pixel_values"] for r, _ in encoded]
@@ -126,7 +153,14 @@ def main(argv=None):
     p.add_argument("--microbatches", type=int, default=8)
     p.add_argument("--rows", type=int, default=4, help="rows per microbatch")
     p.add_argument("--seq", type=int, default=256)
-    p.add_argument("--image-size", type=int, default=448)
+    p.add_argument("--image-size", type=int, default=448, help="synthetic images' side")
+    p.add_argument("--dataset", choices=("synthetic", "cord-v2"), default="synthetic")
+    p.add_argument("--max-pixels", type=int, default=512 * 512,
+                   help="cord-v2: scale images down to at most this many pixels")
+    p.add_argument("--colocated-vision", action="store_true",
+                   help="run the vision encoder on every GPU (rdsp.ColocatedVision)")
+    p.add_argument("--vision-recompute", action="store_true",
+                   help="with --colocated-vision: recompute the encoder's blocks")
     p.add_argument("--steps", type=int, default=10)
     p.add_argument("--lr", type=float, default=1e-5)
     p.add_argument("--zero", type=int, default=0)
@@ -145,7 +179,9 @@ def main(argv=None):
     weights = huggingface_hub.snapshot_download(
         args.model, allow_patterns=["*.json", "*.safetensors", "*.txt", "*.jinja"])
     processor = transformers.AutoProcessor.from_pretrained(weights)
-    data = microbatches(processor, args.rows, args.seq, args.image_size, args.seed)
+    source = (cord_rows(args.max_pixels, args.seed) if args.dataset == "cord-v2"
+              else synthetic_rows(args.image_size, args.seed))
+    data = microbatches(processor, args.rows, args.seq, source)
     first = [next(data) for _ in range(args.microbatches)]
 
     reference = unsplit_loss(weights, first) if args.check else None
@@ -172,8 +208,10 @@ def main(argv=None):
     ray.init(ignore_reinit_error=True)
     engine, _, _, _ = rdsp.initialize(
         model=skeleton, config=ds_config(args), loss_fn=loss_fn, weights=weights,
-        pipeline_config=rdsp.PipelineConfig(stages=args.stages, partition=partition,
-                                            stage_overrides=tuple(args.stage)))
+        pipeline_config=rdsp.PipelineConfig(
+            stages=args.stages, partition=partition, stage_overrides=tuple(args.stage),
+            colocated_vision=(rdsp.ColocatedVision(recompute=args.vision_recompute)
+                              if args.colocated_vision else None)))
     cuts = [(s.block_start, s.block_stop) for s in engine._coordinator._plan.stages]
     print(f"stages (blocks): {cuts}", flush=True)
 
