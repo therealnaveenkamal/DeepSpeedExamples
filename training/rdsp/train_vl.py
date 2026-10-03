@@ -9,11 +9,19 @@ built by the model's own processor; the loss covers the caption tokens only.
     python train_vl.py --stages 3 --stage 0:gpus=2 --stage 1:recompute=1
     python train_vl.py --model Qwen/Qwen3.5-9B --dataset cord-v2 --seq 2048 \
         --stages 2 --stage 0:gpus=4,tp=2 --stage 1:gpus=4,tp=2 --colocated-vision
+    python train_vl.py --model Qwen/Qwen3.5-9B --dataset exported:/data/cord_steps \
+        --rows 2 --microbatches 32 --stages 2 --cuts 16 \
+        --stage 0:gpus=4,tp=2,zero=1 --stage 1:gpus=4,tp=2,zero=1
+
+`exported:DIR` reads samples written by bench/mimo/export_bridge_batches.py
+(Megatron-Bridge's own SFT pipeline), one file per step, in order.
 """
 
 import argparse
+import glob
 import itertools
 import json
+import os
 import random
 import time
 
@@ -106,6 +114,32 @@ def microbatches(processor, rows: int, seq: int, source):
         yield inputs, torch.stack([labels for _, labels in encoded])
 
 
+_EXPORTED_KEYS = ("input_ids", "attention_mask", "mm_token_type_ids")
+
+
+def exported_microbatches(directory: str, rows: int, pad_multiple: int = 0):
+    """(inputs, labels) microbatches of `rows` consecutive samples from an
+    exported directory, step file by step file: the order and grouping
+    Megatron's sequential sampler gives a global microbatch. pad_multiple:
+    cut each step's padding to its longest row rounded up to this multiple
+    (a step's microbatches share one length)."""
+    for path in sorted(glob.glob(os.path.join(directory, "step_*.pt"))):
+        samples = torch.load(path, weights_only=False)
+        if len(samples) % rows:
+            raise ValueError(f"{path}: {len(samples)} samples do not split into "
+                             f"microbatches of {rows} rows")
+        length = samples[0]["input_ids"].shape[1]
+        if pad_multiple:
+            longest = max(int(s["attention_mask"].sum()) for s in samples)
+            length = min(length, -(-longest // pad_multiple) * pad_multiple)
+        for start in range(0, len(samples), rows):
+            group = samples[start:start + rows]
+            inputs = {k: torch.cat([s[k][:, :length] for s in group]) for k in _EXPORTED_KEYS}
+            inputs["pixel_values"] = [s["pixel_values"] for s in group]
+            inputs["image_grid_thw"] = [s["image_grid_thw"] for s in group]
+            yield inputs, torch.cat([s["labels"][:, :length] for s in group])
+
+
 def token_loss_sum(logits, labels):
     """Summed next-token loss over the caption tokens of some rows."""
     return F.cross_entropy(logits[:, :-1].float().reshape(-1, logits.shape[-1]),
@@ -117,42 +151,63 @@ def token_count(labels) -> int:
     return int((labels[:, 1:] != -100).sum())
 
 
-# averaged over every caption token of the step (Megatron's per-token loss)
-loss_fn = rdsp.TokenMeanLoss(token_loss_sum, token_count)
+def microbatch_mean_loss(logits, labels):
+    """Mean over one rank's caption tokens in one microbatch; the step loss
+    is then the mean over microbatches and data-parallel ranks (Megatron's
+    default, calculate_per_token_loss=False)."""
+    return token_loss_sum(logits, labels) / max(token_count(labels), 1)
 
 
-def unsplit_loss(weights: str, batches) -> float:
-    """Loss of the whole model, unsplit, averaged over every caption token:
-    the reference for --check. Spread over the GPUs when it does not fit one
+LOSSES = {
+    # averaged over every caption token of the step (calculate_per_token_loss)
+    "token-mean": rdsp.TokenMeanLoss(token_loss_sum, token_count),
+    "microbatch-mean": microbatch_mean_loss,
+}
+
+
+def unsplit_loss(weights: str, batches, loss: str) -> float:
+    """Loss of the whole model, unsplit: the reference for --check (for
+    microbatch-mean, equal to the pipeline's when the last stage has one
+    data-parallel rank). Spread over the GPUs when it does not fit one
     (32B); freed afterwards."""
     import transformers
     model = transformers.AutoModelForImageTextToText.from_pretrained(
         weights, dtype=torch.bfloat16, device_map="auto").eval()
-    total = count = 0.0
+    sums, counts = [], []
     with torch.no_grad():
         for inputs, labels in batches:
             full = {k: torch.cat(v) if isinstance(v, list) else v for k, v in inputs.items()}
             full = {k: v.to(model.device) for k, v in full.items()}
-            total += float(token_loss_sum(model(**full, use_cache=False).logits, labels))
-            count += token_count(labels)
+            sums.append(float(token_loss_sum(model(**full, use_cache=False).logits, labels)))
+            counts.append(max(token_count(labels), 1))
     del model
     torch.cuda.empty_cache()
-    return total / count
+    if loss == "token-mean":
+        return sum(sums) / sum(counts)
+    return sum(s / c for s, c in zip(sums, counts)) / len(sums)
 
 
 def ds_config(args) -> dict:
     offload = any(o.offload_optimizer for o in args.stage)
-    return {
+    beta1, beta2 = (float(b) for b in args.betas.split(","))
+    conf = {
         "train_batch_size": args.rows * args.microbatches,
         "gradient_accumulation_steps": args.microbatches,
         "bf16": {"enabled": True},
         "zero_optimization": {"stage": args.zero},
         "gradient_clipping": 0.0,
         # DeepSpeed's CPU Adam under optimizer offload, PyTorch's AdamW otherwise
-        "optimizer": {"type": "AdamW", "params": {"lr": args.lr, "weight_decay": 0.0,
-                                                  "torch_adam": not offload}},
+        "optimizer": {"type": "AdamW", "params": {
+            "lr": args.lr, "betas": [beta1, beta2], "eps": args.eps,
+            "weight_decay": args.weight_decay, "torch_adam": not offload}},
         "steps_per_print": 10**9,
     }
+    if args.grad_dtype == "fp32":
+        # accumulate and all-reduce gradients in fp32 (Megatron's
+        # grad_reduce_in_fp32 with fp32 main grads)
+        conf["data_types"] = {"grad_accum_dtype": "fp32"}
+        conf["communication_data_type"] = "fp32"
+    return conf
 
 
 def main(argv=None):
@@ -166,7 +221,19 @@ def main(argv=None):
     p.add_argument("--rows", type=int, default=4, help="rows per microbatch")
     p.add_argument("--seq", type=int, default=256)
     p.add_argument("--image-size", type=int, default=448, help="synthetic images' side")
-    p.add_argument("--dataset", choices=("synthetic", "cord-v2"), default="synthetic")
+    p.add_argument("--dataset", default="synthetic",
+                   help="synthetic, cord-v2, or exported:DIR (export_bridge_batches.py)")
+    p.add_argument("--loss", choices=tuple(LOSSES), default="token-mean")
+    p.add_argument("--pad-multiple", type=int, default=0,
+                   help="exported data: trim each step's padding to its longest row, "
+                   "rounded up to this multiple (0 keeps the exported length)")
+    p.add_argument("--betas", default="0.9,0.999", help="AdamW betas")
+    p.add_argument("--eps", type=float, default=1e-8)
+    p.add_argument("--weight-decay", type=float, default=0.0)
+    p.add_argument("--grad-dtype", choices=("bf16", "fp32"), default="fp32",
+                   help="gradient accumulation and reduction dtype")
+    p.add_argument("--attn", default="sdpa", help="attention implementation (sdpa, "
+                   "flash_attention_2, ...)")
     p.add_argument("--max-pixels", type=int, default=512 * 512,
                    help="cord-v2: scale images down to at most this many pixels")
     p.add_argument("--colocated-vision", action="store_true",
@@ -191,16 +258,21 @@ def main(argv=None):
     weights = huggingface_hub.snapshot_download(
         args.model, allow_patterns=["*.json", "*.safetensors", "*.txt", "*.jinja"])
     processor = transformers.AutoProcessor.from_pretrained(weights)
-    source = (cord_rows(args.max_pixels, args.seed) if args.dataset == "cord-v2"
-              else synthetic_rows(args.image_size, args.seed))
-    data = microbatches(processor, args.rows, args.seq, source)
+    if args.dataset.startswith("exported:"):
+        data = exported_microbatches(args.dataset.split(":", 1)[1], args.rows,
+                                     args.pad_multiple)
+    else:
+        source = (cord_rows(args.max_pixels, args.seed) if args.dataset == "cord-v2"
+                  else synthetic_rows(args.image_size, args.seed))
+        data = microbatches(processor, args.rows, args.seq, source)
     first = [next(data) for _ in range(args.microbatches)]
 
-    reference = unsplit_loss(weights, first) if args.check else None
+    reference = unsplit_loss(weights, first, args.loss) if args.check else None
 
     config = transformers.AutoConfig.from_pretrained(weights)
     # rdsp needs tied parameters untied: embedding and head sit on different stages
     config.tie_word_embeddings = config.get_text_config().tie_word_embeddings = False
+    config._attn_implementation = args.attn
     with accelerate.init_empty_weights():
         skeleton = transformers.AutoModelForImageTextToText.from_config(config,
                                                                          dtype=torch.bfloat16)
@@ -219,7 +291,7 @@ def main(argv=None):
         os.environ["RDSP_PROFILE"] = "1"  # before ray.init: actors inherit it
     ray.init(ignore_reinit_error=True)
     engine, _, _, _ = rdsp.initialize(
-        model=skeleton, config=ds_config(args), loss_fn=loss_fn, weights=weights,
+        model=skeleton, config=ds_config(args), loss_fn=LOSSES[args.loss], weights=weights,
         pipeline_config=rdsp.PipelineConfig(
             stages=args.stages, partition=partition, stage_overrides=tuple(args.stage),
             colocated_vision=(rdsp.ColocatedVision(recompute=args.vision_recompute)
@@ -232,13 +304,18 @@ def main(argv=None):
         print(f"check: pipeline {piped:.5f}  unsplit {reference:.5f}  "
               f"rel diff {abs(piped - reference) / reference:.2e}", flush=True)
 
-    tokens = args.rows * args.seq * args.microbatches
-    batches = iter(first)
+    padded = args.rows * args.seq * args.microbatches
     for step in range(args.steps):
+        entries = first if step == 0 else [next(data) for _ in range(args.microbatches)]
+        # real tokens: what the attention mask covers (padding excluded)
+        real = sum(int(x["attention_mask"].sum()) for x, _ in entries)
+        supervised = sum(token_count(y) for _, y in entries)
         start = time.perf_counter()
-        loss = float(engine.train_batch(data_iter=batches if step == 0 else data))
+        loss = float(engine.train_batch(data_iter=iter(entries)))
         ms = (time.perf_counter() - start) * 1e3
-        print(f"step {step} loss {loss:.4f} {ms:.0f} ms {tokens / ms * 1e3:.0f} tok/s", flush=True)
+        print(f"step {step} loss {loss:.4f} {ms:.0f} ms {real / ms * 1e3:.0f} real tok/s "
+              f"{padded / ms * 1e3:.0f} padded tok/s real {real} supervised {supervised}",
+              flush=True)
     return engine
 
 

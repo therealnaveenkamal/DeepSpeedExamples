@@ -3,29 +3,40 @@
 ## Next phase (2026-10-03): placement-matched comparison with MegatronMIMO
 
 MegatronMIMO (Megatron-LM, arXiv 2605.27678) gives the vision encoder and the
-LLM separate layouts, either on shared GPUs (colocated) or on disjoint ones
-(non-colocated). rdsp now has the same three placements, so every MIMO run
-gets an rdsp run with the identical GPU layout:
+LLM separate layouts. Every run below has the same GPU layout on both sides;
+`bench/mimo/runs.sh` holds the exact commands.
 
-| Placement | MIMO | rdsp |
+| Run | Megatron-Bridge | rdsp |
 |---|---|---|
-| Shared layout | encoder inherits LLM TP2·PP2·DP2 | 2 stages, each TP2×DP2, encoder on stage 0 split by AutoTP |
-| Colocated | encoder TP1·DP8 on all 8 GPUs; LLM TP2·PP2·DP2 | `ColocatedVision()`; 2 stages TP2×DP2; encoder on all 8 ranks |
-| Non-colocated | encoder island TP1·DP2; LLM TP2·PP3 | first cut at 0, stage 0 DP2; 3 stages TP2 |
-| rdsp only | (each module has one layout) | per-stage layouts, e.g. vision stage DP2 then 6 single-GPU stages |
+| shared | standard recipe, TP2·PP2·DP2, encoder on PP0 | 2 stages TP2×DP2, cut 16, encoder on stage 0 |
+| non-colocated | MIMO: images DP2 (a row each) + language TP2·PP2, 6 GPUs | vision stage DP2 + 2 TP2 stages, 6 GPUs |
+| colocated | not available for Qwen3.5 (Bridge: coming soon) | `ColocatedVision()`, language as in shared |
+| best | small sweep per system | small sweep, per-stage layouts allowed |
 
-- Model: Qwen3.5-9B (full fine-tune; ~162 GB of bf16 training state fits
-  8×L40S without offload; 27B does not). Data: CORD-v2, seq 2048, global batch
-  64, bf16, AdamW, no offload, no clipping, both systems.
-- Hardware: one 8×L40S node (g6e.48xlarge), PCIe, no NVLink.
-- Report: tokens/s, $/M tokens, peak memory per GPU, loss over the same first
-  50 steps against the Hugging Face model; each system also against its own
-  shared-layout run (kernel and optimizer differences cancel there).
-- Known differences that stay: Transformer Engine vs Hugging Face kernels;
-  Megatron's distributed optimizer vs ZeRO; rdsp's colocated encoder keeps
-  its optimizer state replicated (MIMO can shard it).
-- Gate before any timed run: `tests/integration/test_vl_layouts_gpu.py`
-  (all three placements against the unsplit model on 4 GPUs).
+Held identical (Megatron defaults overridden where they differ):
+- Qwen3.5-9B from the same HF checkpoint, all parameters trained, MTP head off.
+- CORD-v2 through Bridge's own pipeline (`export_bridge_batches.py` writes its
+  samples; rdsp reads them in order): same prompt, image pixel limits
+  (200,704-1,003,520), tokens and supervised positions. Sequential sampler
+  (`dataloader_type=single`) on both Megatron paths.
+- seq 2048, global batch 64, 2-row microbatches, padding to a multiple of
+  128 (Megatron per microbatch, rdsp per step, so rdsp never pads less).
+- Loss: mean over a rank's supervised tokens per microbatch, then over
+  microbatches and ranks: Megatron's default (`calculate_per_token_loss=False`,
+  which the 9B recipe and MIMO use), rdsp `--loss microbatch-mean`.
+- AdamW lr 1e-5 constant, betas 0.9/0.95, eps 1e-8, no weight decay, no
+  warmup, no clipping; optimizer state sharded over data parallel
+  (distributed optimizer / ZeRO-1); bf16 with fp32 master weights and fp32
+  gradient reduction. No recompute, no offload.
+
+Gate before timing: Megatron and rdsp report the same step-0 loss in the
+shared layout; rdsp with a one-rank last stage matches the unsplit HF model.
+
+Reported: median step time (steps 6-50), real (unpadded) tokens/s and per
+active GPU, $/M tokens, peak memory per GPU, the 50-step loss curves.
+Differences that stay: Transformer Engine vs Hugging Face kernels, Megatron's
+on-the-fly data workers vs rdsp's prepared batches; each system is also
+reported against its own shared run.
 
 ## Previous phase (2026-09-26): 30B vision-language on one node
 
