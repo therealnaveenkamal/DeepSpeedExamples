@@ -63,6 +63,16 @@ class FailureSpec:
 
 
 @dataclass(frozen=True)
+class VisionSpec:
+    """Colocated vision encoder: its module path in the model, its
+    parameters (on no stage), and whether its blocks recompute."""
+
+    module: str
+    parameter_names: tuple[str, ...]
+    recompute: bool = False
+
+
+@dataclass(frozen=True)
 class ExecutionPlan:
     schema_version: str
     global_microbatches: int
@@ -73,6 +83,8 @@ class ExecutionPlan:
     failure: FailureSpec
     # rows in one global microbatch (the data loader's entry size)
     microbatch_rows: int = 1
+    # vision encoder on every rank instead of the first stage (vision.py)
+    colocated_vision: VisionSpec | None = None
 
     def to_canonical_dict(self) -> dict:
         return dataclasses.asdict(self)

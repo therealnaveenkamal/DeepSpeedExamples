@@ -78,6 +78,20 @@ class StageOverride:
 
 
 @dataclass(frozen=True)
+class ColocatedVision:
+    """Run the vision encoder on every GPU of the pipeline instead of on the
+    first stage: each rank encodes a share of the step's images, the first
+    stage receives their features (see vision.py). For vision encoders whose
+    output enters the decoder only through the input embeddings (Qwen3.5;
+    not Qwen3-VL's deepstack). The encoder trains with a plain torch
+    optimizer (Adam/AdamW/SGD) built from the DeepSpeed config's optimizer
+    and scheduler, its state replicated on every rank. recompute: keep only
+    each encoder block's input for backward."""
+
+    recompute: bool = False
+
+
+@dataclass(frozen=True)
 class ConnectionOverride:
     source: int
     dest: int
@@ -95,6 +109,7 @@ class PipelineConfig:
     checkpoint: CheckpointPolicy | None = None
     stage_overrides: tuple[StageOverride, ...] = ()
     connection_overrides: tuple[ConnectionOverride, ...] = ()
+    colocated_vision: ColocatedVision | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "stage_overrides", tuple(self.stage_overrides))
@@ -123,6 +138,10 @@ class PipelineConfig:
                 if getattr(override, knob) < 1:
                     raise ValidationError(
                         f"StageOverride.{knob} must be >= 1, got {getattr(override, knob)}")
+        if self.colocated_vision is not None and \
+                not isinstance(self.colocated_vision, ColocatedVision):
+            raise ValidationError(
+                f"colocated_vision must be a ColocatedVision, got {type(self.colocated_vision)}")
         for connection in self.connection_overrides:
             if not isinstance(connection, ConnectionOverride):
                 raise ValidationError(

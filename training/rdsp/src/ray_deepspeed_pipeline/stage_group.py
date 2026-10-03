@@ -22,6 +22,7 @@ from ray_deepspeed_pipeline.errors import ValidationError
 from ray_deepspeed_pipeline.partition import recompute_blocks, select_stage_builder
 from ray_deepspeed_pipeline.protocols import Command
 from ray_deepspeed_pipeline.stage_worker import StageWorkerActor
+from ray_deepspeed_pipeline.vision import VisionLayout, build_vision_tower, route_images
 
 _PLACEMENT_TIMEOUT_S = float(os.environ.get("RDSP_PLACEMENT_TIMEOUT_S", "600"))
 
@@ -66,8 +67,11 @@ class StageGroupClient:
     rank in the same order, so the ranks' collectives line up."""
 
     def __init__(self, actors, stage: int = 0, grid: Grid | None = None,
-                 is_last: bool = False, placement_group=None):
+                 is_last: bool = False, placement_group=None, vision=None):
+        """vision: (VisionLayout, this stage's global rank offset) under
+        colocated vision."""
         self.actors = actors
+        self.vision = vision
         self.stage = stage
         self.grid = grid or Grid(dp=len(actors))
         self.is_last = is_last
@@ -87,14 +91,26 @@ class StageGroupClient:
         return _GroupHandle(refs, _all_ok)
 
     def _submit_step(self, command, inputs, labels, control):
-        """One call per rank carrying the rank's whole op list for the step."""
+        """One call per rank carrying the rank's whole op list for the step.
+        Under colocated vision every stage gets the inputs: each rank takes
+        its images, and the first stage the rest without the pixels."""
         refs = []
         for rank, actor in enumerate(self.actors):
             cell = rank_cell(self.grid, rank)
+            routes, cell_inputs = None, None
+            if self.vision is not None and inputs is not None:
+                layout, offset = self.vision
+                routes = route_images(inputs, layout, offset + rank)
+                if self.stage == 0:
+                    cell_inputs = [slice_inputs({k: v for k, v in x.items() if k != "pixel_values"},
+                                                cell) for x in inputs]
+            elif inputs is not None:
+                cell_inputs = [slice_inputs(x, cell) for x in inputs]
             refs.append(actor.run_step.remote(
                 command.generation, control["ops"], command.kind == "step",
-                inputs=[slice_inputs(x, cell) for x in inputs] if inputs is not None else None,
-                labels=[cell_slice(y, cell) for y in labels] if labels is not None else None))
+                inputs=cell_inputs,
+                labels=[cell_slice(y, cell) for y in labels] if labels is not None else None,
+                vision=routes))
         reps = representatives(self.grid)
 
         def reduce(results):
@@ -215,6 +231,12 @@ def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
     # chosen from the model itself, so rdsp.initialize() (which passes no
     # builder) and recovery rebuilds get the right one too
     builder = stage_builder or select_stage_builder(model)
+    vision, layout, offset = plan.colocated_vision, None, 0
+    if vision is not None:
+        first = plan.stages[0]
+        layout = VisionLayout(first=Grid(dp=first.dp, sp=first.sp, tp=first.tp),
+                              world=sum(spec.num_gpus for spec in plan.stages))
+        tower_ref = ray.put((build_vision_tower(model, vision.module), vision.recompute))
     try:
         for spec in plan.stages:
             grid = Grid(dp=spec.dp, sp=spec.sp, tp=spec.tp)
@@ -250,9 +272,12 @@ def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
                     backend=backend, n_microbatches=plan.global_microbatches,
                     is_first=spec.index == 0, is_last=is_last,
                     loss_fn=loss_fn if is_last else None,
-                    engine_factory=engine_factory, weights=weights))
-            clients.append(StageGroupClient(actors, stage=spec.index, grid=grid,
-                                            is_last=is_last, placement_group=pg))
+                    engine_factory=engine_factory, weights=weights,
+                    vision=tower_ref if vision is not None else None))
+            clients.append(StageGroupClient(
+                actors, stage=spec.index, grid=grid, is_last=is_last, placement_group=pg,
+                vision=(layout, offset) if vision is not None else None))
+            offset += spec.num_gpus
 
         # bootstrap every stage's world concurrently
         boots = []

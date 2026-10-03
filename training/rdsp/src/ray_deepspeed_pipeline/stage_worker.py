@@ -23,10 +23,13 @@ from ray_deepspeed_pipeline.boundary import (
     p2p_destinations,
     p2p_sources,
     rank_cell,
+    rank_coords,
 )
 from ray_deepspeed_pipeline.deepspeed_adapter import DeepSpeedStageAdapter, observed_mesh
 from ray_deepspeed_pipeline.errors import ValidationError
 from ray_deepspeed_pipeline.hf_stage import load_meta_parameters
+
+_VISION_FILE = "colocated_vision.pt"
 
 
 def _free_port() -> int:
@@ -79,7 +82,7 @@ class StageWorkerActor:
     def __init__(self, stage_module, ds_config_json: str, *, stage: int, rank: int,
                  grid: Grid, backend: str, n_microbatches: int,
                  is_first: bool, is_last: bool, loss_fn=None, engine_factory=None,
-                 weights: str | None = None):
+                 weights: str | None = None, vision=None):
         self.stage, self.rank, self.grid = stage, rank, grid
         self.p2p = None
         self._p2p_store = None
@@ -87,8 +90,9 @@ class StageWorkerActor:
         self._init = dict(stage_module=stage_module, ds_config_json=ds_config_json,
                           backend=backend, n_microbatches=n_microbatches,
                           is_first=is_first, is_last=is_last, loss_fn=loss_fn,
-                          engine_factory=engine_factory, weights=weights)
+                          engine_factory=engine_factory, weights=weights, vision=vision)
         self.adapter = None
+        self.vision = None  # this rank's colocated vision encoder (vision.py)
         self.executed = []  # command ids in execution order
         self.generation = None
 
@@ -117,10 +121,24 @@ class StageWorkerActor:
         self.adapter = DeepSpeedStageAdapter(
             module, init["ds_config_json"], init["n_microbatches"],
             init["is_first"], init["is_last"], loss_fn=init["loss_fn"],
-            engine_factory=init["engine_factory"])
+            engine_factory=init["engine_factory"],
+            input_grads=("pixel_values",) if init["vision"] is not None else ())
+        if init["vision"] is not None:
+            self._build_vision(init["vision"], init["weights"], init["ds_config_json"])
         self._init = None  # drop the driver-built module copy
         self._timer = _PhaseTimer(self.adapter.device)
         return observed_mesh(self.adapter.engine)
+
+    def _build_vision(self, vision, weights, ds_config_json):
+        from ray_deepspeed_pipeline.partition import recompute_blocks
+        from ray_deepspeed_pipeline.vision import ColocatedVisionEngine
+
+        tower, recompute = vision
+        load_meta_parameters(tower, weights)
+        if recompute:
+            recompute_blocks(tower)
+        self.vision = ColocatedVisionEngine(tower, json.loads(ds_config_json),
+                                            self.adapter.device)
 
     def ping(self) -> bool:
         return True
@@ -141,6 +159,8 @@ class StageWorkerActor:
         self.generation = generation
         if begin:
             self.adapter.begin_generation()
+            if self.vision is not None:
+                self.vision.reset()
 
     def _forward(self, kind: str, mb: int, x, labels, extras):
         offset = self.cell.sp_index * x.shape[1] if self.grid.sp > 1 else None
@@ -162,6 +182,8 @@ class StageWorkerActor:
         if kind == "apply":
             with self._timer.phase("apply"):
                 applied = self.adapter.apply()
+                if self.vision is not None:
+                    self.vision.apply()
             self._timer.report(stage=self.stage, rank=self.rank, kind="apply")
             return applied
         if kind == "save":
@@ -193,7 +215,7 @@ class StageWorkerActor:
             # release unmatched sends of the failed step before NCCL's watchdog does
             self.p2p.abort()
         self.p2p = PipelineP2P(self._p2p_store, global_rank, offsets[-1], epoch, timeout_s,
-                               self.adapter.device)
+                               self.adapter.device, collective=self.vision is not None)
         self._warm_up_links()
         return True
 
@@ -231,19 +253,26 @@ class StageWorkerActor:
         self.p2p.end_step()
 
     def run_step(self, generation: int, ops: list, train: bool, inputs=None,
-                 labels=None):
+                 labels=None, vision=None):
         """Run this rank's whole step. ops: [(kind, mb, command_id)] in 1F1B
         order. inputs / labels: this rank's cell of every microbatch (first /
-        last stage only)."""
+        last stage only). vision: this rank's vision.route_images() entry
+        under colocated vision."""
         self._enter_generation(generation)
         prev, next_ = self._peers()
         adapter, p2p, timer = self.adapter, self.p2p, self._timer
         # DeepSpeed averages gradients over DP and sums over SP, so the gradient
         # entering this stage must be dp_s x dL/d(output): scale by dp_s/dp_{s+1}
         scale = gradient_scale(self._grids[self.stage + 1].dp, self.grid.dp) if next_ else 1.0
-        losses = {}
+        losses, feature_grads = {}, {}
         p2p.begin_step()
         try:
+            if vision is not None:
+                with timer.phase("vision_forward"):
+                    features = self._encode_images(vision, train)
+                if inputs is not None:  # the features stand in for the pixels
+                    inputs = [dict(x, pixel_values=features[mb]) if mb in features else x
+                              for mb, x in enumerate(inputs)]
             ready = True
             for kind, mb, command_id in ops:
                 self.executed.append(command_id)
@@ -278,6 +307,11 @@ class StageWorkerActor:
                     if prev:
                         for peer in prev[1]:
                             p2p.send("bwd", input_grad, peer, mb)
+                    elif input_grad is not None:
+                        feature_grads[mb] = input_grad["pixel_values"]
+            if vision is not None and train:
+                with timer.phase("vision_backward"):
+                    self._return_feature_grads(vision, feature_grads)
             with timer.phase("wait_sends"):
                 p2p.end_step()
         finally:
@@ -286,12 +320,66 @@ class StageWorkerActor:
         return {"losses": [losses[k] for k in sorted(losses)] if adapter.is_last else None,
                 "ready": ready}
 
+    # -- colocated vision ----------------------------------------------------------
+
+    def _global_rank(self) -> int:
+        return self._offsets[self.stage] + self.rank
+
+    def _encode_images(self, vision: dict, train: bool) -> dict:
+        """Encode this rank's images, send each image's features to the
+        first-stage ranks of its row, and (on the first stage) receive this
+        rank's. Returns {microbatch: features of its rows' images, in row
+        order}. Sends go out before any receive, so no rank waits on another
+        that is itself waiting."""
+        me, p2p = self._global_rank(), self.p2p
+        features = self.vision.forward([(i, px, grid) for i, px, grid, _, _ in vision["own"]],
+                                       train)
+        for image, _, _, dests, _ in vision["own"]:
+            for dest in dests:
+                if dest != me:
+                    p2p.send_sized("fwd", features[image], dest, image)
+        per_mb = collections.defaultdict(list)
+        self._image_rows = []  # (microbatch, image, owner, feature rows) for the way back
+        for mb, image, owner in vision["need"]:
+            got = features[image] if owner == me else p2p.recv_sized("fwd", owner, image)
+            per_mb[mb].append(got)
+            self._image_rows.append((mb, image, owner, got.shape[0]))
+        return {mb: torch.cat(parts) for mb, parts in per_mb.items()}
+
+    def _return_feature_grads(self, vision: dict, feature_grads: dict) -> None:
+        """First stage, TP rank 0: split each microbatch's feature gradient
+        per image and send it to the image's owner. Every rank: receive its
+        images' gradients, backpropagate through its encoder and sum the
+        encoder gradients over all ranks."""
+        me, p2p = self._global_rank(), self.p2p
+        mine = {}
+        if self.stage == 0 and rank_coords(self.grid, self.rank)[2] == 0:
+            by_mb = collections.defaultdict(list)
+            for mb, image, owner, rows in self._image_rows:
+                by_mb[mb].append((image, owner, rows))
+            for mb, entries in by_mb.items():
+                parts = feature_grads[mb].split([rows for _, _, rows in entries])
+                for (image, owner, _), grad in zip(entries, parts):
+                    if owner == me:
+                        mine[image] = grad
+                    else:
+                        p2p.send_sized("bwd", grad, owner, image)
+        for image, _, _, _, source in vision["own"]:
+            if source != me:
+                mine[image] = p2p.recv_sized("bwd", source, image)
+        self.vision.backward(mine)
+        # the first stage's gradients carry its data-parallel degree
+        self.vision.reduce_gradients(p2p.all, divide_by=self._grids[0].dp)
+
     # -- checkpoints -------------------------------------------------------------
 
     def _save(self, root: str, tag: str) -> dict:
         stage_dir = ckpt.stage_dir(root, tag, self.stage)
         self.adapter.save_shard(stage_dir, tag)
         self.adapter.save_rng(ckpt.rng_path(root, tag, self.stage, self.rank))
+        if self.vision is not None and self.rank == 0:
+            # identical on every rank; each stage keeps a copy next to its shards
+            self.vision.save(os.path.join(stage_dir, _VISION_FILE))
         # every rank's files are complete before rank 0 fingerprints the stage
         torch.distributed.barrier()
         record = {"rank": self.rank}
@@ -320,4 +408,7 @@ class StageWorkerActor:
             load_optimizer_states=load_optimizer_states,
             load_lr_scheduler_states=load_lr_scheduler_states)
         self.adapter.load_rng(ckpt.rng_path(root, tag, self.stage, self.rank))
+        if self.vision is not None:
+            self.vision.load(os.path.join(ckpt.stage_dir(root, tag, self.stage), _VISION_FILE),
+                             load_optimizer_states, load_lr_scheduler_states)
         return True

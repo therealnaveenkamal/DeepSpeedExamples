@@ -28,6 +28,7 @@ from ray_deepspeed_pipeline.partition import (
     find_block_list,
     vision_injection_depth,
 )
+from ray_deepspeed_pipeline.vision import PrecomputedVision, VisionTower, find_vision_encoder
 
 
 class _PassThrough(nn.Module):
@@ -93,6 +94,11 @@ def _with_block_tensors(args: tuple, kwargs: dict, tensors: dict) -> tuple[tuple
     for name, parts in tuples.items():
         kwargs[name] = tuple(parts[i] for i in range(len(parts)))
     return tuple(args), kwargs
+
+
+class _Recorded(Exception):
+    """Ends a non-last stage's run of the model once the last block's
+    arguments are recorded."""
 
 
 _FORM_KEY = "@block_form"
@@ -178,9 +184,11 @@ class HFModelStage(nn.Module):
             return
         blocks = self.model.get_submodule(self._blocks_name)
         start, stop = self._local
+        self._n_blocks = len(blocks)
         for i in range(start, len(blocks)):
             blocks[i].register_forward_pre_hook(self._before_block(i), with_kwargs=True)
-        blocks[start].register_forward_hook(self._learn_block_form)
+        if start < stop:  # a stage without blocks (vision only) has none to learn from
+            blocks[start].register_forward_hook(self._learn_block_form)
         self._hooked = True
 
     def _learn_block_form(self, block, args, out):
@@ -205,6 +213,11 @@ class HFModelStage(nn.Module):
                 self._hidden = args[0] if args else kwargs["hidden_states"]
             if index >= stop:
                 self._downstream[index] = _block_tensors(args, kwargs)
+            if index == self._n_blocks - 1 and not self.is_last:
+                # everything this stage sends is recorded; what follows is
+                # other stages' work, and a stage without blocks would run it
+                # on pass-through outputs of unknown form
+                raise _Recorded
             return args, kwargs
         return hook
 
@@ -232,12 +245,15 @@ class HFModelStage(nn.Module):
             kw = {"use_cache": False}
             if position_ids is not None:
                 kw["position_ids"] = position_ids
-            if not self.is_first:
-                out = self.model(inputs_embeds=self._setup_input(x), **kw)
-            elif isinstance(x, dict):
-                out = self.model(**x, **kw)
-            else:
-                out = self.model(input_ids=x, **kw)
+            try:
+                if not self.is_first:
+                    out = self.model(inputs_embeds=self._setup_input(x), **kw)
+                elif isinstance(x, dict):
+                    out = self.model(**x, **kw)
+                else:
+                    out = self.model(input_ids=x, **kw)
+            except _Recorded:
+                out = None
             if self.is_last:
                 return out.logits if hasattr(out, "logits") else out[0]
             hidden = self._hidden
@@ -259,11 +275,18 @@ def build_hf_stage(model: nn.Module, block_start: int, block_stop: int,
             f"{type(model).__name__} adds vision features inside blocks 0-{depth - 1}, "
             f"which only the first stage can do: put the first cut at {depth} or later")
     owned = set(parameter_names)
+    # the first stage owns the input embeddings; the one after a vision-only
+    # stage starts at block 0 too
+    embedding = model.get_input_embeddings()
+    is_first = any(p is embedding.weight for n, p in model.named_parameters() if n in owned)
     block_form = [None]
     memo = {}
     for i, block in enumerate(blocks):
         if not block_start <= i < block_stop:
             memo[id(block)] = _PassThrough(block_form)
+    encoder = _colocated_encoder(model, owned) if is_first else None
+    if encoder is not None:  # it runs on every rank instead (vision.py)
+        memo[id(encoder)] = PrecomputedVision(encoder)
     for name, module in model.named_modules():
         direct = [f"{name}.{p}" if name else p for p, _ in module.named_parameters(recurse=False)]
         if direct and not owned.intersection(direct):
@@ -276,7 +299,7 @@ def build_hf_stage(model: nn.Module, block_start: int, block_stop: int,
             f"a module mixes parameters of different stages "
             f"({sorted(kept ^ owned)[:3]}...)")
     stage = HFModelStage(stage_model, blocks_name, block_start, block_stop,
-                         is_first=block_start == 0, is_last=block_stop == len(blocks),
+                         is_first=is_first, is_last=block_stop == len(blocks),
                          block_form=block_form)
     # what intra-stage parallelism reads: the AutoTP plan, head counts
     # (Ulysses) and MoE settings (AutoEP), all on the text model's config
@@ -289,6 +312,20 @@ def build_hf_stage(model: nn.Module, block_start: int, block_stop: int,
     attach_tp_plan(stage, plan)
     stage._rdsp_hf_config = text_config
     return stage
+
+
+def _colocated_encoder(model: nn.Module, owned: set) -> nn.Module | None:
+    """The vision encoder, if the model has one and the stage owns none of
+    its parameters: colocated vision."""
+    if getattr(getattr(model, "config", None), "vision_config", None) is None:
+        return None
+    try:
+        path = find_vision_encoder(model)
+    except ValidationError:
+        return None
+    if any(n.startswith(path + ".") for n in owned):
+        return None
+    return model.get_submodule(path)
 
 
 # projection names shared by most decoder families, and how Megatron-style
@@ -345,7 +382,8 @@ def _checkpoint_files(weights_dir: str) -> dict:
 
 def load_meta_parameters(stage: nn.Module, weights_dir: str | None) -> None:
     """Replace every parameter still on the meta device by its value from the
-    HF checkpoint in weights_dir; only this stage's tensors are read."""
+    HF checkpoint in weights_dir; only this stage's tensors are read. stage:
+    an HFModelStage, or a rank's colocated VisionTower."""
     meta = [(n, p) for n, p in stage.named_parameters() if p.is_meta]
     if not meta:
         return
@@ -353,7 +391,7 @@ def load_meta_parameters(stage: nn.Module, weights_dir: str | None) -> None:
         raise ValidationError(
             f"{len(meta)} parameters are on the meta device (e.g. {meta[0][0]}); pass "
             f"weights=<HF checkpoint dir> to rdsp.initialize() to load them per stage")
-    if not isinstance(stage, HFModelStage):
+    if not isinstance(stage, (HFModelStage, VisionTower)):
         raise ValidationError("weights= needs a Hugging Face model (the HF stage builder)")
     if any(b.is_meta for b in stage.buffers()):
         raise ValidationError(
@@ -362,11 +400,12 @@ def load_meta_parameters(stage: nn.Module, weights_dir: str | None) -> None:
     files = _checkpoint_files(weights_dir)
     # a tied checkpoint stores only one of each tied pair (Qwen3-VL-2B has no
     # lm_head); the untied copy is read from the tensor it was tied to
-    tied = getattr(stage.model, "_tied_weights_keys", None)
+    tied = getattr(getattr(stage, "model", None), "_tied_weights_keys", None)
     tied = tied if isinstance(tied, dict) else {}
     by_file = {}
     for name, param in meta:
-        key = name.removeprefix("model.")
+        key = stage.checkpoint_key(name) if isinstance(stage, VisionTower) \
+            else name.removeprefix("model.")
         if key not in files:
             key = tied.get(key, key)
         if key not in files:

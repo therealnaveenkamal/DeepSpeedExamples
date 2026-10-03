@@ -17,7 +17,8 @@ from ray_deepspeed_pipeline.errors import ValidationError
 def test_schema_fields_frozen():
     fields = [f.name for f in dataclasses.fields(PipelineConfig)]
     assert fields == ["stages", "partition", "schedule", "microbatches",
-                      "checkpoint", "stage_overrides", "connection_overrides"]
+                      "checkpoint", "stage_overrides", "connection_overrides",
+                      "colocated_vision"]
     cfg = PipelineConfig(stages=2, partition=UniformTransformerBlocks())
     assert cfg.schedule == "1f1b" and cfg.microbatches is None
     with pytest.raises(dataclasses.FrozenInstanceError):

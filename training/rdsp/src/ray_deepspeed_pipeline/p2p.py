@@ -28,6 +28,7 @@ _DTYPES = [torch.float32, torch.bfloat16, torch.float16, torch.float64, torch.in
            torch.bool, torch.int32]
 _HEADER_LEN = 10  # dtype code, ndim, up to 7 dims, extras count
 _SLOTS = 64  # messages per microbatch and direction: hidden, extras' names, extras
+_SIZED_TAGS = 1 << 24  # sized messages (colocated vision) use tags from here on
 
 
 def _tag(mb: int, slot: int) -> int:
@@ -47,14 +48,18 @@ def _decode(header: torch.Tensor) -> tuple[torch.dtype, tuple[int, ...], int]:
 
 
 class PipelineP2P:
-    """One rank's two cross-stage groups, plus per-step bookkeeping."""
+    """One rank's two cross-stage groups, plus per-step bookkeeping.
+    collective: also a third group over every rank for collectives (the
+    colocated vision encoder's gradient sum), in `self.all`."""
 
     def __init__(self, store, rank: int, world: int, epoch: int, timeout_s: float,
-                 device: torch.device):
+                 device: torch.device, collective: bool = False):
         self.rank, self.world, self.device = rank, world, device
         timeout = datetime.timedelta(seconds=timeout_s)
         self.fwd = self._group(dist.PrefixStore(f"e{epoch}/fwd", store), timeout)
         self.bwd = self._group(dist.PrefixStore(f"e{epoch}/bwd", store), timeout)
+        self.all = (self._group(dist.PrefixStore(f"e{epoch}/all", store), timeout)
+                    if collective else None)
         self._pending = []       # (work, tensor) sends in flight this step
         self._shapes = {}        # (direction, peer, slot) -> decoded header, this step
         self._announced = set()  # (direction, peer, slot) already sent a header this step
@@ -72,7 +77,9 @@ class PipelineP2P:
         sit on an NCCL stream; aborting releases it before the watchdog would
         kill the process."""
         self._pending.clear()
-        for pg in (self.fwd, self.bwd):
+        for pg in (self.fwd, self.bwd, self.all):
+            if pg is None:
+                continue
             for name in ("abort", "shutdown"):
                 fn = getattr(pg, name, None)
                 if fn is not None:
@@ -120,6 +127,24 @@ class PipelineP2P:
         dtype, shape, _ = self._shapes[key]
         buf = torch.empty(shape, dtype=dtype, device=self.device)
         pg.recv([buf], peer, _tag(mb, slot) + 1).wait()
+        return buf
+
+    def send_sized(self, direction: str, t: torch.Tensor, peer: int, key: int) -> None:
+        """A tensor whose shape the receiver does not know: its header goes
+        with it every time. key: a per-step message number both ends agree on."""
+        pg, t = self._pg(direction), t.detach().contiguous()
+        header = _encode(t).to(self.device)
+        tag = _SIZED_TAGS + 2 * key
+        self._pending.append((pg.send([header], peer, tag), header))
+        self._pending.append((pg.send([t], peer, tag + 1), t))
+
+    def recv_sized(self, direction: str, peer: int, key: int) -> torch.Tensor:
+        pg, tag = self._pg(direction), _SIZED_TAGS + 2 * key
+        header = torch.empty(_HEADER_LEN, dtype=torch.int64, device=self.device)
+        pg.recv([header], peer, tag).wait()
+        dtype, shape, _ = _decode(header.cpu())
+        buf = torch.empty(shape, dtype=dtype, device=self.device)
+        pg.recv([buf], peer, tag + 1).wait()
         return buf
 
     def send_boundary(self, direction: str, hidden: torch.Tensor, extras: dict,

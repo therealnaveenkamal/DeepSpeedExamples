@@ -95,9 +95,11 @@ def lm_loss(logits, labels):
     return F.cross_entropy(logits[:, :-1].reshape(-1, VOCAB), labels[:, 1:].reshape(-1))
 
 
-def unsplit_losses(model, batches, steps):
-    """Loss per step of the whole model in one process, same AdamW."""
-    opt = torch.optim.AdamW(model.parameters(), lr=DS["optimizer"]["params"]["lr"])
+def unsplit_losses(model, batches, steps, config=DS):
+    """Loss per step of the whole model in one process, same optimizer."""
+    opt = config["optimizer"]
+    kind = torch.optim.SGD if opt["type"] == "SGD" else torch.optim.AdamW
+    opt = kind(model.parameters(), **opt["params"])
     losses = []
     for _ in range(steps):
         opt.zero_grad()
@@ -143,13 +145,15 @@ def stub_engines(monkeypatch):
             client.shutdown()
 
 
-def pipelined_losses(model, cuts, steps, overrides=(), weights=None):
+def pipelined_losses(model, cuts, steps, overrides=(), weights=None, colocated_vision=None,
+                     evaluate=False, config=DS):
     engine, _, _, _ = rdsp.initialize(
-        model=model, config=DS, loss_fn=lm_loss, weights=weights,
+        model=model, config=config, loss_fn=lm_loss, weights=weights,
         pipeline_config=rdsp.PipelineConfig(
             stages=len(cuts) + 1, partition=rdsp.ExplicitCuts(cuts),
-            stage_overrides=overrides))
-    return [float(engine.train_batch(data_iter=iter(make_batches()))) for _ in range(steps)]
+            stage_overrides=overrides, colocated_vision=colocated_vision))
+    run = engine.eval_batch if evaluate else engine.train_batch
+    return [float(run(data_iter=iter(make_batches()))) for _ in range(steps)]
 
 
 def test_two_stages_match_unsplit_model(ray_ctx, stub_engines):
@@ -194,6 +198,157 @@ def test_qwen3_5_vl_with_data_parallel_vision_stage_matches_unsplit_model(ray_ct
     got = pipelined_losses(model, (1, 4), steps=2,
                            overrides=(StageOverride(stage=0, num_gpus=2),))
     assert got == pytest.approx(expected, rel=1e-4)
+
+
+@pytest.mark.skipif(not hasattr(transformers, "Qwen3_5ForConditionalGeneration"),
+                    reason="transformers without Qwen3.5")
+def test_vision_only_first_stage_matches_unsplit_model(ray_ctx, stub_engines):
+    """A first cut at 0 gives the vision encoder (and the embeddings) a
+    stage of its own, here on 2 data-parallel ranks; it sends the merged
+    input embeddings and the rotary tables, and holds no decoder block."""
+    from ray_deepspeed_pipeline.partition import partition_parameters
+
+    model, reference = qwen3_5_vl_pair(seed=7)
+    first = partition_parameters(model, rdsp.ExplicitCuts((0, 3)), 3)[0]
+    assert not any(".layers." in n for n in first.parameter_names)
+    assert any(".visual." in n for n in first.parameter_names)
+
+    expected = unsplit_losses(reference, make_batches(), steps=2)
+    got = pipelined_losses(model, (0, 3), steps=2,
+                           overrides=(StageOverride(stage=0, num_gpus=2),))
+    assert got == pytest.approx(expected, rel=1e-4)
+
+
+needs_qwen3_5 = pytest.mark.skipif(not hasattr(transformers, "Qwen3_5ForConditionalGeneration"),
+                                   reason="transformers without Qwen3.5")
+
+
+@needs_qwen3_5
+@pytest.mark.parametrize("cuts,overrides", [
+    ((3,), (StageOverride(stage=0, num_gpus=2),)),   # 3 vision ranks, 4 images
+    ((2,), (StageOverride(stage=1, num_gpus=2),)),   # images reach stage 0 from stage 1
+], ids=["dp-first-stage", "dp-last-stage"])
+def test_colocated_vision_matches_unsplit_model(ray_ctx, stub_engines, cuts, overrides):
+    """Colocated vision: every rank of every stage hosts the vision encoder
+    and encodes a share of the step's images; stage 0 gets their features
+    in place of pixels, and the feature gradients go back to the rank that
+    encoded each image."""
+    model, reference = qwen3_5_vl_pair(seed=8)
+    expected = unsplit_losses(reference, make_batches(), steps=3)
+    got = pipelined_losses(model, cuts, steps=3, overrides=overrides,
+                           colocated_vision=rdsp.ColocatedVision())
+    assert got == pytest.approx(expected, rel=1e-4)
+
+
+@needs_qwen3_5
+def test_colocated_vision_gradients_have_the_right_scale(ray_ctx, stub_engines):
+    """SGD, unlike Adam, moves a parameter in proportion to its gradient, so
+    a mis-scaled encoder gradient (the first stage's data-parallel degree,
+    the number of encoding ranks) changes the losses."""
+    sgd = dict(DS, optimizer={"type": "SGD", "params": {"lr": 0.5, "momentum": 0.9}})
+    model, reference = qwen3_5_vl_pair(seed=13)
+    expected = unsplit_losses(reference, make_batches(), steps=3, config=sgd)
+    got = pipelined_losses(model, (3,), steps=3, config=sgd,
+                           overrides=(StageOverride(stage=0, num_gpus=2),),
+                           colocated_vision=rdsp.ColocatedVision())
+    assert got == pytest.approx(expected, rel=1e-4)
+
+
+@needs_qwen3_5
+def test_colocated_vision_leaves_the_encoder_off_every_stage():
+    from ray_deepspeed_pipeline.compiler import lower
+
+    model = transformers.Qwen3_5ForConditionalGeneration(tiny_qwen3_5_vl())
+    plan = lower(model, rdsp.PipelineConfig(stages=2, partition=rdsp.ExplicitCuts((3,)),
+                                            colocated_vision=rdsp.ColocatedVision()), DS)
+    assert plan.colocated_vision.module == "model.visual"
+    staged = {n for s in plan.stages for n in s.parameter_names}
+    assert staged.isdisjoint(plan.colocated_vision.parameter_names)
+    assert staged | set(plan.colocated_vision.parameter_names) == \
+        {n for n, _ in model.named_parameters()}
+
+
+@needs_qwen3_5
+def test_colocated_vision_checkpoint_resumes_the_encoder(ray_ctx, stub_engines, tmp_path):
+    """The encoder's weights and optimizer state round-trip: a run resumed
+    from a checkpoint continues with the same losses."""
+    def make_engine(seed):
+        model, _ = qwen3_5_vl_pair(seed)
+        engine, _, _, _ = rdsp.initialize(
+            model=model, config=DS, loss_fn=lm_loss,
+            pipeline_config=rdsp.PipelineConfig(
+                stages=2, partition=rdsp.ExplicitCuts((3,)),
+                stage_overrides=(StageOverride(stage=0, num_gpus=2),),
+                colocated_vision=rdsp.ColocatedVision()))
+        return engine
+
+    a = make_engine(seed=11)
+    a.train_batch(data_iter=iter(make_batches()))
+    a.save_checkpoint(str(tmp_path), "c1")
+    continued = [float(a.train_batch(data_iter=iter(make_batches()))) for _ in range(2)]
+    for worker in a._coordinator._workers:  # the test cluster fits one pipeline
+        worker.shutdown()
+    b = make_engine(seed=12)  # different initial weights, encoder included
+    b.load_checkpoint(str(tmp_path), "c1")
+    resumed = [float(b.train_batch(data_iter=iter(make_batches()))) for _ in range(2)]
+    assert resumed == pytest.approx(continued, rel=1e-5)
+
+
+@needs_qwen3_5
+def test_colocated_vision_with_recompute_and_eval(ray_ctx, stub_engines):
+    model, reference = qwen3_5_vl_pair(seed=9)
+    inputs = [(inp, labels) for inp, labels in make_batches()]
+    with torch.no_grad():
+        expected = sum(float(lm_loss(reference(
+            **{k: torch.cat(v) if isinstance(v, list) else v for k, v in inp.items()},
+            use_cache=False).logits, labels)) for inp, labels in inputs) / len(inputs)
+    got = pipelined_losses(model, (3,), steps=1, evaluate=True,
+                           colocated_vision=rdsp.ColocatedVision(recompute=True))
+    assert got == pytest.approx([expected], rel=1e-4)
+
+
+@needs_qwen3_5
+def test_colocated_vision_loads_its_weights_from_the_checkpoint(ray_ctx, stub_engines, tmp_path):
+    accelerate = pytest.importorskip("accelerate")
+    trained, _ = qwen3_5_vl_pair(seed=10)
+    trained.save_pretrained(tmp_path)
+    expected = unsplit_losses(trained, make_batches(), steps=2)
+    with accelerate.init_empty_weights():
+        skeleton = transformers.Qwen3_5ForConditionalGeneration(tiny_qwen3_5_vl()).float()
+    got = pipelined_losses(skeleton, (3,), steps=2, weights=str(tmp_path),
+                           colocated_vision=rdsp.ColocatedVision())
+    assert got == pytest.approx(expected, rel=1e-4)
+
+
+@pytest.mark.parametrize("make,cuts,match", [
+    (lambda: transformers.Qwen3VLForConditionalGeneration(tiny_qwen3_vl()), (3,),
+     "inside the decoder"),
+    (lambda: transformers.Qwen3_5ForConditionalGeneration(tiny_qwen3_5_vl()), (0, 3),
+     "vision-only"),
+    (lambda: transformers.Qwen3ForCausalLM(transformers.Qwen3Config(
+        vocab_size=VOCAB, hidden_size=64, intermediate_size=128, num_hidden_layers=4,
+        num_attention_heads=4, num_key_value_heads=2, head_dim=16)), (2,), "vision encoder"),
+], ids=["deepstack", "vision-only-stage", "text-model"])
+def test_colocated_vision_rejected_where_it_cannot_apply(make, cuts, match):
+    from ray_deepspeed_pipeline.compiler import lower
+
+    if not hasattr(transformers, "Qwen3_5ForConditionalGeneration"):
+        pytest.skip("transformers without Qwen3.5")
+    with pytest.raises(ValidationError, match=match):
+        lower(make(), rdsp.PipelineConfig(stages=len(cuts) + 1, partition=rdsp.ExplicitCuts(cuts),
+                                          colocated_vision=rdsp.ColocatedVision()), DS)
+
+
+def test_first_cut_at_zero_needs_a_vision_encoder():
+    """Without a vision encoder, a first stage without blocks would only
+    look up embeddings."""
+    from ray_deepspeed_pipeline.partition import partition_parameters
+
+    text = transformers.Qwen3ForCausalLM(transformers.Qwen3Config(
+        vocab_size=VOCAB, hidden_size=64, intermediate_size=128, num_hidden_layers=4,
+        num_attention_heads=4, num_key_value_heads=2, head_dim=16))
+    with pytest.raises(ValidationError, match="vision encoder"):
+        partition_parameters(text, rdsp.ExplicitCuts((0, 2)), 3)
 
 
 def test_meta_skeleton_loads_weights_per_stage(ray_ctx, stub_engines, tmp_path):

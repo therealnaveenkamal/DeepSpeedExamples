@@ -194,6 +194,8 @@ class PipelineCoordinator:
         if self._p2p_dirty:
             self._reconnect_p2p(strict=True)
         kinds = ("forward", "backward", "eval", "ready")
+        # every rank encodes a share of the images (vision.py)
+        colocated = self._plan.colocated_vision is not None
         cmds, handles = {}, {}
         for s in range(n_stages):
             ops = [(c.kind, c.microbatch, c.command_id)
@@ -204,7 +206,7 @@ class PipelineCoordinator:
                 kind="step" if train else "eval_step", microbatch=None, predecessors=())
             try:
                 handles[s] = self._submit(
-                    cmds[s], inputs=inputs if s == 0 else None,
+                    cmds[s], inputs=inputs if s == 0 or colocated else None,
                     labels=labels if s == terminal else None, control={"ops": ops})
             except StepFailed:
                 self._p2p_dirty = True

@@ -176,11 +176,12 @@ def _average_input_grad(group, module, args):
 class DeepSpeedStageAdapter:
     """Forward, external-gradient backward, ready/apply, eval and checkpoint
     shards for one stage. loss_fn is required on the terminal stage and
-    forbidden elsewhere."""
+    forbidden elsewhere. input_grads: first-stage inputs (keys of a dict
+    input) whose gradient backward() returns (colocated vision features)."""
 
     def __init__(self, stage_module, ds_config, n_microbatches: int,
                  is_first: bool, is_last: bool, loss_fn=None,
-                 engine_factory=None):
+                 engine_factory=None, input_grads: tuple[str, ...] = ()):
         if isinstance(ds_config, str):
             ds_config = json.loads(ds_config)
         assert (loss_fn is not None) == is_last, \
@@ -189,6 +190,7 @@ class DeepSpeedStageAdapter:
         self.is_first = is_first
         self.is_last = is_last
         self.loss_fn = loss_fn
+        self.input_grads = input_grads
         self.engine = (engine_factory or _deepspeed_engine_factory)(
             stage_module, ds_config)
         self.device = next(self.engine.module.parameters()).device
@@ -258,14 +260,28 @@ class DeepSpeedStageAdapter:
         x = _to_device(x, self.device)
         if not self.is_first:
             x = x.detach().requires_grad_(True)  # the cut
+            inp = x
+        else:
+            x, inp = self._input_leaves(x)
         out = self._call(x, position_offset, _to_device(extras, self.device))
         hidden = out[0] if isinstance(out, tuple) else out
-        self._acts[mb] = (None if self.is_first else x, hidden)
+        self._acts[mb] = (inp, hidden)
         if self.is_last:
             loss = self.loss_fn(hidden, labels.to(self.device))
             self._losses[mb] = loss
             return float(loss.detach())
         return self._boundary(out)
+
+    def _input_leaves(self, x):
+        """(x, {name: leaf}) with the input_grads entries of a dict input
+        made leaves that collect their gradient; None if there are none."""
+        names = [k for k in self.input_grads if isinstance(x, dict) and k in x]
+        if not names:
+            return x, None
+        x = dict(x)
+        for k in names:
+            x[k] = x[k].detach().requires_grad_(True)
+        return x, {k: x[k] for k in names}
 
     def _boundary(self, out):
         # stays on the device: it leaves over NCCL
@@ -300,7 +316,7 @@ class DeepSpeedStageAdapter:
             self.engine.backward((out * grad).sum())
         self._backwards += 1
         if self.is_first:
-            return None
+            return None if inp is None else {k: self._boundary(t.grad) for k, t in inp.items()}
         return self._boundary(inp.grad)
 
     # -- step barrier -------------------------------------------------------

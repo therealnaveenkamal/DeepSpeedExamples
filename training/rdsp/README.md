@@ -165,10 +165,40 @@ Constraints: SP not on the last stage; TP and SP not in the same stage; rows
 divisible by every stage's DP degree; no parameters tied across stages; no
 gradient clipping.
 
+## Vision placements
+
+Three ways to place a vision-language model's vision encoder:
+
+| Placement | How | Encoder runs on |
+|---|---|---|
+| Shared layout | default; the first stage holds the encoder and its first blocks | the first stage's GPUs, in that stage's layout (with TP, its blocks split too) |
+| Vision stage | `ExplicitCuts((0, ...))`: a first cut at 0 | its own stage with its own GPU count and layout; sends embeddings and rotary tables |
+| Colocated | `PipelineConfig(colocated_vision=rdsp.ColocatedVision())` | every GPU of the pipeline, data parallel |
+
+```python
+rdsp.PipelineConfig(
+    stages=2, partition=rdsp.ExplicitCuts((32,)),
+    stage_overrides=(StageOverride(stage=0, num_gpus=4, tp=2),
+                     StageOverride(stage=1, num_gpus=4, tp=2)),
+    colocated_vision=rdsp.ColocatedVision(recompute=False))
+```
+
+Colocated step (`vision.py`): every rank encodes its share of the step's images
+in one batch and sends each image's features to the first-stage ranks whose rows
+hold it, where they replace the pixels; the language pipeline runs its normal
+1F1B; then the first stage returns each image's feature gradient to the rank
+that encoded it, every rank backpropagates through its encoder, and encoder
+gradients are summed over all ranks. The encoder trains with a torch optimizer
+built from the DeepSpeed config (Adam, AdamW or SGD, plus the scheduler), state
+replicated on every rank; checkpoints keep a copy per stage. Supported for
+encoders whose output enters only the input embeddings (Qwen3.5); Qwen3-VL's
+deepstack features enter its first blocks, so it keeps the encoder on the first
+stage. bf16 or fp32, not fp16.
+
 ## Tests
 
 ```bash
-pytest -q            # CPU: full runtime on Ray with a torch stub engine (349 tests, ~6 min)
+pytest -q            # CPU: full runtime on Ray with a torch stub engine (371 tests, ~7 min)
 ruff check .
 modal run scripts/modal_tests.py --gpus L4:8 \
     --tests "tests/integration/test_p6_first_row.py tests/integration/test_p7_checkpoint_gpu.py tests/integration/test_heterogeneous_pipeline.py"
@@ -267,7 +297,7 @@ middle one data-parallel, loss equal to the unsplit model over 2 steps,
 Qwen3-MoE, Qwen3.5, Mixtral, Gemma, Gemma2, Gemma3, Phi-3, OLMo2, Granite,
 Cohere, StarCoder2, StableLM, DeepSeek-V3, GLM-4, GLM-4-MoE, GPT-2, GPT-NeoX,
 Falcon, Bloom, Mamba, GLM-5.3 (4-stream hidden state, blocks handing top-k
-indices to the next); plus Qwen3-VL (`test_vl_pipeline.py`). Tested with
+indices to the next); plus Qwen3-VL and Qwen3.5-VL (`test_vl_pipeline.py`). Tested with
 transformers 5.17.
 
 How it works: every stage runs the model's own `forward`. Blocks outside the
@@ -298,7 +328,9 @@ only its own tensors from the safetensors files; the driver holds no weights.
 TP/SP/EP inside an `HFModelStage`: the stage carries the text model's AutoTP
 plan (or, for the ~80% of configs without one, such as Qwen3-VL, a plan for
 the standard `q/k/v/o_proj`, `gate/up/down_proj`, `q_norm/k_norm` names its
-blocks have) and the text config (Ulysses head counts, AutoEP settings).
+blocks have; vision encoder blocks split `attn.qkv` by thirds, `attn.proj`,
+`mlp.linear_fc1/fc2`; Qwen3.5's linear-attention projections split their
+output and gather it) and the text config (Ulysses head counts, AutoEP settings).
 Ulysses SP is rejected on the first stage of a vision model: image positions
 need the whole sequence. Boundary tensors reach the engine as flat keyword
 tensors: DeepSpeed's first-forward AutoTP check that TP ranks got identical

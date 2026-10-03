@@ -7,9 +7,9 @@ overrides at their defaults. All validation happens here, before any actor exist
 import json
 
 from ray_deepspeed_pipeline.boundary import Grid, conversion_name
-from ray_deepspeed_pipeline.config import PipelineConfig
+from ray_deepspeed_pipeline.config import ExplicitCuts, PipelineConfig
 from ray_deepspeed_pipeline.errors import ValidationError
-from ray_deepspeed_pipeline.partition import partition_parameters
+from ray_deepspeed_pipeline.partition import partition_parameters, vision_injection_depth
 from ray_deepspeed_pipeline.plan import (
     SCHEMA_VERSION,
     CheckpointSpec,
@@ -18,6 +18,7 @@ from ray_deepspeed_pipeline.plan import (
     ScheduleSpec,
     StageConnection,
     StageSpec,
+    VisionSpec,
 )
 
 _DEFAULT_BUFFER_LIMIT = 2
@@ -129,6 +130,35 @@ def _stage_grid(override, index: int, n_stages: int, rows: int) -> tuple[Grid, i
     return Grid(dp=dp, sp=sp, tp=tp), ep
 
 
+def _colocated_vision(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> VisionSpec:
+    """Validate colocated vision for this model and config."""
+    from ray_deepspeed_pipeline.vision import VISION_OPTIMIZERS, find_vision_encoder
+
+    module = find_vision_encoder(model)
+    depth = vision_injection_depth(model)
+    if depth:
+        raise ValidationError(
+            f"{type(model).__name__} adds vision features inside the decoder (blocks "
+            f"0-{depth - 1}), so its vision encoder must share the first stage; "
+            f"colocated vision supports encoders whose output enters only the input "
+            f"embeddings")
+    partition = pipeline_config.partition
+    if isinstance(partition, ExplicitCuts) and partition.cuts and partition.cuts[0] == 0:
+        raise ValidationError(
+            "a first cut at 0 makes a vision-only first stage, which colocated vision "
+            "leaves empty; cut after at least one block")
+    conf = ds_config if isinstance(ds_config, dict) else {}
+    if conf.get("fp16", {}).get("enabled", False):
+        raise ValidationError("colocated vision supports bf16 or fp32, not fp16: the "
+                              "encoder's gradients would miss the loss scale")
+    kind = conf.get("optimizer", {}).get("type", "AdamW")
+    if kind.lower() not in VISION_OPTIMIZERS:
+        raise ValidationError(f"colocated vision supports Adam, AdamW or SGD, got {kind!r}")
+    names = tuple(n for n, _ in model.named_parameters() if n.startswith(module + "."))
+    return VisionSpec(module=module, parameter_names=names,
+                      recompute=pipeline_config.colocated_vision.recompute)
+
+
 def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> ExecutionPlan:
     """Validate and lower; raises ValidationError before any Ray actor exists."""
     n = pipeline_config.stages
@@ -153,8 +183,12 @@ def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> Exe
         raise ValidationError(
             "stage 0: sequence parallelism on the first stage of a vision model is "
             "unsupported; image positions depend on the whole sequence")
+    vision = None
+    if pipeline_config.colocated_vision is not None:
+        vision = _colocated_vision(model, pipeline_config, ds_config)
     stage_gpus = tuple(overrides[i].num_gpus if i in overrides else 1 for i in range(n))
-    partitions = partition_parameters(model, pipeline_config.partition, n, stage_gpus)
+    partitions = partition_parameters(model, pipeline_config.partition, n, stage_gpus,
+                                      exclude=vision.module if vision else None)
 
     rows = global_microbatch_rows(ds_config, microbatches)
     stages, grids = [], []
@@ -211,4 +245,5 @@ def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> Exe
             save_optimizer_state=checkpoint.save_optimizer_state if checkpoint else True),
         failure=FailureSpec(poison_on_partial_apply=True),
         microbatch_rows=rows,
+        colocated_vision=vision,
     )

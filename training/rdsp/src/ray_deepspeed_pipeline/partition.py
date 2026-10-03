@@ -49,7 +49,9 @@ def find_block_list(model: nn.Module) -> tuple[str, nn.ModuleList]:
     return winners[0]
 
 
-def _cuts_for(policy, n_blocks: int, stages: int) -> list[int]:
+def _cuts_for(policy, n_blocks: int, stages: int, vision: bool = False) -> list[int]:
+    """vision: the model has a vision encoder, which a first cut at 0 leaves
+    alone on the first stage (with the embeddings)."""
     if isinstance(policy, ExplicitCuts):
         cuts = list(policy.cuts)
         if len(cuts) != stages - 1:
@@ -66,7 +68,11 @@ def _cuts_for(policy, n_blocks: int, stages: int) -> list[int]:
     else:
         raise ValidationError(f"unknown partition policy {type(policy)}")
 
-    if any(c <= 0 or c >= n_blocks for c in cuts):
+    if cuts and cuts[0] == 0 and not vision:
+        raise ValidationError(
+            "a first cut at 0 leaves the first stage no blocks, which only a model "
+            "with a vision encoder can use (a vision-only stage)")
+    if any(c < 0 or c >= n_blocks for c in cuts) or 0 in cuts[1:]:
         raise ValidationError(f"cuts must lie in (0, {n_blocks}), got {cuts}")
     if any(a >= b for a, b in zip(cuts, cuts[1:])):
         raise ValidationError(f"cuts must be strictly increasing, got {cuts}")
@@ -81,9 +87,11 @@ def vision_injection_depth(model: nn.Module) -> int:
     return len(getattr(vision, "deepstack_visual_indexes", None) or ())
 
 
-def _compute_costs(model: nn.Module, blocks_name: str, blocks) -> tuple[int, list[int], int]:
+def _compute_costs(model: nn.Module, blocks_name: str, blocks,
+                   exclude: str | None = None) -> tuple[int, list[int], int]:
     """(before the blocks, per block, after the blocks) cost estimates in
-    parameters, embeddings excluded, each shared parameter counted once."""
+    parameters, embeddings and the `exclude` module excluded, each shared
+    parameter counted once."""
     named = [n for n, _ in model.named_parameters()]
     prefix = blocks_name + "."
     first = min(i for i, n in enumerate(named) if n.startswith(prefix))
@@ -96,7 +104,7 @@ def _compute_costs(model: nn.Module, blocks_name: str, blocks) -> tuple[int, lis
             continue
         for leaf, param in module.named_parameters(recurse=False):
             name = f"{module_name}.{leaf}" if module_name else leaf
-            if id(param) in seen or name not in position:
+            if id(param) in seen or name not in position or _under(name, exclude):
                 continue
             seen.add(id(param))
             if name.startswith(prefix):
@@ -155,23 +163,30 @@ def _balanced_cuts(costs: tuple, stages: int, min_first: int,
     return cuts[::-1]
 
 
+def _under(name: str, module: str | None) -> bool:
+    return module is not None and name.startswith(module + ".")
+
+
 def partition_parameters(model: nn.Module, policy, stages: int,
-                         stage_gpus: tuple[int, ...] | None = None) -> tuple[StagePartition, ...]:
+                         stage_gpus: tuple[int, ...] | None = None,
+                         exclude: str | None = None) -> tuple[StagePartition, ...]:
     """Assign every parameter name to exactly one stage. Blocks map by cut
     range; parameters before the block list go to the first stage, those
     after it to the last. Rejects parameters tied across stages: each stage
-    would hold its own copy and see only part of the gradient."""
+    would hold its own copy and see only part of the gradient. exclude: a
+    module whose parameters go to no stage (a colocated vision encoder)."""
     if stages < 1:
         raise ValidationError(f"stages must be >= 1, got {stages}")
     blocks_name, blocks = find_block_list(model)
     if isinstance(policy, BalancedTransformerBlocks) and stages > 1:
-        pre, per_block, post = _compute_costs(model, blocks_name, blocks)
+        pre, per_block, post = _compute_costs(model, blocks_name, blocks, exclude)
         # what precedes the blocks, embeddings aside, is the vision encoder
         pre *= policy.vision_token_ratio
         cuts = _balanced_cuts((pre, per_block, post), stages,
                               vision_injection_depth(model), stage_gpus or (1,) * stages)
     else:
-        cuts = _cuts_for(policy, len(blocks), stages) if stages > 1 else []
+        vision = getattr(getattr(model, "config", None), "vision_config", None) is not None
+        cuts = _cuts_for(policy, len(blocks), stages, vision) if stages > 1 else []
     bounds = [0] + cuts + [len(blocks)]
 
     def stage_of_block(b: int) -> int:
@@ -182,7 +197,8 @@ def partition_parameters(model: nn.Module, policy, stages: int,
 
     # declaration order stands in for topology on the sequential models
     # supported; remove_duplicate=False keeps tied names visible
-    named = list(model.named_parameters(remove_duplicate=False))
+    named = [(n, p) for n, p in model.named_parameters(remove_duplicate=False)
+             if not _under(n, exclude)]
     prefix = blocks_name + "."
     block_positions = [i for i, (n, _) in enumerate(named) if n.startswith(prefix)]
     if not block_positions:
