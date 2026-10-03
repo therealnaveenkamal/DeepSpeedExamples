@@ -287,7 +287,8 @@ class DeepSpeedStageAdapter:
             return self.engine(**x, **kwargs)
         return self.engine(x, **kwargs)
 
-    def forward(self, mb: int, x, labels=None, position_offset=None, extras=None):
+    def forward(self, mb: int, x, labels=None, position_offset=None, extras=None,
+                loss_weight: float = 1.0):
         """Returns the loss on the last stage, otherwise the boundary output:
         the hidden state, or (hidden, extras) if the stage module adds block
         arguments for the next stage. x may be a dict on the first stage."""
@@ -301,7 +302,7 @@ class DeepSpeedStageAdapter:
         hidden = out[0] if isinstance(out, tuple) else out
         self._acts[mb] = (inp, hidden)
         if self.is_last:
-            loss = self.loss_fn(hidden, labels.to(self.device))
+            loss = self.loss_fn(hidden, labels.to(self.device)) * loss_weight
             self._losses[mb] = loss
             return float(loss.detach())
         return self._boundary(out)
@@ -323,12 +324,13 @@ class DeepSpeedStageAdapter:
             return out[0].detach(), out[1]
         return out.detach()
 
-    def eval_forward(self, mb: int, x, labels=None, position_offset=None, extras=None):
+    def eval_forward(self, mb: int, x, labels=None, position_offset=None, extras=None,
+                     loss_weight: float = 1.0):
         with torch.no_grad():
             out = self._call(_to_device(x, self.device), position_offset,
                              _to_device(extras, self.device))
             if self.is_last:
-                return float(self.loss_fn(out, labels.to(self.device)))
+                return float(self.loss_fn(out, labels.to(self.device)) * loss_weight)
             return self._boundary(out)
 
     # -- backward -----------------------------------------------------------

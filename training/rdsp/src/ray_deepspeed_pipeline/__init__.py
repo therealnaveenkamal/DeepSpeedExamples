@@ -7,6 +7,7 @@ from ray_deepspeed_pipeline.config import (
     UniformTransformerBlocks,
 )
 from ray_deepspeed_pipeline.engine import RayPipelineEngine
+from ray_deepspeed_pipeline.losses import TokenMeanLoss
 
 __all__ = [
     "initialize",
@@ -16,4 +17,5 @@ __all__ = [
     "ExplicitCuts",
     "BalancedTransformerBlocks",
     "ColocatedVision",
+    "TokenMeanLoss",
 ]

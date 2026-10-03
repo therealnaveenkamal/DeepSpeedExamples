@@ -19,6 +19,7 @@ from ray_deepspeed_pipeline.boundary import (
     slice_inputs,
 )
 from ray_deepspeed_pipeline.errors import ValidationError
+from ray_deepspeed_pipeline.losses import TokenMeanLoss
 from ray_deepspeed_pipeline.partition import recompute_blocks, select_stage_builder
 from ray_deepspeed_pipeline.protocols import Command
 from ray_deepspeed_pipeline.stage_worker import StageWorkerActor
@@ -67,10 +68,13 @@ class StageGroupClient:
     rank in the same order, so the ranks' collectives line up."""
 
     def __init__(self, actors, stage: int = 0, grid: Grid | None = None,
-                 is_last: bool = False, placement_group=None, vision=None):
+                 is_last: bool = False, placement_group=None, vision=None,
+                 count_tokens=None):
         """vision: (VisionLayout, this stage's global rank offset) under
-        colocated vision."""
+        colocated vision. count_tokens: a TokenMeanLoss's count_fn (last
+        stage), which counts the step's tokens from all its labels."""
         self.actors = actors
+        self.count_tokens = count_tokens
         self.vision = vision
         self.stage = stage
         self.grid = grid or Grid(dp=len(actors))
@@ -95,6 +99,9 @@ class StageGroupClient:
         Under colocated vision every stage gets the inputs: each rank takes
         its images, and the first stage the rest without the pixels."""
         refs = []
+        token_total = None
+        if self.count_tokens is not None and labels is not None:
+            token_total = sum(int(self.count_tokens(y)) for y in labels)
         for rank, actor in enumerate(self.actors):
             cell = rank_cell(self.grid, rank)
             routes, cell_inputs = None, None
@@ -110,7 +117,7 @@ class StageGroupClient:
                 command.generation, control["ops"], command.kind == "step",
                 inputs=cell_inputs,
                 labels=[cell_slice(y, cell) for y in labels] if labels is not None else None,
-                vision=routes))
+                vision=routes, token_total=token_total))
         reps = representatives(self.grid)
 
         def reduce(results):
@@ -276,7 +283,9 @@ def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
                     vision=tower_ref if vision is not None else None))
             clients.append(StageGroupClient(
                 actors, stage=spec.index, grid=grid, is_last=is_last, placement_group=pg,
-                vision=(layout, offset) if vision is not None else None))
+                vision=(layout, offset) if vision is not None else None,
+                count_tokens=(loss_fn.count_fn if is_last and isinstance(loss_fn, TokenMeanLoss)
+                              else None)))
             offset += spec.num_gpus
 
         # bootstrap every stage's world concurrently

@@ -165,6 +165,16 @@ Constraints: SP not on the last stage; TP and SP not in the same stage; rows
 divisible by every stage's DP degree; no parameters tied across stages; no
 gradient clipping.
 
+## Loss averaging
+
+A plain `loss_fn` returns each data-parallel rank's mean over its rows; the step
+loss is the mean of those means. With rows of different token counts (captions
+of different lengths) that weights tokens unevenly. `rdsp.TokenMeanLoss(sum_fn,
+count_fn)` averages over every counted token of the step instead, across
+microbatches and ranks, like Megatron's `calculate_per_token_loss`: the driver
+counts the step's tokens from the labels before dispatch, so each backward
+already carries its final weight. `train_vl.py` uses it.
+
 ## Vision placements
 
 Three ways to place a vision-language model's vision encoder:
@@ -202,7 +212,7 @@ shared layout TP2·TP2, vision stage DP2 then TP2, colocated with TP2·DP2.
 ## Tests
 
 ```bash
-pytest -q            # CPU: full runtime on Ray with a torch stub engine (373 tests, ~7 min)
+pytest -q            # CPU: full runtime on Ray with a torch stub engine (375 tests, ~7 min)
 ruff check .
 modal run scripts/modal_tests.py --gpus L4:8 \
     --tests "tests/integration/test_p6_first_row.py tests/integration/test_p7_checkpoint_gpu.py tests/integration/test_heterogeneous_pipeline.py"

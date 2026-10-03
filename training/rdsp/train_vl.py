@@ -106,26 +106,38 @@ def microbatches(processor, rows: int, seq: int, source):
         yield inputs, torch.stack([labels for _, labels in encoded])
 
 
-def loss_fn(logits, labels):
+def token_loss_sum(logits, labels):
+    """Summed next-token loss over the caption tokens of some rows."""
     return F.cross_entropy(logits[:, :-1].float().reshape(-1, logits.shape[-1]),
-                           labels[:, 1:].reshape(-1).to(logits.device), ignore_index=-100)
+                           labels[:, 1:].reshape(-1).to(logits.device), ignore_index=-100,
+                           reduction="sum")
+
+
+def token_count(labels) -> int:
+    return int((labels[:, 1:] != -100).sum())
+
+
+# averaged over every caption token of the step (Megatron's per-token loss)
+loss_fn = rdsp.TokenMeanLoss(token_loss_sum, token_count)
 
 
 def unsplit_loss(weights: str, batches) -> float:
-    """Mean loss of the whole model, unsplit: the reference for --check.
-    Spread over the GPUs when it does not fit one (32B); freed afterwards."""
+    """Loss of the whole model, unsplit, averaged over every caption token:
+    the reference for --check. Spread over the GPUs when it does not fit one
+    (32B); freed afterwards."""
     import transformers
     model = transformers.AutoModelForImageTextToText.from_pretrained(
         weights, dtype=torch.bfloat16, device_map="auto").eval()
-    losses = []
+    total = count = 0.0
     with torch.no_grad():
         for inputs, labels in batches:
             full = {k: torch.cat(v) if isinstance(v, list) else v for k, v in inputs.items()}
             full = {k: v.to(model.device) for k, v in full.items()}
-            losses.append(float(loss_fn(model(**full, use_cache=False).logits, labels)))
+            total += float(token_loss_sum(model(**full, use_cache=False).logits, labels))
+            count += token_count(labels)
     del model
     torch.cuda.empty_cache()
-    return sum(losses) / len(losses)
+    return total / count
 
 
 def ds_config(args) -> dict:

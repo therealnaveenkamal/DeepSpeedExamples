@@ -28,6 +28,7 @@ from ray_deepspeed_pipeline.boundary import (
 from ray_deepspeed_pipeline.deepspeed_adapter import DeepSpeedStageAdapter, observed_mesh
 from ray_deepspeed_pipeline.errors import ValidationError
 from ray_deepspeed_pipeline.hf_stage import load_meta_parameters
+from ray_deepspeed_pipeline.losses import token_weight
 
 _VISION_FILE = "colocated_vision.pt"
 
@@ -170,10 +171,11 @@ class StageWorkerActor:
             if self.vision is not None:
                 self.vision.reset()
 
-    def _forward(self, kind: str, mb: int, x, labels, extras):
+    def _forward(self, kind: str, mb: int, x, labels, extras, loss_weight=1.0):
         offset = self.cell.sp_index * x.shape[1] if self.grid.sp > 1 else None
         run = self.adapter.forward if kind == "forward" else self.adapter.eval_forward
-        return run(mb, x, labels=labels, position_offset=offset, extras=extras)
+        return run(mb, x, labels=labels, position_offset=offset, extras=extras,
+                   loss_weight=loss_weight)
 
     def _receive_forward(self, sources, mb: int):
         """This rank's cell of the upstream hidden state and extras."""
@@ -283,11 +285,12 @@ class StageWorkerActor:
         self.p2p.end_step()
 
     def run_step(self, generation: int, ops: list, train: bool, inputs=None,
-                 labels=None, vision=None):
+                 labels=None, vision=None, token_total=None):
         """Run this rank's whole step. ops: [(kind, mb, command_id)] in 1F1B
         order. inputs / labels: this rank's cell of every microbatch (first /
         last stage only). vision: this rank's vision.route_images() entry
-        under colocated vision."""
+        under colocated vision. token_total: the step's token count under a
+        TokenMeanLoss (last stage)."""
         self._enter_generation(generation)
         prev, next_ = self._peers()
         adapter, p2p, timer = self.adapter, self.p2p, self._timer
@@ -295,6 +298,8 @@ class StageWorkerActor:
         # entering this stage must be dp_s x dL/d(output): scale by dp_s/dp_{s+1}
         scale = gradient_scale(self._grids[self.stage + 1].dp, self.grid.dp) if next_ else 1.0
         losses, feature_grads = {}, {}
+        loss_weight = (token_weight(token_total, self.grid.dp, adapter.n_mb)
+                       if token_total is not None else 1.0)
         p2p.begin_step()
         try:
             if vision is not None:
@@ -317,7 +322,7 @@ class StageWorkerActor:
                         x, extras = inputs[mb], None
                     mb_labels = labels[mb] if labels is not None else None
                     with timer.phase("forward"):
-                        out = self._forward(kind, mb, x, mb_labels, extras)
+                        out = self._forward(kind, mb, x, mb_labels, extras, loss_weight)
                     if next_:
                         hidden, out_extras = out if isinstance(out, tuple) else (out, {})
                         for peer in next_[0]:

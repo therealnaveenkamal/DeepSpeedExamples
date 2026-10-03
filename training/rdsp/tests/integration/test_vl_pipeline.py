@@ -240,6 +240,58 @@ def test_colocated_vision_matches_unsplit_model(ray_ctx, stub_engines, cuts, ove
     assert got == pytest.approx(expected, rel=1e-4)
 
 
+def token_sum(logits, labels):
+    return F.cross_entropy(logits[:, :-1].reshape(-1, VOCAB), labels[:, 1:].reshape(-1),
+                           ignore_index=-100, reduction="sum")
+
+
+def token_count(labels):
+    return int((labels[:, 1:] != -100).sum())
+
+
+def uneven_batches():
+    """Rows whose captions differ in length: a mean of per-rank means is
+    then not the mean over the step's tokens."""
+    batches = make_batches()
+    for i, (_, labels) in enumerate(batches):
+        labels[0, 7 + 2 * i:] = -100
+    return batches
+
+
+@needs_qwen3_5
+@pytest.mark.parametrize("colocated", [False, True], ids=["stages", "colocated"])
+def test_token_mean_loss_matches_unsplit_model_on_uneven_rows(ray_ctx, stub_engines, colocated):
+    """TokenMeanLoss: the step's loss is its summed token loss over all
+    microbatches and data-parallel ranks divided by its token count, the
+    same objective the unsplit model sees, with every row weighted by its
+    tokens."""
+    sgd = dict(DS, optimizer={"type": "SGD", "params": {"lr": 0.5, "momentum": 0.9}})
+    model, reference = qwen3_5_vl_pair(seed=14)
+    opt = torch.optim.SGD(reference.parameters(), lr=0.5, momentum=0.9)
+    expected = []
+    for _ in range(3):
+        opt.zero_grad()
+        batches = uneven_batches()
+        total = sum(token_count(labels) for _, labels in batches)
+        step = 0.0
+        for inputs, labels in batches:
+            full = {k: torch.cat(v) if isinstance(v, list) else v for k, v in inputs.items()}
+            loss = token_sum(reference(**full, use_cache=False).logits, labels) / total
+            loss.backward()
+            step += float(loss)
+        opt.step()
+        expected.append(step)
+
+    engine, _, _, _ = rdsp.initialize(
+        model=model, config=sgd, loss_fn=rdsp.TokenMeanLoss(token_sum, token_count),
+        pipeline_config=rdsp.PipelineConfig(
+            stages=2, partition=rdsp.ExplicitCuts((3,)),
+            stage_overrides=(StageOverride(stage=1, num_gpus=2),),
+            colocated_vision=rdsp.ColocatedVision() if colocated else None))
+    got = [float(engine.train_batch(data_iter=iter(uneven_batches()))) for _ in range(3)]
+    assert got == pytest.approx(expected, rel=1e-4)
+
+
 @needs_qwen3_5
 def test_colocated_vision_gradients_have_the_right_scale(ray_ctx, stub_engines):
     """SGD, unlike Adam, moves a parameter in proportion to its gradient, so
