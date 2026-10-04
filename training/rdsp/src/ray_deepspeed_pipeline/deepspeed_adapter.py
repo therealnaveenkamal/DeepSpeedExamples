@@ -70,6 +70,26 @@ def _keep_unsplit_module_sizes(stage_module, rules: dict) -> None:
             module.replaced = True
 
 
+def _shard_vocabulary(stage_module, hf_config, tp: int) -> None:
+    """Give each tensor-parallel rank 1/tp of the input embedding's and the
+    output head's vocabulary rows (vocab_parallel.py). The stage world's
+    ranks are TP-fastest, so this rank's TP index is rank % tp; DeepSpeed
+    creates the TP group in initialize(), so it is looked up on use."""
+    import torch.distributed as dist
+
+    from ray_deepspeed_pipeline.vocab_parallel import shard_vocab
+
+    vocab = getattr(hf_config, "vocab_size", None)
+    if vocab is None:
+        return
+
+    def tp_group():
+        from deepspeed.utils import groups
+        return groups.get_tensor_model_parallel_group()
+
+    shard_vocab(stage_module, vocab, rank=dist.get_rank() % tp, world=tp, group=tp_group)
+
+
 def _ulysses_mpu(stage_module, micro_batch_size: int, sp: int, backend: str):
     """The mpu DeepSpeed needs for Ulysses sequence parallelism over the
     stage's HF attention layers. Every SP rank reports model-parallel rank 0:
@@ -118,6 +138,8 @@ def _deepspeed_engine_factory(stage_module, ds_config: dict):
         if rules is not None:
             tp_conf["partition_config"] = rules
             _keep_unsplit_module_sizes(stage_module, rules)
+    if tp > 1:
+        _shard_vocabulary(stage_module, hf_config, tp)
 
     sp = int(conf.get("sequence_parallel_size", 1) or 1)
     if sp > 1:

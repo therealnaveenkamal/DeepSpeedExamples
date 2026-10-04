@@ -80,6 +80,10 @@ class _PhaseTimer:
     def report(self, **where) -> None:
         if self.on:
             ms = {k: round(v * 1e3, 1) for k, v in self.totals.items()}
+            if torch.cuda.is_available():  # GB now, and peak since the last report
+                ms["mem_gb"] = round(torch.cuda.memory_allocated() / 2**30, 2)
+                ms["peak_gb"] = round(torch.cuda.max_memory_allocated() / 2**30, 2)
+                torch.cuda.reset_peak_memory_stats()
             print(json.dumps({"rdsp_profile": where, **ms}), flush=True)
         self.totals.clear()
 

@@ -194,7 +194,10 @@ def ds_config(args) -> dict:
         "train_batch_size": args.rows * args.microbatches,
         "gradient_accumulation_steps": args.microbatches,
         "bf16": {"enabled": True},
-        "zero_optimization": {"stage": args.zero},
+        # ZeRO's default 500M-element communication buckets cost ~2 GB each in
+        # fp32; smaller buckets change how gradients are batched, not the math
+        "zero_optimization": {"stage": args.zero, "reduce_bucket_size": int(5e7),
+                              "allgather_bucket_size": int(5e7)},
         "gradient_clipping": 0.0,
         # DeepSpeed's CPU Adam under optimizer offload, PyTorch's AdamW otherwise
         "optimizer": {"type": "AdamW", "params": {
