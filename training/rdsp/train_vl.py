@@ -233,7 +233,8 @@ def ds_config(args) -> dict:
     conf = {
         "train_batch_size": args.rows * args.microbatches,
         "gradient_accumulation_steps": args.microbatches,
-        "bf16": {"enabled": True},
+        "bf16": {"enabled": True, **({"immediate_grad_update": False}
+                                     if args.keep_bf16_grads else {})},
         # ZeRO's default 500M-element communication buckets cost ~2 GB each in
         # fp32; smaller buckets change how gradients are batched, not the math
         "zero_optimization": {"stage": args.zero, "reduce_bucket_size": int(5e7),
@@ -286,6 +287,9 @@ def main(argv=None):
     p.add_argument("--untie-embeddings", action="store_true",
                    help="train the input embedding and the output head as two matrices; "
                         "needed when a tied pair would land on different stages")
+    p.add_argument("--keep-bf16-grads", action="store_true",
+                   help="keep DeepSpeed's per-parameter bf16 gradients (accumulated into "
+                        "fp32 after each backward) instead of freeing each one as it lands")
     p.add_argument("--pad-per-microbatch", action="store_true",
                    help="with --pad-multiple: pad each microbatch to its own longest row "
                         "(as Megatron does) instead of each step to its longest")
