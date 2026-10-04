@@ -35,6 +35,8 @@ class StageSpec:
     rows_per_rank: int = 1
     # rerun blocks in backward instead of keeping their activations
     recompute: bool = False
+    # torch.compile each block
+    compile: bool = False
 
 
 @dataclass(frozen=True)

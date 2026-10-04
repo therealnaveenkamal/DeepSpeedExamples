@@ -185,6 +185,43 @@ def test_recompute_keeps_less_for_backward_and_same_gradients():
         assert torch.allclose(a.grad, b.grad, atol=1e-6), name
 
 
+def test_compiled_blocks_match_and_ship_to_another_process(monkeypatch):
+    """Each block's forward is compiled on its first call, in the process that
+    runs it: the wrapped stage pickles (Ray ships it) without the compiled
+    code, and computes what the plain stage does."""
+    import pickle
+
+    from ray_deepspeed_pipeline.partition import build_stage_module, compile_blocks
+
+    compiled = []
+    real = torch.compile
+
+    def counting(fn, **kw):
+        compiled.append(kw)
+        return real(fn, backend="eager", **kw)  # no C++ toolchain needed
+
+    monkeypatch.setattr(torch, "compile", counting)
+    torch.manual_seed(0)
+    model = ToyLM(n_blocks=4)
+    middle = partition_parameters(model, ExplicitCuts((1, 3)), 3)[1]
+    plain = build_stage_module(model, 1, 3, middle.parameter_names)
+    fast = build_stage_module(model, 1, 3, middle.parameter_names)
+    compile_blocks(fast)
+    fast = pickle.loads(pickle.dumps(fast))
+    assert compiled == []
+    hidden = torch.randn(4, 16, 8)
+
+    out_plain, out_fast = plain(hidden), fast(hidden)
+    out_plain.sum().backward()
+    out_fast.sum().backward()
+    fast(hidden)  # compiled once per block, then reused
+
+    assert len(compiled) == 2 and all(kw.get("dynamic") for kw in compiled)
+    assert torch.allclose(out_fast, out_plain, atol=1e-6)
+    for (name, a), (_, b) in zip(plain.named_parameters(), fast.named_parameters()):
+        assert torch.allclose(a.grad, b.grad, atol=1e-6), name
+
+
 def test_balanced_cuts_give_the_heavy_head_stage_fewer_blocks():
     """ToyLM: blocks cost 72 parameters each, the norm and head 176, the
     embedding nothing (a lookup). Three stages: uniform 2|2|2 costs

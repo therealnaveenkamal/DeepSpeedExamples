@@ -61,6 +61,7 @@ MIMO_TRAIN="--hf-model Qwen/$MODEL --dataset-name cord_v2 --seq-length 2048 \
   --log-interval 1 --experiment-root /workspace/runs"
 
 DATA=cord_steps-$MODEL                # Bridge's samples for this model (export)
+# VIS_OPTS / LANG_OPTS: extra stage keys for noncoloc-rdsp, e.g. VIS_OPTS=,compile=1
 # RDSP_EXTRA: more train_vl flags for one run, e.g. RDSP_EXTRA="--prefetch --profile"
 RDSP_TRAIN="--model Qwen/$MODEL --dataset exported:$WORK/$DATA --pad-multiple 128 \
   --seq 2048 --steps $STEPS --lr 1e-5 --betas 0.9,0.95 --eps 1e-8 --weight-decay 0.0 \
@@ -114,7 +115,7 @@ case "${1:-}" in
       --component images=tp=1,pp=1,dp=1,rank_offset=4" 2>&1 | tee "$LOGS/noncoloc-mimo.log" ;;
   noncoloc-rdsp)
     rdsp noncoloc-rdsp --rows 2 --microbatches 32 --stages 2 --cuts 0 \
-      --stage 0:gpus=1,zero=1 --stage 1:gpus=4,tp=${LANG_TP:-4},zero=1 ;;
+      --stage 0:gpus=1,zero=1${VIS_OPTS:-} --stage 1:gpus=4,tp=${LANG_TP:-4},zero=1${LANG_OPTS:-} ;;
   pp4-megatron)      # TP1 x PP4 x DP2; without recompute it runs out of 32 GB
     container "python -m torch.distributed.run --nproc_per_node=8 scripts/training/run_recipe.py \
       --recipe $RECIPE --step_func qwen3_vl_step $STD_TRAIN \

@@ -64,7 +64,8 @@ class StageOverride:
     checkpointing), trading about a third more compute for memory.
     offload_optimizer: keep the stage's optimizer state (fp32 master weights
     and Adam moments) in host memory and step it on the CPU (ZeRO-Offload;
-    needs ZeRO stage 1 or 2)."""
+    needs ZeRO stage 1 or 2). compile: torch.compile each of the stage's
+    blocks (shapes dynamic), compiled by each rank on its first step."""
 
     stage: int
     num_gpus: int = 1
@@ -75,6 +76,7 @@ class StageOverride:
     fold: bool = False
     recompute: bool = False
     offload_optimizer: bool = False
+    compile: bool = False
 
 
 @dataclass(frozen=True)

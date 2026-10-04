@@ -291,6 +291,31 @@ def recompute_blocks(stage: nn.Module) -> None:
         block.forward = functools.partial(_checkpointed, block.forward)
 
 
+class _CompiledForward:
+    """A block's forward, compiled (shapes dynamic) on its first call. Pickles
+    as the plain forward, so each process compiles its own."""
+
+    def __init__(self, forward):
+        self.forward, self._compiled = forward, None
+
+    def __call__(self, *args, **kwargs):
+        if self._compiled is None:
+            import torch
+            self._compiled = torch.compile(self.forward, dynamic=True)
+        return self._compiled(*args, **kwargs)
+
+    def __getstate__(self):
+        return {"forward": self.forward, "_compiled": None}
+
+
+def compile_blocks(stage: nn.Module) -> None:
+    """Compile each of the stage's own blocks' forward: fuses the small
+    elementwise ops between the matmuls. Like recompute_blocks, wraps the
+    forward, not the block; apply it after recompute_blocks."""
+    for block in stage.local_blocks():
+        block.forward = _CompiledForward(block.forward)
+
+
 def build_stage_module(model: nn.Module, block_start: int, block_stop: int,
                        parameter_names: tuple[str, ...]) -> nn.Module:
     """One stage as a GenericSequentialStage of deep copies, safe to ship to

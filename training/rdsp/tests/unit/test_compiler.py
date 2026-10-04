@@ -152,3 +152,8 @@ def test_prefetch_is_off_unless_asked_and_reaches_the_plan():
     assert not lower(ToyLM(), simple_config(), DS).prefetch
     cfg = dataclasses.replace(simple_config(), prefetch=True)
     assert lower(ToyLM(), cfg, DS).prefetch
+
+
+def test_compile_is_per_stage():
+    cfg = simple_config(stage_overrides=(StageOverride(stage=1, compile=True),))
+    assert [s.compile for s in lower(ToyLM(), cfg, DS).stages] == [False, True]
