@@ -827,3 +827,22 @@ def test_microbatches_of_different_lengths_match_unsplit_model(ray_ctx, stub_eng
                                             stage_overrides=(StageOverride(stage=1, num_gpus=2),)))
     got = [float(engine.train_batch(data_iter=iter(ragged_batches()))) for _ in range(2)]
     assert got == pytest.approx(expected, rel=1e-4)
+
+
+@needs_qwen3_5
+def test_colocated_vision_compile_reaches_the_plan_and_covers_the_encoder(monkeypatch):
+    from ray_deepspeed_pipeline.compiler import lower
+    from ray_deepspeed_pipeline.partition import _CompiledForward, compile_blocks
+    from ray_deepspeed_pipeline.vision import build_vision_tower
+
+    model = transformers.Qwen3_5ForConditionalGeneration(tiny_qwen3_5_vl())
+    plan = lower(model, rdsp.PipelineConfig(stages=2, partition=rdsp.ExplicitCuts((3,)),
+                                            colocated_vision=rdsp.ColocatedVision(compile=True)),
+                 DS)
+    assert plan.colocated_vision.compile
+    real = torch.compile
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: real(fn, backend="eager", **kw))
+    tower = build_vision_tower(model, plan.colocated_vision.module)
+    compile_blocks(tower)
+    assert tower.local_blocks() and all(
+        isinstance(b.forward, _CompiledForward) for b in tower.local_blocks())

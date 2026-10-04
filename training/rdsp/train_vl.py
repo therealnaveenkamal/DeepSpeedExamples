@@ -303,6 +303,8 @@ def main(argv=None):
                    help="read and ship the next step's batches while this step runs")
     p.add_argument("--colocated-vision", action="store_true",
                    help="run the vision encoder on every GPU (rdsp.ColocatedVision)")
+    p.add_argument("--vision-compile", action="store_true",
+                   help="with --colocated-vision: torch.compile the encoder's blocks")
     p.add_argument("--vision-recompute", action="store_true",
                    help="with --colocated-vision: recompute the encoder's blocks")
     p.add_argument("--steps", type=int, default=10)
@@ -362,7 +364,8 @@ def main(argv=None):
         model=skeleton, config=ds_config(args), loss_fn=loss_fn, weights=weights,
         pipeline_config=rdsp.PipelineConfig(
             stages=args.stages, partition=partition, stage_overrides=tuple(args.stage),
-            colocated_vision=(rdsp.ColocatedVision(recompute=args.vision_recompute)
+            colocated_vision=(rdsp.ColocatedVision(recompute=args.vision_recompute,
+                                                   compile=args.vision_compile)
                               if args.colocated_vision else None),
             prefetch=args.prefetch))
     cuts = [(s.block_start, s.block_stop) for s in engine._coordinator._plan.stages]

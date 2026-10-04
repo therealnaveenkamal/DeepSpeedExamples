@@ -30,6 +30,7 @@ from ray_deepspeed_pipeline.deepspeed_adapter import DeepSpeedStageAdapter, obse
 from ray_deepspeed_pipeline.errors import ValidationError
 from ray_deepspeed_pipeline.hf_stage import load_meta_parameters
 from ray_deepspeed_pipeline.losses import token_weight
+from ray_deepspeed_pipeline.vision import vision_schedule
 
 _VISION_FILE = "colocated_vision.pt"
 
@@ -139,13 +140,15 @@ class StageWorkerActor:
         return observed_mesh(self.adapter.engine)
 
     def _build_vision(self, vision, weights, ds_config_json):
-        from ray_deepspeed_pipeline.partition import recompute_blocks
+        from ray_deepspeed_pipeline.partition import compile_blocks, recompute_blocks
         from ray_deepspeed_pipeline.vision import ColocatedVisionEngine
 
-        tower, recompute = vision
+        tower, recompute, compile_ = vision
         load_meta_parameters(tower, weights)
         if recompute:
             recompute_blocks(tower)
+        if compile_:
+            compile_blocks(tower)
         self.vision = ColocatedVisionEngine(tower, json.loads(ds_config_json),
                                             self.adapter.device)
 
@@ -299,11 +302,24 @@ class StageWorkerActor:
                        if token_total is not None else 1.0)
         p2p.begin_step(varying=varying)
         try:
+            schedule, tail = {}, []
             if vision is not None:
-                with timer.phase("vision_forward"):
-                    self._encode_images(vision, train)
+                self._local_features, self._image_rows, self._mine = {}, [], {}
+                if train:  # encode and backpropagate microbatch by microbatch
+                    schedule, tail = vision_schedule(
+                        ops, set(vision["own_mb"].values()), len(self._grids))
+                else:  # no graph to keep: everything at once
+                    with timer.phase("vision_forward"):
+                        self._encode_images(vision, train)
             ready = True
-            for kind, mb, command_id in ops:
+            for i, (kind, mb, command_id) in enumerate(ops):
+                if i in schedule:
+                    backpropagate, encode = schedule[i]
+                    with timer.phase("vision_backward"):
+                        self._vision_backward(vision, backpropagate)
+                    with timer.phase("vision_forward"):
+                        for m in encode:
+                            self._encode_images(vision, train, m)
                 self.executed.append(command_id)
                 if kind == "ready":
                     ready = adapter.ready()
@@ -347,7 +363,9 @@ class StageWorkerActor:
                         self._send_feature_grads(mb, input_grad["pixel_values"])
             if vision is not None and train:
                 with timer.phase("vision_backward"):
-                    self._vision_backward(vision)
+                    self._vision_backward(vision, tail)
+                    # the first stage's gradients carry its data-parallel degree
+                    self.vision.reduce_gradients(self.p2p.all, divide_by=self._grids[0].dp)
             with timer.phase("wait_sends"):
                 p2p.end_step()
         except Exception:
@@ -366,15 +384,15 @@ class StageWorkerActor:
     def _global_rank(self) -> int:
         return self._offsets[self.stage] + self.rank
 
-    def _encode_images(self, vision: dict, train: bool) -> None:
-        """Encode this rank's images in one batch and send each image's
-        features to the first-stage ranks of its row (over gloo: a send may
-        wait for its receiver as long as needed without holding the GPU)."""
+    def _encode_images(self, vision: dict, train: bool, mb: int | None = None) -> None:
+        """Encode this rank's images (of microbatch mb, or all) in one batch
+        and send each image's features to the first-stage ranks of its row
+        (over gloo: a send may wait for its receiver as long as needed
+        without holding the GPU)."""
         me, p2p = self._global_rank(), self.p2p
-        features = self.vision.forward([(i, px, grid) for i, px, grid, _, _ in vision["own"]],
-                                       train)
-        self._local_features, self._image_rows, self._mine = {}, [], {}
-        for image, _, _, dests, _ in vision["own"]:
+        own = [e for e in vision["own"] if mb is None or vision["own_mb"][e[0]] == mb]
+        features = self.vision.forward([(i, px, grid) for i, px, grid, _, _ in own], train)
+        for image, _, _, dests, _ in own:
             for dest in dests:
                 if dest == me:
                     self._local_features[image] = features[image]
@@ -406,17 +424,19 @@ class StageWorkerActor:
             else:
                 self.p2p.send_cpu(part, owner, _GRAD_KEYS + image)
 
-    def _vision_backward(self, vision: dict) -> None:
-        """Receive this rank's images' feature gradients, backpropagate
-        through its encoder and sum the encoder gradients over all ranks."""
-        me, p2p = self._global_rank(), self.p2p
+    def _vision_backward(self, vision: dict, microbatches) -> None:
+        """Receive the feature gradients of this rank's images in these
+        microbatches and backpropagate them through its encoder."""
+        if not microbatches:
+            return
+        me, p2p, mbs = self._global_rank(), self.p2p, set(microbatches)
+        grads = {}
         for image, _, _, _, source in vision["own"]:
-            if source != me:
-                self._mine[image] = p2p.recv_cpu(source, _GRAD_KEYS + image)
-        self.vision.backward(self._mine)
-        self._mine = {}
-        # the first stage's gradients carry its data-parallel degree
-        self.vision.reduce_gradients(p2p.all, divide_by=self._grids[0].dp)
+            if vision["own_mb"][image] not in mbs:
+                continue
+            grads[image] = (self._mine.pop(image) if source == me
+                            else p2p.recv_cpu(source, _GRAD_KEYS + image))
+        self.vision.backward(grads)
 
     # -- checkpoints -------------------------------------------------------------
 

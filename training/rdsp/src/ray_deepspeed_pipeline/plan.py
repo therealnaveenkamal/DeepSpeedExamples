@@ -68,11 +68,12 @@ class FailureSpec:
 @dataclass(frozen=True)
 class VisionSpec:
     """Colocated vision encoder: its module path in the model, its
-    parameters (on no stage), and whether its blocks recompute."""
+    parameters (on no stage), and whether its blocks recompute or compile."""
 
     module: str
     parameter_names: tuple[str, ...]
     recompute: bool = False
+    compile: bool = False
 
 
 @dataclass(frozen=True)

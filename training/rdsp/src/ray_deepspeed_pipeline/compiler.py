@@ -156,7 +156,8 @@ def _colocated_vision(model, pipeline_config: PipelineConfig, ds_config: dict | 
         raise ValidationError(f"colocated vision supports Adam, AdamW or SGD, got {kind!r}")
     names = tuple(n for n, _ in model.named_parameters() if n.startswith(module + "."))
     return VisionSpec(module=module, parameter_names=names,
-                      recompute=pipeline_config.colocated_vision.recompute)
+                      recompute=pipeline_config.colocated_vision.recompute,
+                      compile=pipeline_config.colocated_vision.compile)
 
 
 def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> ExecutionPlan:

@@ -135,7 +135,8 @@ def route_images(inputs: list, layout: VisionLayout, rank: int) -> dict:
             to encode; destinations are the first-stage ranks of the row's
             cell (every TP rank), the gradient comes from its TP rank 0
       need: [(microbatch, image, owner)] features this first-stage rank
-            receives, in row order."""
+            receives, in row order
+      own_mb: {image: microbatch} for the images in own."""
     images = []  # (image, microbatch, row)
     for mb, entry in enumerate(inputs):
         pixels, grids = entry.get("pixel_values"), entry.get("image_grid_thw")
@@ -153,15 +154,40 @@ def route_images(inputs: list, layout: VisionLayout, rank: int) -> dict:
 
     owner = _owners(images, layout, cell_rows, cell_ranks)
 
-    own, need = [], []
+    own, need, own_mb = [], [], {}
     for image, mb, row in images:
         if owner[image] == rank:
+            own_mb[image] = mb
             dests = cell_ranks(row)
             own.append((image, inputs[mb]["pixel_values"][row], inputs[mb]["image_grid_thw"][row],
                         dests, dests[0]))
         if rank in cell_ranks(row):
             need.append((mb, image, owner[image]))
-    return {"own": own, "need": need}
+    return {"own": own, "need": need, "own_mb": own_mb}
+
+
+def vision_schedule(ops: list, microbatches, n_stages: int):
+    """When a rank encodes and backpropagates its images of each microbatch
+    during a training step, so that it keeps a graph for only about
+    2 x n_stages microbatches' images instead of the whole step's. ops: the
+    rank's 1F1B [(kind, microbatch, command_id)]; microbatches: those it has
+    images in. Returns ({op index: (backpropagate, encode)} to do before that
+    op, microbatches to backpropagate after the last op).
+
+    Microbatch m is encoded before this rank's forward of m - n_stages: the
+    first stage may run that far ahead, and encoding early never blocks (the
+    features leave over asynchronous sends). It is backpropagated before the
+    forward of m + n_stages: in 1F1B the first stage has done m's backward,
+    and sent its feature gradients, before any stage starts that forward."""
+    forward = {mb: i for i, (kind, mb, _) in enumerate(ops) if kind == "forward"}
+    before, end = {}, []
+    for m in sorted(microbatches):
+        before.setdefault(forward[max(0, m - n_stages)], ([], []))[1].append(m)
+        if m + n_stages in forward:
+            before.setdefault(forward[m + n_stages], ([], []))[0].append(m)
+        else:
+            end.append(m)
+    return before, end
 
 
 # --- the per-rank engine ---------------------------------------------------------
@@ -287,7 +313,7 @@ class ColocatedVisionEngine:
             features = self.tower(pixels, grids)
         out = dict(zip((i for i, _, _ in images), features.split(sizes)))
         if train:
-            self._outputs = out
+            self._outputs.update(out)
         return {i: f.detach() for i, f in out.items()}
 
     def backward(self, grads: dict) -> None:
@@ -296,7 +322,12 @@ class ColocatedVisionEngine:
         images = sorted(grads)
         torch.autograd.backward([self._outputs[i] for i in images],
                                 [grads[i].to(self._outputs[i].dtype) for i in images])
-        self._outputs = {}
+        for i in images:
+            del self._outputs[i]
+
+    def waiting(self) -> set:
+        """Images encoded with a graph and not yet backpropagated."""
+        return set(self._outputs)
 
     def reduce_gradients(self, group, divide_by: float) -> None:
         """Sum over `group` (a raw process group over all ranks; None: this

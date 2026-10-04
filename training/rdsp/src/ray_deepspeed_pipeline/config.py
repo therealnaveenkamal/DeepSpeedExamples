@@ -89,10 +89,12 @@ class ColocatedVision:
     output enters the decoder only through the input embeddings (Qwen3.5;
     not Qwen3-VL's deepstack). The encoder trains with a plain torch
     optimizer (Adam/AdamW/SGD) built from the DeepSpeed config's optimizer
-    and scheduler, its state replicated on every rank. recompute: keep only
-    each encoder block's input for backward."""
+    and scheduler, with fp32 master weights and optimizer state split over
+    all ranks. recompute: keep only each encoder block's input for backward.
+    compile: torch.compile each encoder block (shapes dynamic)."""
 
     recompute: bool = False
+    compile: bool = False
 
 
 @dataclass(frozen=True)

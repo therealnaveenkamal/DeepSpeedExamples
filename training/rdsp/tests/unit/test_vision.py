@@ -191,3 +191,50 @@ def test_sharded_optimizer_matches_one_unsharded_encoder(tmp_path):
         e.apply()
     for p, q in zip(resumed.tower.module.parameters(), one.tower.module.parameters()):
         assert torch.allclose(p, q, atol=1e-6)
+
+
+def test_vision_schedule_encodes_ahead_and_backpropagates_once_gradients_exist():
+    """1F1B ops of the last of 2 stages over 6 microbatches. Microbatch m is
+    encoded before forward m-2 (the first stage may run 2 ahead), and
+    backpropagated before forward m+2 (the first stage's backward of m is
+    done by then), or at the end of the step."""
+    from ray_deepspeed_pipeline.vision import vision_schedule
+
+    ops = [(k, m, f"{k}{m}") for m in range(6) for k in ("forward", "backward")]
+    before, end = vision_schedule(ops, microbatches={0, 1, 3, 5}, n_stages=2)
+    at = {ops[i][2]: v for i, v in before.items()}
+    assert at == {"forward0": ([], [0, 1]), "forward1": ([], [3]), "forward2": ([0], []),
+                  "forward3": ([1], [5]), "forward5": ([3], [])}
+    assert end == [5]
+
+
+def test_engine_encodes_and_backpropagates_microbatch_by_microbatch():
+    """Two microbatches encoded in turn, then backpropagated in turn: the
+    same gradients as one batch, and only the images still waiting for their
+    gradient keep a graph."""
+    import copy
+
+    from ray_deepspeed_pipeline.vision import VisionTower
+
+    encoder = tiny_vision()
+    reference = copy.deepcopy(encoder)
+    engine = ColocatedVisionEngine(VisionTower(encoder, "visual"),
+                                   {"optimizer": {"type": "SGD", "params": {"lr": 1.0}}},
+                                   torch.device("cpu"))
+    g = torch.Generator().manual_seed(2)
+    grid = torch.tensor([[1, 4, 4]])
+    images = [(i, torch.randn(16, 48, generator=g), grid) for i in range(4)]
+    grads = {i: torch.randn(4, 16, generator=g) for i in range(4)}
+    engine.forward(images[:2], train=True)
+    engine.forward(images[2:], train=True)
+    engine.backward({i: grads[i] for i in (0, 1)})
+    assert engine.waiting() == {2, 3}
+    engine.backward({i: grads[i] for i in (2, 3)})
+    assert engine.waiting() == set()
+    before = [q.detach().clone() for q in reference.parameters()]
+    engine.reduce_gradients(group=None, divide_by=1)
+    engine.apply()
+    full = reference(torch.cat([p for _, p, _ in images]), grid_thw=grid.repeat(4, 1)).pooler_output
+    full.backward(torch.cat([grads[i] for i in range(4)]))
+    for p, q, b in zip(engine.tower.module.parameters(), reference.parameters(), before):
+        assert torch.allclose(b - p.detach(), q.grad, atol=1e-5)
