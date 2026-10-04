@@ -73,3 +73,20 @@ def test_padding_trimmed_to_each_steps_longest_row(tmp_path):
     shapes = [x["input_ids"].shape for x, _ in train_vl.exported_microbatches(
         str(tmp_path), rows=2, pad_multiple=4)]
     assert shapes == [(2, 8), (2, 8)]  # longest row 5 -> 8
+
+
+def test_padding_trimmed_to_each_microbatchs_longest_row(tmp_path):
+    """Per microbatch, as Megatron's collate pads each microbatch: rows 3 and
+    5 -> 8, rows 2 and 4 -> 4."""
+    import train_vl
+
+    rows = []
+    for real in (3, 5, 2, 4):
+        sample = to_rdsp_sample(bridge_sample(list(range(1, 11)), supervised=[2]))
+        sample["attention_mask"][:, real:] = 0
+        rows.append(sample)
+    save_step(str(tmp_path), 0, rows)
+    got = list(train_vl.exported_microbatches(str(tmp_path), rows=2, pad_multiple=4,
+                                              per_microbatch=True))
+    assert [x["input_ids"].shape for x, _ in got] == [(2, 8), (2, 4)]
+    assert [y.shape for _, y in got] == [(2, 8), (2, 4)]

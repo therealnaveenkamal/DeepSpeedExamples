@@ -117,12 +117,15 @@ def microbatches(processor, rows: int, seq: int, source):
 _EXPORTED_KEYS = ("input_ids", "attention_mask", "mm_token_type_ids")
 
 
-def exported_microbatches(directory: str, rows: int, pad_multiple: int = 0):
+def exported_microbatches(directory: str, rows: int, pad_multiple: int = 0,
+                          per_microbatch: bool = False):
     """(inputs, labels) microbatches of `rows` consecutive samples from an
     exported directory, step file by step file: the order and grouping
     Megatron's sequential sampler gives a global microbatch. pad_multiple:
     cut each step's padding to its longest row rounded up to this multiple
-    (a step's microbatches share one length)."""
+    (a step's microbatches share one length). per_microbatch: cut each
+    microbatch to its own longest row instead, as Megatron's collate does
+    (the pipeline then sends every boundary with its shape)."""
     for path in sorted(glob.glob(os.path.join(directory, "step_*.pt"))):
         samples = torch.load(path, weights_only=False)
         if len(samples) % rows:
@@ -134,6 +137,10 @@ def exported_microbatches(directory: str, rows: int, pad_multiple: int = 0):
             length = min(length, -(-longest // pad_multiple) * pad_multiple)
         for start in range(0, len(samples), rows):
             group = samples[start:start + rows]
+            if pad_multiple and per_microbatch:
+                longest = max(int(s["attention_mask"].sum()) for s in group)
+                length = min(samples[0]["input_ids"].shape[1],
+                             -(-longest // pad_multiple) * pad_multiple)
             inputs = {k: torch.cat([s[k][:, :length] for s in group]) for k in _EXPORTED_KEYS}
             inputs["pixel_values"] = [s["pixel_values"] for s in group]
             inputs["image_grid_thw"] = [s["image_grid_thw"] for s in group]
@@ -279,6 +286,9 @@ def main(argv=None):
     p.add_argument("--untie-embeddings", action="store_true",
                    help="train the input embedding and the output head as two matrices; "
                         "needed when a tied pair would land on different stages")
+    p.add_argument("--pad-per-microbatch", action="store_true",
+                   help="with --pad-multiple: pad each microbatch to its own longest row "
+                        "(as Megatron does) instead of each step to its longest")
     p.add_argument("--drop-padding-mask", action="store_true",
                    help="leave out the attention mask of right-padded rows, so attention "
                         "can use its causal flash kernel")
@@ -311,7 +321,7 @@ def main(argv=None):
     processor = transformers.AutoProcessor.from_pretrained(weights)
     if args.dataset.startswith("exported:"):
         data = exported_microbatches(args.dataset.split(":", 1)[1], args.rows,
-                                     args.pad_multiple)
+                                     args.pad_multiple, args.pad_per_microbatch)
     else:
         source = (cord_rows(args.max_pixels, args.seed) if args.dataset == "cord-v2"
                   else synthetic_rows(args.image_size, args.seed))

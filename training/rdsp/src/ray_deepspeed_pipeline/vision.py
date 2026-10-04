@@ -187,19 +187,92 @@ def _optimizer(params, ds_config: dict):
     return optimizer, scheduler
 
 
+def _reduce_scatter(group, flat: torch.Tensor, size: int) -> torch.Tensor:
+    """This rank's `size`-element slice of `flat` summed over `group`."""
+    out = torch.empty(size, dtype=flat.dtype, device=flat.device)
+    try:
+        group.reduce_scatter([out], [list(flat.split(size))]).wait()
+        return out
+    except (RuntimeError, NotImplementedError):  # backends without reduce-scatter (gloo)
+        group.allreduce([flat]).wait()
+        return flat.narrow(0, group.rank() * size, size).clone()
+
+
 class ColocatedVisionEngine:
-    """One rank's vision encoder with its own optimizer. forward() encodes
-    this rank's images for the whole step; backward() takes their feature
-    gradients; reduce_gradients() sums the encoder gradients over all ranks;
-    apply() steps the optimizer with the pipeline's."""
+    """One rank's vision encoder. forward() encodes this rank's images for
+    the whole step; backward() takes their feature gradients;
+    reduce_gradients() sums the encoder gradients over all ranks; apply()
+    steps the optimizer with the pipeline's.
+
+    The weights the encoder computes with (bf16 under bf16) are replicated;
+    the fp32 master weights and the optimizer state are split over the ranks
+    (as ZeRO-1 does): each rank steps its slice and the slices are gathered
+    back into every rank's weights. full_state() collects the whole state
+    for a checkpoint, which load() splits again."""
 
     def __init__(self, tower: VisionTower, ds_config: dict, device: torch.device):
         self.tower = tower.to(device)
         self.device = device
         bf16 = ds_config.get("bf16", {}).get("enabled", False)
         self.autocast = torch.bfloat16 if bf16 else None
-        self.optimizer, self.scheduler = _optimizer(self.tower.parameters(), ds_config)
+        self._config = ds_config
+        self._params = [p for p in self.tower.module.parameters() if p.requires_grad]
+        self._numel = sum(p.numel() for p in self._params)
+        self._group, self._world, self._rank = None, 1, 0
+        self.master = self.optimizer = self.scheduler = None  # built on first use
+        self._loaded = None  # a checkpoint's whole state, split on first use
         self._outputs = {}  # image -> features with their graph (training)
+
+    # -- the split -------------------------------------------------------------
+
+    def _shard_size(self) -> int:
+        return -(-self._numel // self._world)
+
+    def _flat(self, tensors, dtype) -> torch.Tensor:
+        flat = torch.zeros(self._shard_size() * self._world, dtype=dtype, device=self.device)
+        offset = 0
+        for p, t in zip(self._params, tensors):
+            if t is not None:
+                flat[offset:offset + p.numel()] = t.reshape(-1)
+            offset += p.numel()
+        return flat
+
+    def _mine(self, full: torch.Tensor) -> torch.Tensor:
+        size = self._shard_size()
+        padded = torch.zeros(size * self._world, dtype=full.dtype, device=self.device)
+        padded[:full.numel()] = full.to(self.device)
+        return padded.narrow(0, self._rank * size, size).clone()
+
+    def _build(self, group) -> None:
+        """This rank's fp32 master slice and its optimizer, from the current
+        weights or a loaded checkpoint."""
+        if self.master is not None:
+            return
+        self._group = group
+        self._world, self._rank = (group.size(), group.rank()) if group is not None else (1, 0)
+        loaded, self._loaded = self._loaded, None
+        full = loaded["master"] if loaded else self._flat([p.detach() for p in self._params],
+                                                          torch.float32)
+        self.master = self._mine(full.float()).requires_grad_(True)
+        self.optimizer, self.scheduler = _optimizer([self.master], self._config)
+        if loaded and loaded.get("optimizer"):
+            saved = loaded["optimizer"]
+            self.optimizer.state[self.master] = {
+                k: self._mine(v) if torch.is_tensor(v) and v.numel() == self._numel else v
+                for k, v in saved["state"].items()}
+            for group_, saved_group in zip(self.optimizer.param_groups, saved["param_groups"]):
+                group_.update({k: v for k, v in saved_group.items() if k != "params"})
+        if loaded and loaded.get("scheduler") and self.scheduler is not None:
+            self.scheduler.load_state_dict(loaded["scheduler"])
+
+    def _gather(self, shard: torch.Tensor) -> torch.Tensor:
+        if self._group is None:
+            return shard
+        parts = [torch.empty_like(shard) for _ in range(self._world)]
+        self._group.allgather([parts], [shard.contiguous()]).wait()
+        return torch.cat(parts)
+
+    # -- one step --------------------------------------------------------------
 
     def forward(self, images: list, train: bool) -> dict:
         """images: [(image, pixel_values, grid_thw)] -> {image: features}."""
@@ -227,40 +300,76 @@ class ColocatedVisionEngine:
 
     def reduce_gradients(self, group, divide_by: float) -> None:
         """Sum over `group` (a raw process group over all ranks; None: this
-        rank alone), then divide: the first stage's feature gradients carry
-        its data-parallel degree (boundary.gradient_scale)."""
-        params = [p for p in self.tower.parameters() if p.requires_grad]
-        flat = torch.cat([(p.grad if p.grad is not None else torch.zeros_like(p)).reshape(-1)
-                          for p in params])
-        if group is not None:
-            group.allreduce([flat]).wait()
-        flat /= divide_by
-        offset = 0
-        for p in params:
-            p.grad = flat[offset:offset + p.numel()].view_as(p).clone()
-            offset += p.numel()
+        rank alone) into this rank's slice, then divide: the first stage's
+        feature gradients carry its data-parallel degree
+        (boundary.gradient_scale). Gradients are summed in fp32."""
+        self._build(group)
+        flat = self._flat([p.grad for p in self._params], torch.float32)
+        for p in self._params:
+            p.grad = None
+        mine = flat if group is None else _reduce_scatter(group, flat, self._shard_size())
+        self.master.grad = mine / divide_by
 
     def apply(self) -> None:
+        if self.master is None:  # nothing reduced: no step
+            return
         self.optimizer.step()
-        self.optimizer.zero_grad()
+        self.optimizer.zero_grad(set_to_none=True)
         if self.scheduler is not None:
             self.scheduler.step()
+        dtype = self._params[0].dtype
+        full = self._gather(self.master.detach().to(dtype))
+        offset = 0
+        with torch.no_grad():
+            for p in self._params:
+                p.copy_(full[offset:offset + p.numel()].view_as(p))
+                offset += p.numel()
 
     def reset(self) -> None:
         """Drop an abandoned step's graph and gradients."""
         self._outputs = {}
-        self.optimizer.zero_grad()
+        for p in self._params:
+            p.grad = None
+        if self.master is not None:
+            self.master.grad = None
+
+    # -- checkpoints -------------------------------------------------------------
+
+    def full_state(self) -> dict:
+        """The whole state, gathered from every rank's slice; collective:
+        every rank calls it."""
+        state = {"module": self.tower.module.state_dict(), "master": None,
+                 "optimizer": None, "scheduler": None}
+        if self.master is None:
+            return state
+        state["master"] = self._gather(self.master.detach())[:self._numel]
+        saved = self.optimizer.state_dict()
+        tensors = self.optimizer.state.get(self.master, {})
+        state["optimizer"] = {
+            "state": {k: self._gather(v)[:self._numel] if torch.is_tensor(v)
+                      and v.numel() == self.master.numel() else v for k, v in tensors.items()},
+            "param_groups": saved["param_groups"]}
+        state["scheduler"] = self.scheduler.state_dict() if self.scheduler else None
+        return state
 
     def save(self, path: str) -> None:
-        torch.save({"module": self.tower.module.state_dict(),
-                    "optimizer": self.optimizer.state_dict(),
-                    "scheduler": self.scheduler.state_dict() if self.scheduler else None}, path)
+        torch.save(self.full_state(), path)
 
     def load(self, path: str, optimizer: bool = True, scheduler: bool = True) -> None:
+        """Restore a full_state() checkpoint; each rank takes its slice on its
+        next step."""
         state = torch.load(path, map_location=self.device, weights_only=False)
         self.tower.module.load_state_dict(state["module"])
-        if optimizer:
-            self.optimizer.load_state_dict(state["optimizer"])
-        if scheduler and self.scheduler is not None:
-            self.scheduler.load_state_dict(state["scheduler"])
+        group = self._group
+        self.master = self.optimizer = self.scheduler = None
+        self._loaded = {
+            "master": state["master"] if state["master"] is not None
+            else self._flat_full(),
+            "optimizer": state["optimizer"] if optimizer else None,
+            "scheduler": state["scheduler"] if scheduler else None}
+        if group is not None:  # already split once: split again the same way
+            self._build(group)
         self.reset()
+
+    def _flat_full(self) -> torch.Tensor:
+        return torch.cat([p.detach().float().reshape(-1) for p in self._params])

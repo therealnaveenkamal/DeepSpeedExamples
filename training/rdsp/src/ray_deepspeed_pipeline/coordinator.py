@@ -14,6 +14,8 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Protocol
 
+import torch
+
 from ray_deepspeed_pipeline import checkpoint as ckpt
 from ray_deepspeed_pipeline.data import take_microbatch_entries
 from ray_deepspeed_pipeline.errors import (
@@ -26,6 +28,15 @@ from ray_deepspeed_pipeline.plan import ExecutionPlan
 from ray_deepspeed_pipeline.protocols import Command, resolve
 from ray_deepspeed_pipeline.schedule import control_commands, generate_commands
 
+
+def _lengths_differ(inputs) -> bool:
+    """Whether a step's microbatches differ in sequence length (each padded
+    to its own longest row); stages then send every boundary with its shape."""
+    def length(x):
+        if isinstance(x, dict):
+            x = x.get("input_ids", next((v for v in x.values() if torch.is_tensor(v)), None))
+        return x.shape[1] if torch.is_tensor(x) and x.dim() >= 2 else None
+    return len({length(x) for x in inputs}) > 1
 
 class StageWorkerClient(Protocol):
     """One stage's endpoint (the stage's whole actor group).
@@ -230,6 +241,7 @@ class PipelineCoordinator:
             self._reconnect_p2p(strict=True)
         kinds = ("forward", "backward", "eval", "ready")
         cmds, handles = {}, {}
+        varying = _lengths_differ(inputs)
         started = time.perf_counter()
         for s in range(n_stages):
             ops = [(c.kind, c.microbatch, c.command_id)
@@ -241,7 +253,8 @@ class PipelineCoordinator:
             try:
                 payload = ({"prepared": prepared[s]} if prepared and s in prepared
                            else self._stage_payload(s, inputs, labels))
-                handles[s] = self._submit(cmds[s], control={"ops": ops}, **payload)
+                handles[s] = self._submit(cmds[s], control={"ops": ops, "varying": varying},
+                                          **payload)
             except StepFailed:
                 self._p2p_dirty = True
                 raise

@@ -801,3 +801,29 @@ def test_one_stage_matches_unsplit_model(ray_ctx, stub_engines):
     expected = unsplit_losses(reference, make_batches(), steps=2)
     got = pipelined_losses(model, (), steps=2, overrides=(StageOverride(stage=0, num_gpus=2),))
     assert got == pytest.approx(expected, rel=1e-4)
+
+
+def ragged_batches():
+    """Each microbatch padded to its own length: the step's sequences differ."""
+    batches = []
+    for i, (inputs, labels) in enumerate(make_batches()):
+        n = SEQ - 3 * (i % 3)  # images sit at positions 2-6, kept in every length
+        cut = {k: v[:, :n] if torch.is_tensor(v) and v.dim() == 2 else v
+               for k, v in inputs.items()}
+        batches.append((cut, labels[:, :n]))
+    return batches
+
+
+def test_microbatches_of_different_lengths_match_unsplit_model(ray_ctx, stub_engines):
+    torch.manual_seed(0)
+    model = transformers.Qwen3VLForConditionalGeneration(tiny_qwen3_vl()).float()
+    reference = transformers.Qwen3VLForConditionalGeneration(tiny_qwen3_vl()).float()
+    reference.load_state_dict(model.state_dict())
+    assert len({b[1].shape[1] for b in ragged_batches()}) > 1
+    expected = unsplit_losses(reference, ragged_batches(), steps=2)
+    engine, _, _, _ = rdsp.initialize(
+        model=model, config=DS, loss_fn=lm_loss,
+        pipeline_config=rdsp.PipelineConfig(stages=2, partition=rdsp.ExplicitCuts((3,)),
+                                            stage_overrides=(StageOverride(stage=1, num_gpus=2),)))
+    got = [float(engine.train_batch(data_iter=iter(ragged_batches()))) for _ in range(2)]
+    assert got == pytest.approx(expected, rel=1e-4)

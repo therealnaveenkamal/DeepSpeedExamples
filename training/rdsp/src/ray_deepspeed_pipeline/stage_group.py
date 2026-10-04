@@ -134,7 +134,8 @@ class StageGroupClient:
     def _submit_step(self, command, payloads, control):
         """One call per rank carrying the rank's whole op list for the step."""
         refs = [actor.run_step.remote(command.generation, control["ops"],
-                                      command.kind == "step", **payload)
+                                      command.kind == "step",
+                                      varying=control.get("varying", False), **payload)
                 for actor, payload in zip(self.actors, payloads)]
         reps = representatives(self.grid)
 

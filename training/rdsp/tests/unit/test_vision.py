@@ -74,7 +74,7 @@ def test_engine_features_and_gradients_match_the_encoder():
     encoder = tiny_vision()
     reference = copy.deepcopy(encoder)
     engine = ColocatedVisionEngine(VisionTower(encoder, "visual"),
-                                   {"optimizer": {"type": "AdamW", "params": {"lr": 0.01}}},
+                                   {"optimizer": {"type": "SGD", "params": {"lr": 1.0}}},
                                    torch.device("cpu"))
     g = torch.Generator().manual_seed(1)
     grid = torch.tensor([[1, 4, 4]])
@@ -86,8 +86,108 @@ def test_engine_features_and_gradients_match_the_encoder():
     assert torch.allclose(torch.cat([features[3], features[7]]), full, atol=1e-6)
 
     grads = {3: torch.randn(4, 16, generator=g), 7: torch.randn(4, 16, generator=g)}
+    before = [q.detach().clone() for q in reference.parameters()]
     engine.backward(grads)
     engine.reduce_gradients(group=None, divide_by=2)
+    engine.apply()  # SGD, lr 1, no momentum: each weight moves by its gradient
     full.backward(torch.cat([grads[3], grads[7]]) / 2)
-    for (name, p), q in zip(engine.tower.module.named_parameters(), reference.parameters()):
-        assert torch.allclose(p.grad, q.grad, atol=1e-6), name
+    for (name, p), q, b in zip(engine.tower.module.named_parameters(), reference.parameters(),
+                               before):
+        assert torch.allclose(b - p.detach(), q.grad, atol=1e-6), name
+
+
+def test_bf16_encoder_keeps_fp32_master_weights():
+    """With bf16 weights the optimizer steps an fp32 master copy: updates
+    far below bf16's resolution still add up instead of rounding away."""
+    from ray_deepspeed_pipeline.vision import VisionTower
+
+    encoder = tiny_vision().to(torch.bfloat16)
+    engine = ColocatedVisionEngine(VisionTower(encoder, "visual"),
+                                   {"optimizer": {"type": "SGD", "params": {"lr": 1e-5}}},
+                                   torch.device("cpu"))
+    first = next(engine.tower.module.parameters())
+    start = first.detach().float().clone()
+    for _ in range(400):
+        for p in engine.tower.module.parameters():
+            p.grad = torch.ones_like(p)
+        engine.reduce_gradients(group=None, divide_by=1)
+        engine.apply()
+    # 400 steps of 1e-5: a change of 4e-3, each step far below bf16 resolution near 1
+    moved = (start - first.detach().float()).abs().mean()
+    assert 2e-3 < float(moved) < 6e-3
+
+
+def _sharded_rank(rank, init_file, out_dir):
+    import torch.distributed as dist
+
+    from ray_deepspeed_pipeline.vision import VisionTower
+
+    dist.init_process_group("gloo", init_method=f"file://{init_file}", rank=rank, world_size=2)
+    # SGD with momentum: per-weight state to split, and steps linear in the
+    # gradient (Adam would turn last-bit differences in near-zero gradients
+    # between the two image groupings into full steps)
+    config = {"optimizer": {"type": "SGD", "params": {"lr": 0.1, "momentum": 0.9}}}
+    engine = ColocatedVisionEngine(VisionTower(tiny_vision(), "visual"), config,
+                                   torch.device("cpu"))
+    g = torch.Generator().manual_seed(1)
+    grid = torch.tensor([[1, 4, 4]])
+    images = [(i, torch.randn(16, 48, generator=g), grid) for i in range(4)]
+    grads = {i: torch.randn(4, 16, generator=g) for i in range(4)}
+    mine = images[rank * 2:rank * 2 + 2]  # each rank encodes two of the four images
+    for _ in range(2):
+        engine.forward(mine, train=True)
+        engine.backward({i: grads[i] for i, _, _ in mine})
+        engine.reduce_gradients(group=dist.group.WORLD, divide_by=2)
+        engine.apply()
+    state = engine.full_state()
+    torch.save({"params": [p.detach() for p in engine.tower.module.parameters()],
+                "shard": engine.master.numel(), "state": state if rank == 0 else None},
+               f"{out_dir}/r{rank}.pt")
+    dist.destroy_process_group()
+
+
+def test_sharded_optimizer_matches_one_unsharded_encoder(tmp_path):
+    """Two ranks, each encoding half of the images: each keeps half of the
+    fp32 master weights and optimizer state, and both end with the weights
+    one unsharded encoder gets from all the images. The checkpoint holds the
+    whole state and resumes it."""
+    import torch.multiprocessing as mp
+
+    from ray_deepspeed_pipeline.vision import VisionTower
+
+    mp.spawn(_sharded_rank, args=(str(tmp_path / "init"), str(tmp_path)), nprocs=2)
+    ranks = [torch.load(tmp_path / f"r{r}.pt", weights_only=False) for r in range(2)]
+
+    # SGD with momentum: per-weight state to split, and steps linear in the
+    # gradient (Adam would turn last-bit differences in near-zero gradients
+    # between the two image groupings into full steps)
+    config = {"optimizer": {"type": "SGD", "params": {"lr": 0.1, "momentum": 0.9}}}
+    one = ColocatedVisionEngine(VisionTower(tiny_vision(), "visual"), config, torch.device("cpu"))
+    g = torch.Generator().manual_seed(1)
+    grid = torch.tensor([[1, 4, 4]])
+    images = [(i, torch.randn(16, 48, generator=g), grid) for i in range(4)]
+    grads = {i: torch.randn(4, 16, generator=g) for i in range(4)}
+    for _ in range(2):
+        one.forward(images, train=True)
+        one.backward(grads)
+        one.reduce_gradients(group=None, divide_by=2)
+        one.apply()
+    total = sum(p.numel() for p in one.tower.module.parameters())
+    assert ranks[0]["shard"] == ranks[1]["shard"] == -(-total // 2)
+    for r in ranks:
+        for p, q in zip(r["params"], one.tower.module.parameters()):
+            assert torch.allclose(p, q.detach(), atol=1e-6)
+
+    # resume from the full state: one more step matches one more unsharded step
+    path = tmp_path / "vision.pt"
+    torch.save(ranks[0]["state"], path)
+    resumed = ColocatedVisionEngine(VisionTower(tiny_vision(), "visual"), config,
+                                    torch.device("cpu"))
+    resumed.load(str(path))
+    for e in (one, resumed):
+        e.forward(images, train=True)
+        e.backward(grads)
+        e.reduce_gradients(group=None, divide_by=2)
+        e.apply()
+    for p, q in zip(resumed.tower.module.parameters(), one.tower.module.parameters()):
+        assert torch.allclose(p, q, atol=1e-6)

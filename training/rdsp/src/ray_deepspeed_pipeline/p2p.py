@@ -12,11 +12,14 @@ direction per group keeps each group's dependencies acyclic. Sends are async
 and kept alive until the step ends; receives block, and 1F1B order
 guarantees each one's matching send is eventually issued.
 
-Microbatches are equal-sized, so each (direction, peer, slot) sends its
-shape header once per step; both ends walk microbatches in the same order, so
-they agree on which message carries it. A forward boundary is the hidden state
-(slot 0) plus named extra tensors (slots 2+); the hidden state's header
-carries their count and slot 1 their names, once per step.
+When a step's microbatches are equal-sized, each (direction, peer, slot)
+sends its shape header once per step; both ends walk microbatches in the same
+order, so they agree on which message carries it. In a step whose
+microbatches differ in length (each padded to its own longest row),
+begin_step(varying=True) makes every message carry its header. A forward
+boundary is the hidden state (slot 0) plus named extra tensors (slots 2+); the
+hidden state's header carries their count and slot 1 their names, once per
+step.
 """
 
 import datetime
@@ -67,6 +70,7 @@ class PipelineP2P:
                                              rank, world, timeout)
         self._pending = []       # (work, tensor) sends in flight this step
         self._shapes = {}        # (direction, peer, slot) -> decoded header, this step
+        self._varying = False    # this step's microbatches differ in length
         self._announced = set()  # (direction, peer, slot) already sent a header this step
         self._names = {}         # (direction, peer) -> extras' names, this step
 
@@ -96,7 +100,8 @@ class PipelineP2P:
 
     # -- per step --------------------------------------------------------------
 
-    def begin_step(self) -> None:
+    def begin_step(self, varying: bool = False) -> None:
+        self._varying = varying
         self._shapes.clear()
         self._announced.clear()
         self._names.clear()
@@ -116,7 +121,7 @@ class PipelineP2P:
              slot: int = 0, n_extras: int = 0) -> None:
         pg = self._pg(direction)
         t = t.detach().contiguous()
-        if (direction, peer, slot) not in self._announced:
+        if (direction, peer, slot) not in self._announced or (self._varying and slot != 1):
             self._announced.add((direction, peer, slot))
             header = _encode(t, n_extras).to(self.device)
             self._pending.append((pg.send([header], peer, _tag(mb, slot)), header))
@@ -125,7 +130,7 @@ class PipelineP2P:
     def recv(self, direction: str, peer: int, mb: int, slot: int = 0) -> torch.Tensor:
         pg = self._pg(direction)
         key = (direction, peer, slot)
-        if key not in self._shapes:
+        if key not in self._shapes or (self._varying and slot != 1):
             header = torch.empty(_HEADER_LEN, dtype=torch.int64, device=self.device)
             pg.recv([header], peer, _tag(mb, slot)).wait()
             self._shapes[key] = _decode(header.cpu())

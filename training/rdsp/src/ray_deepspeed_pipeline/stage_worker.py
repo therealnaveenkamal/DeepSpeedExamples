@@ -281,12 +281,13 @@ class StageWorkerActor:
         return out
 
     def _run_step(self, generation: int, ops: list, train: bool, inputs=None,
-                  labels=None, vision=None, token_total=None):
+                  labels=None, vision=None, token_total=None, varying=False):
         """Run this rank's whole step. ops: [(kind, mb, command_id)] in 1F1B
         order. inputs / labels: this rank's cell of every microbatch (first /
         last stage only). vision: this rank's vision.route_images() entry
         under colocated vision. token_total: the step's token count under a
-        TokenMeanLoss (last stage)."""
+        TokenMeanLoss (last stage). varying: the microbatches differ in
+        length, so every boundary travels with its shape."""
         self._enter_generation(generation)
         prev, next_ = self._peers()
         adapter, p2p, timer = self.adapter, self.p2p, self._timer
@@ -296,7 +297,7 @@ class StageWorkerActor:
         losses = {}
         loss_weight = (token_weight(token_total, self.grid.dp, adapter.n_mb)
                        if token_total is not None else 1.0)
-        p2p.begin_step()
+        p2p.begin_step(varying=varying)
         try:
             if vision is not None:
                 with timer.phase("vision_forward"):
@@ -423,9 +424,12 @@ class StageWorkerActor:
         stage_dir = ckpt.stage_dir(root, tag, self.stage)
         self.adapter.save_shard(stage_dir, tag)
         self.adapter.save_rng(ckpt.rng_path(root, tag, self.stage, self.rank))
-        if self.vision is not None and self.rank == 0:
-            # identical on every rank; each stage keeps a copy next to its shards
-            self.vision.save(os.path.join(stage_dir, _VISION_FILE))
+        if self.vision is not None:
+            # every rank holds a slice of the encoder's optimizer state: all
+            # gather it, and each stage keeps a full copy next to its shards
+            state = self.vision.full_state()
+            if self.rank == 0:
+                torch.save(state, os.path.join(stage_dir, _VISION_FILE))
         # every rank's files are complete before rank 0 fingerprints the stage
         torch.distributed.barrier()
         record = {"rank": self.rank}
