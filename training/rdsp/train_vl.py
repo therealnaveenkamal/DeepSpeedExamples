@@ -147,6 +147,25 @@ def token_loss_sum(logits, labels):
                            reduction="sum")
 
 
+def token_loss_sum_liger(logits, labels):
+    """token_loss_sum with Liger's cross entropy: computed in fp32 chunk by
+    chunk from bf16 logits, gradient written in place, so no fp32 copy of
+    the (vocabulary-wide) logits."""
+    from liger_kernel.transformers import LigerCrossEntropyLoss
+    return LigerCrossEntropyLoss(ignore_index=-100, reduction="sum")(
+        logits[:, :-1].reshape(-1, logits.shape[-1]),
+        labels[:, 1:].reshape(-1).to(logits.device))
+
+
+def apply_liger(model):
+    """Liger's fused RMSNorm and SwiGLU kernels, patched into this model's
+    module instances: the patched forwards travel with the stage modules to
+    their workers (a class-level patch would stay in this process)."""
+    from liger_kernel.transformers import _apply_liger_kernel_to_instance
+    _apply_liger_kernel_to_instance(model=model, rms_norm=True, swiglu=True, rope=False,
+                                    cross_entropy=False, fused_linear_cross_entropy=False)
+
+
 def token_count(labels) -> int:
     return int((labels[:, 1:] != -100).sum())
 
@@ -227,6 +246,8 @@ def main(argv=None):
     p.add_argument("--dataset", default="synthetic",
                    help="synthetic, cord-v2, or exported:DIR (export_bridge_batches.py)")
     p.add_argument("--loss", choices=tuple(LOSSES), default="token-mean")
+    p.add_argument("--liger", action="store_true",
+                   help="Liger fused RMSNorm/SwiGLU kernels and cross entropy")
     p.add_argument("--pad-multiple", type=int, default=0,
                    help="exported data: trim each step's padding to its longest row, "
                    "rounded up to this multiple (0 keeps the exported length)")
@@ -292,9 +313,15 @@ def main(argv=None):
     if args.profile:
         import os
         os.environ["RDSP_PROFILE"] = "1"  # before ray.init: actors inherit it
+    loss_fn = LOSSES[args.loss]
+    if args.liger:
+        apply_liger(skeleton)
+        loss_fn = {"token-mean": rdsp.TokenMeanLoss(token_loss_sum_liger, token_count),
+                   "microbatch-mean": lambda logits, labels: token_loss_sum_liger(
+                       logits, labels) / max(token_count(labels), 1)}[args.loss]
     ray.init(ignore_reinit_error=True)
     engine, _, _, _ = rdsp.initialize(
-        model=skeleton, config=ds_config(args), loss_fn=LOSSES[args.loss], weights=weights,
+        model=skeleton, config=ds_config(args), loss_fn=loss_fn, weights=weights,
         pipeline_config=rdsp.PipelineConfig(
             stages=args.stages, partition=partition, stage_overrides=tuple(args.stage),
             colocated_vision=(rdsp.ColocatedVision(recompute=args.vision_recompute)

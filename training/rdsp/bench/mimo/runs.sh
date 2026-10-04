@@ -62,7 +62,7 @@ MIMO_TRAIN="--hf-model Qwen/$MODEL --dataset-name cord_v2 --seq-length 2048 \
 
 RDSP_TRAIN="--model Qwen/$MODEL --dataset exported:$WORK/cord_steps --pad-multiple 128 \
   --seq 2048 --steps $STEPS --lr 1e-5 --betas 0.9,0.95 --eps 1e-8 --weight-decay 0.0 \
-  --grad-dtype fp32 --loss token-mean"
+  --grad-dtype fp32 --loss token-mean --liger"
 
 rdsp() {  # rdsp <log name> <train_vl args...>
   local name=$1; shift
@@ -84,6 +84,11 @@ case "${1:-}" in
     container "python /rdsp/bench/mimo/export_bridge_batches.py --out /workspace/cord_steps \
       --steps $STEPS --recipe $RECIPE $STD_DATA dataset.pad_to_max_length=true" \
       2>&1 | tee "$LOGS/export.log" ;;
+  megatron-layout)   # TP=.. PP=.. runs.sh megatron-layout: any standard-recipe layout
+    container "python -m torch.distributed.run --nproc_per_node=8 scripts/training/run_recipe.py \
+      --recipe $RECIPE --step_func qwen3_vl_step $STD_TRAIN \
+      model.tensor_model_parallel_size=${TP:-1} model.pipeline_model_parallel_size=${PP:-4}" \
+      2>&1 | tee "$LOGS/megatron-tp${TP:-1}pp${PP:-4}.log" ;;
   shared-megatron)   # TP2 x PP2 x DP2, encoder on PP0
     container "python -m torch.distributed.run --nproc_per_node=8 scripts/training/run_recipe.py \
       --recipe $RECIPE --step_func qwen3_vl_step $STD_TRAIN \
@@ -93,19 +98,29 @@ case "${1:-}" in
     # ZeRO-1 reduces gradients once per step, as Megatron does (ZeRO-2 does
     # it after every microbatch: ~2x slower over PCIe). Hugging Face layers
     # keep more activations than Transformer Engine's, so 32 GB needs recompute.
-    rdsp shared-rdsp --rows 2 --microbatches 32 --stages 2 --cuts 16 \
-      --stage 0:gpus=4,tp=2,zero=1,recompute=1 --stage 1:gpus=4,tp=2,zero=1,recompute=1 ;;
-  noncoloc-mimo)     # language TP2 x PP2 on ranks 0-3, images DP2 on ranks 4-5 (a row each)
+    # Liger kernels; cut 14 with recompute only on the vision stage balances
+    # the two stages best within 32 GB
+    rdsp shared-rdsp --rows 2 --microbatches 32 --stages 2 --cuts 14 \
+      --stage 0:gpus=4,tp=2,zero=1,recompute=1 --stage 1:gpus=4,tp=2,zero=1 ;;
+  noncoloc-mimo)     # language TP4 on ranks 0-3, images DP2 on ranks 4-5 (a row each);
+                     # one language stage: MIMO's checkpoint load fails for a tied
+                     # embedding (Qwen3.5-4B) split over pipeline stages
     container "python -m torch.distributed.run --nproc_per_node=6 \
       examples/megatron_mimo/qwen35_vl/finetune_qwen35_vl.py $MIMO_TRAIN --micro-batch-size 2 \
-      --run-name noncoloc --component language=tp=2,pp=2,dp=1,rank_offset=0 \
+      --run-name noncoloc --component language=tp=4,pp=1,dp=1,rank_offset=0 \
       --component images=tp=1,pp=1,dp=2,rank_offset=4" 2>&1 | tee "$LOGS/noncoloc-mimo.log" ;;
   noncoloc-rdsp)
-    rdsp noncoloc-rdsp --rows 2 --microbatches 32 --stages 3 --cuts 0,16 \
-      --stage 0:gpus=2,zero=2 --stage 1:gpus=2,tp=2,zero=2 --stage 2:gpus=2,tp=2,zero=2 ;;
+    rdsp noncoloc-rdsp --rows 2 --microbatches 32 --stages 2 --cuts 0 \
+      --stage 0:gpus=2,zero=1 --stage 1:gpus=4,tp=4,zero=1 ;;
+  best-rdsp)         # rdsp's fastest layout on 8x 32 GB PCIe GPUs: 4 stages x DP2, no TP,
+                     # encoder on all 8 GPUs, recompute only on the first stage (4
+                     # microbatches in flight), cuts balanced by cost (head ~6.6 layers)
+    rdsp best-rdsp --rows 2 --microbatches 32 --stages 4 --cuts 7,17,27 \
+      --colocated-vision --vision-recompute --stage 0:gpus=2,zero=1,recompute=1 \
+      --stage 1:gpus=2,zero=1 --stage 2:gpus=2,zero=1 --stage 3:gpus=2,zero=1 ;;
   coloc-rdsp)        # language as shared-rdsp, encoder on all 8 GPUs
-    rdsp coloc-rdsp --rows 2 --microbatches 32 --stages 2 --cuts 16 --colocated-vision \
-      --stage 0:gpus=4,tp=2,zero=1,recompute=1 --stage 1:gpus=4,tp=2,zero=1,recompute=1 ;;
+    rdsp coloc-rdsp --rows 2 --microbatches 32 --stages 2 --cuts 14 --colocated-vision \
+      --stage 0:gpus=4,tp=2,zero=1,recompute=1 --stage 1:gpus=4,tp=2,zero=1 ;;
   gate)
     # 1) same layout, same first step: the reported losses must agree
     STEPS=1 "$0" shared-megatron; STEPS=1 "$0" shared-rdsp
