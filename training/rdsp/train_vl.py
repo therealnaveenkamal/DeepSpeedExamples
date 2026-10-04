@@ -140,6 +140,18 @@ def exported_microbatches(directory: str, rows: int, pad_multiple: int = 0):
             yield inputs, torch.cat([s["labels"][:, :length] for s in group])
 
 
+def drop_padding_mask(inputs: dict) -> dict:
+    """inputs without their attention mask, for rows padded only at the end:
+    causal attention already keeps real tokens off later (padding) positions,
+    and without a mask attention runs its causal flash kernel. Raises
+    ValueError when a row has padding before a real token."""
+    mask = inputs["attention_mask"]
+    lengths = mask.sum(dim=1, keepdim=True)
+    if not torch.equal(mask.bool(), torch.arange(mask.shape[1]) < lengths):
+        raise ValueError("--drop-padding-mask needs rows padded on the right only")
+    return {k: v for k, v in inputs.items() if k != "attention_mask"}
+
+
 def token_loss_sum(logits, labels):
     """Summed next-token loss over the caption tokens of some rows."""
     return F.cross_entropy(logits[:, :-1].float().reshape(-1, logits.shape[-1]),
@@ -170,25 +182,29 @@ def token_count(labels) -> int:
     return int((labels[:, 1:] != -100).sum())
 
 
-def microbatch_mean_loss(logits, labels):
-    """Mean over one rank's caption tokens in one microbatch; the step loss
-    is then the mean over microbatches and data-parallel ranks (Megatron's
-    default, calculate_per_token_loss=False)."""
-    return token_loss_sum(logits, labels) / max(token_count(labels), 1)
-
-
+# what training averages over; either way the reported step loss is the
+# mean over every caption token of the step, as Megatron logs it
 LOSSES = {
-    # averaged over every caption token of the step (calculate_per_token_loss)
-    "token-mean": rdsp.TokenMeanLoss(token_loss_sum, token_count),
-    "microbatch-mean": microbatch_mean_loss,
+    "token-mean": False,       # every token of the step (calculate_per_token_loss)
+    "microbatch-mean": True,   # each rank's microbatch, then the mean of those
+                               # (Megatron's default)
 }
 
 
-def unsplit_loss(weights: str, batches, loss: str) -> float:
-    """Loss of the whole model, unsplit: the reference for --check (for
-    microbatch-mean, equal to the pipeline's when the last stage has one
-    data-parallel rank). Spread over the GPUs when it does not fit one
-    (32B); freed afterwards."""
+def loss_function(args):
+    """The stage loss for --loss / --liger / --sharded-loss."""
+    if args.sharded_loss:
+        token_sum = rdsp.next_token_loss_sum
+    elif args.liger:
+        token_sum = token_loss_sum_liger
+    else:
+        token_sum = token_loss_sum
+    return rdsp.TokenMeanLoss(token_sum, token_count, per_microbatch=LOSSES[args.loss])
+
+
+def unsplit_loss(weights: str, batches) -> float:
+    """Token-mean loss of the whole model, unsplit: the reference for --check.
+    Spread over the GPUs when it does not fit one (32B); freed afterwards."""
     import transformers
     model = transformers.AutoModelForImageTextToText.from_pretrained(
         weights, dtype=torch.bfloat16, device_map="auto").eval()
@@ -201,9 +217,7 @@ def unsplit_loss(weights: str, batches, loss: str) -> float:
             counts.append(max(token_count(labels), 1))
     del model
     torch.cuda.empty_cache()
-    if loss == "token-mean":
-        return sum(sums) / sum(counts)
-    return sum(s / c for s, c in zip(sums, counts)) / len(sums)
+    return sum(sums) / sum(counts)
 
 
 def ds_config(args) -> dict:
@@ -245,7 +259,9 @@ def main(argv=None):
     p.add_argument("--image-size", type=int, default=448, help="synthetic images' side")
     p.add_argument("--dataset", default="synthetic",
                    help="synthetic, cord-v2, or exported:DIR (export_bridge_batches.py)")
-    p.add_argument("--loss", choices=tuple(LOSSES), default="token-mean")
+    p.add_argument("--loss", choices=tuple(LOSSES), default="token-mean",
+                   help="what training averages over; the step loss printed is the "
+                        "token mean either way")
     p.add_argument("--liger", action="store_true",
                    help="Liger fused RMSNorm/SwiGLU kernels and cross entropy")
     p.add_argument("--pad-multiple", type=int, default=0,
@@ -260,6 +276,12 @@ def main(argv=None):
                    "flash_attention_2, ...)")
     p.add_argument("--max-pixels", type=int, default=512 * 512,
                    help="cord-v2: scale images down to at most this many pixels")
+    p.add_argument("--untie-embeddings", action="store_true",
+                   help="train the input embedding and the output head as two matrices; "
+                        "needed when a tied pair would land on different stages")
+    p.add_argument("--drop-padding-mask", action="store_true",
+                   help="leave out the attention mask of right-padded rows, so attention "
+                        "can use its causal flash kernel")
     p.add_argument("--sharded-loss", action="store_true",
                    help="token-mean loss over vocab-parallel logits: tensor-parallel "
                         "stages skip gathering the full logits")
@@ -296,11 +318,11 @@ def main(argv=None):
         data = microbatches(processor, args.rows, args.seq, source)
     first = [next(data) for _ in range(args.microbatches)]
 
-    reference = unsplit_loss(weights, first, args.loss) if args.check else None
+    reference = unsplit_loss(weights, first) if args.check else None
 
     config = transformers.AutoConfig.from_pretrained(weights)
-    # rdsp needs tied parameters untied: embedding and head sit on different stages
-    config.tie_word_embeddings = config.get_text_config().tie_word_embeddings = False
+    if args.untie_embeddings:  # tied parameters must sit on one stage
+        config.tie_word_embeddings = config.get_text_config().tie_word_embeddings = False
     config._attn_implementation = args.attn
     with accelerate.init_empty_weights():
         skeleton = transformers.AutoModelForImageTextToText.from_config(config,
@@ -318,16 +340,9 @@ def main(argv=None):
     if args.profile:
         import os
         os.environ["RDSP_PROFILE"] = "1"  # before ray.init: actors inherit it
-    loss_fn = LOSSES[args.loss]
+    loss_fn = loss_function(args)
     if args.liger:
         apply_liger(skeleton)
-        loss_fn = {"token-mean": rdsp.TokenMeanLoss(token_loss_sum_liger, token_count),
-                   "microbatch-mean": lambda logits, labels: token_loss_sum_liger(
-                       logits, labels) / max(token_count(labels), 1)}[args.loss]
-    if args.sharded_loss:
-        if args.loss != "token-mean":
-            raise SystemExit("--sharded-loss is a token-mean loss")
-        loss_fn = rdsp.TokenMeanLoss(rdsp.next_token_loss_sum, token_count)
     ray.init(ignore_reinit_error=True)
     engine, _, _, _ = rdsp.initialize(
         model=skeleton, config=ds_config(args), loss_fn=loss_fn, weights=weights,
@@ -354,6 +369,8 @@ def main(argv=None):
             # real tokens: what the attention mask covers (padding excluded)
             counts[step] = (sum(int(x["attention_mask"].sum()) for x, _ in entries),
                             sum(token_count(y) for _, y in entries))
+            if args.drop_padding_mask:
+                entries = [(drop_padding_mask(x), y) for x, y in entries]
             yield from entries
 
     batches = stream()

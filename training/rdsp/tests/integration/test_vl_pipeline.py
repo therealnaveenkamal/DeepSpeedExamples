@@ -46,7 +46,7 @@ def tiny_qwen3_vl():
     return cfg
 
 
-def tiny_qwen3_5_vl():
+def tiny_qwen3_5_vl(tied=False):
     """Qwen3.5: linear-attention (Gated DeltaNet) and full-attention layers,
     and a vision encoder with no deepstack, so nothing it computes enters the
     decoder past the input embeddings."""
@@ -64,7 +64,8 @@ def tiny_qwen3_5_vl():
                            out_hidden_size=64, patch_size=4, spatial_merge_size=2,
                            temporal_patch_size=1, num_position_embeddings=16),
         image_token_id=IMAGE_PAD, video_token_id=251, vision_start_token_id=VISION_START,
-        tie_word_embeddings=False)
+        tie_word_embeddings=tied)
+    cfg.get_text_config().tie_word_embeddings = tied
     cfg._attn_implementation = "sdpa"
     return cfg
 
@@ -185,11 +186,11 @@ def test_data_parallel_vision_stage_matches_unsplit_model(ray_ctx, stub_engines)
     assert got == pytest.approx(expected, rel=1e-4)
 
 
-def qwen3_5_vl_pair(seed):
+def qwen3_5_vl_pair(seed, tied=False):
     """A tiny Qwen3.5-VL and an identical copy for the unsplit reference."""
     torch.manual_seed(seed)
-    model = transformers.Qwen3_5ForConditionalGeneration(tiny_qwen3_5_vl()).float()
-    reference = transformers.Qwen3_5ForConditionalGeneration(tiny_qwen3_5_vl()).float()
+    model = transformers.Qwen3_5ForConditionalGeneration(tiny_qwen3_5_vl(tied)).float()
+    reference = transformers.Qwen3_5ForConditionalGeneration(tiny_qwen3_5_vl(tied)).float()
     reference.load_state_dict(model.state_dict())
     return model, reference
 
@@ -222,6 +223,18 @@ def test_vision_only_first_stage_matches_unsplit_model(ray_ctx, stub_engines):
     got = pipelined_losses(model, (0, 3), steps=2,
                            overrides=(StageOverride(stage=0, num_gpus=2),))
     assert got == pytest.approx(expected, rel=1e-4)
+
+
+@pytest.mark.skipif(not hasattr(transformers, "Qwen3_5ForConditionalGeneration"),
+                    reason="transformers without Qwen3.5")
+def test_tied_embeddings_on_one_stage_train_as_one_matrix(ray_ctx, stub_engines):
+    """With the vision encoder on a stage of its own, the next stage holds
+    both the input embedding and the output head; a model that ties them
+    keeps one matrix there, trained by both uses, as unsplit."""
+    model, reference = qwen3_5_vl_pair(seed=9, tied=True)
+    assert model.lm_head.weight is model.model.language_model.embed_tokens.weight
+    expected = unsplit_losses(reference, make_batches(), steps=3)
+    assert pipelined_losses(model, (0,), steps=3) == pytest.approx(expected, rel=1e-4)
 
 
 needs_qwen3_5 = pytest.mark.skipif(not hasattr(transformers, "Qwen3_5ForConditionalGeneration"),
@@ -316,6 +329,42 @@ def test_token_mean_loss_matches_unsplit_model_on_uneven_rows(ray_ctx, stub_engi
             stages=2, partition=rdsp.ExplicitCuts((3,)),
             stage_overrides=(StageOverride(stage=1, num_gpus=2),),
             colocated_vision=rdsp.ColocatedVision() if colocated else None))
+    got = [float(engine.train_batch(data_iter=iter(uneven_batches()))) for _ in range(3)]
+    assert got == pytest.approx(expected, rel=1e-4)
+
+
+@needs_qwen3_5
+def test_per_microbatch_training_still_reports_the_token_mean(ray_ctx, stub_engines):
+    """TokenMeanLoss(per_microbatch=True): each rank's microbatch trains on
+    its own token mean (here one row each: every row counts the same, as in
+    Megatron without per-token loss), while the step loss reported is still
+    the step's token mean, as Megatron logs it."""
+    sgd = dict(DS, optimizer={"type": "SGD", "params": {"lr": 0.5, "momentum": 0.9}})
+    model, reference = qwen3_5_vl_pair(seed=15)
+    opt = torch.optim.SGD(reference.parameters(), lr=0.5, momentum=0.9)
+    expected = []
+    for _ in range(3):
+        opt.zero_grad()
+        batches = uneven_batches()
+        total = sum(token_count(labels) for _, labels in batches)
+        rows = sum(len(labels) for _, labels in batches)
+        step = 0.0
+        for inputs, labels in batches:
+            full = {k: torch.cat(v) if isinstance(v, list) else v for k, v in inputs.items()}
+            logits = reference(**full, use_cache=False).logits
+            for r in range(len(labels)):  # one row per data-parallel rank
+                row = token_sum(logits[r:r + 1], labels[r:r + 1])
+                (row / token_count(labels[r:r + 1]) / rows).backward(retain_graph=True)
+                step += float(row) / total
+        opt.step()
+        expected.append(step)
+
+    engine, _, _, _ = rdsp.initialize(
+        model=model, config=sgd,
+        loss_fn=rdsp.TokenMeanLoss(token_sum, token_count, per_microbatch=True),
+        pipeline_config=rdsp.PipelineConfig(
+            stages=2, partition=rdsp.ExplicitCuts((3,)),
+            stage_overrides=(StageOverride(stage=1, num_gpus=2),)))
     got = [float(engine.train_batch(data_iter=iter(uneven_batches()))) for _ in range(3)]
     assert got == pytest.approx(expected, rel=1e-4)
 
@@ -680,3 +729,30 @@ def test_vision_token_ratio_shifts_blocks_off_the_vision_stage():
     heavy = partition_parameters(model, BalancedTransformerBlocks(vision_token_ratio=100.0), 2)
     assert heavy[0].block_stop == 2  # the deepstack blocks, nothing more
     assert light[0].block_stop > heavy[0].block_stop
+
+
+@needs_qwen3_5
+def test_right_padding_needs_no_mask():
+    """Rows padded at the end: causal attention (and Qwen3.5's causal
+    linear attention) already keeps real tokens off the padding, so dropping
+    the padding mask leaves their loss unchanged and lets attention use its
+    fastest (causal, unmasked) kernel."""
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+    from train_vl import drop_padding_mask
+
+    model, _ = qwen3_5_vl_pair(seed=3)
+    inputs, labels = make_batches()[0]
+    inputs = {k: torch.cat(v) if isinstance(v, list) else v for k, v in inputs.items()}
+    mask = torch.ones_like(inputs["input_ids"])
+    mask[0, -5:] = 0  # row 0 is 5 tokens shorter
+    labels = labels.masked_fill(mask == 0, -100)
+    masked = model(**inputs, attention_mask=mask).logits
+    unmasked = model(**drop_padding_mask({**inputs, "attention_mask": mask})).logits
+    real = mask.bool()
+    assert torch.allclose(masked[real], unmasked[real], atol=1e-5)
+    assert float(lm_loss(masked, labels)) == pytest.approx(float(lm_loss(unmasked, labels)), rel=1e-5)
+
+    mask[1, 3] = 0  # a hole before real tokens: the mask matters there
+    with pytest.raises(ValueError, match="right"):
+        drop_padding_mask({**inputs, "attention_mask": mask})

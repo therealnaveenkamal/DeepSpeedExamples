@@ -18,13 +18,28 @@ class TokenMeanLoss:
     and ranks) / (their token count). sum_fn(outputs, labels): the summed
     per-token loss of one rank's rows; count_fn(labels): how many tokens it
     sums. The driver counts the step's tokens from the labels before the
-    step, so every backward already carries the final weight."""
+    step, so every backward already carries the final weight.
+
+    per_microbatch: train instead on each rank's microbatch's own token mean,
+    averaged over microbatches and ranks (Megatron's default, without
+    calculate_per_token_loss), while still reporting the step's token mean,
+    as Megatron logs it."""
 
     sum_fn: Callable
     count_fn: Callable
+    per_microbatch: bool = False
 
     def __call__(self, outputs, labels):
         return self.sum_fn(outputs, labels)
+
+    def split(self, outputs, labels, weight: float):
+        """(loss to train on, value to report) for one rank's microbatch;
+        weight: token_weight() for the step."""
+        total = self.sum_fn(outputs, labels)
+        reported = total.detach() * weight
+        if self.per_microbatch:
+            return total / max(int(self.count_fn(labels)), 1), reported
+        return total * weight, reported
 
     @property
     def takes_vocab_shards(self) -> bool:

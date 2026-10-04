@@ -108,3 +108,37 @@ def test_a_token_mean_loss_takes_shards_when_its_sum_does():
     from ray_deepspeed_pipeline import TokenMeanLoss
     assert TokenMeanLoss(next_token_loss_sum, len).takes_vocab_shards
     assert not TokenMeanLoss(lambda logits, labels: 0, len).takes_vocab_shards
+
+
+def _rank_tied(rank, init_file, out_dir):
+    dist.init_process_group("gloo", init_method=f"file://{init_file}", rank=rank, world_size=TP)
+    torch.manual_seed(0)
+    full = Tiny()
+    full.lm_head.weight = full.embed_tokens.weight
+    sharded = Tiny()
+    sharded.lm_head.weight = sharded.embed_tokens.weight
+    sharded.load_state_dict(full.state_dict())
+    shard_vocab(sharded, VOCAB, rank=rank, world=TP, group=lambda: dist.group.WORLD,
+                gather_logits=False)
+    ids = torch.tensor([[0, 5, 6, 11]])
+    labels = torch.tensor([[-100, 5, 7, 11]])
+    next_token_loss_sum(full(ids), labels).backward()
+    next_token_loss_sum(sharded(ids), labels).backward()
+    rows = slice(rank * VOCAB // TP, (rank + 1) * VOCAB // TP)
+    torch.save({
+        "shared": sharded.lm_head.weight is sharded.embed_tokens.weight,
+        "params": len(list(sharded.parameters())),
+        "grad": torch.allclose(sharded.embed_tokens.weight.grad,
+                               full.embed_tokens.weight.grad[rows], atol=1e-5),
+    }, os.path.join(out_dir, f"r{rank}.pt"))
+    dist.destroy_process_group()
+
+
+def test_tied_embedding_and_head_stay_one_parameter():
+    """A head tied to the embedding keeps sharing its rows after sharding:
+    one parameter, whose gradient sums both uses, as in the unsplit model."""
+    with tempfile.TemporaryDirectory() as d:
+        mp.spawn(_rank_tied, args=(os.path.join(d, "init"), d), nprocs=TP)
+        for rank in range(TP):
+            r = torch.load(os.path.join(d, f"r{rank}.pt"))
+            assert r["shared"] and r["params"] == 2 and r["grad"], r

@@ -103,7 +103,7 @@ case "${1:-}" in
     # keep more activations than Transformer Engine's, so 32 GB needs recompute.
     # Liger kernels; cut 14 with recompute only on the vision stage balances
     # the two stages best within 32 GB
-    rdsp shared-rdsp --rows 2 --microbatches 32 --stages 2 --cuts 14 \
+    rdsp shared-rdsp --untie-embeddings --rows 2 --microbatches 32 --stages 2 --cuts 14 \
       --stage 0:gpus=4,tp=2,zero=1,recompute=1 --stage 1:gpus=4,tp=2,zero=1 ;;
   noncoloc-mimo)     # language TP4 on ranks 0-3, images on rank 4. One language stage:
                      # MIMO's checkpoint load fails for a tied embedding (Qwen3.5-4B)
@@ -123,17 +123,17 @@ case "${1:-}" in
       model.recompute_granularity=full model.recompute_method=uniform model.recompute_num_layers=1" \
       2>&1 | tee "$LOGS/pp4-megatron.log" ;;
   pp4-rdsp)          # the same layout, vision on stage 0; recompute where it must
-    rdsp pp4-rdsp --rows 2 --microbatches 32 --stages 4 --cuts 8,18,28 \
+    rdsp pp4-rdsp --untie-embeddings --rows 2 --microbatches 32 --stages 4 --cuts 8,18,28 \
       --stage 0:gpus=2,zero=1,recompute=1 --stage 1:gpus=2,zero=1,recompute=1 \
       --stage 2:gpus=2,zero=1,recompute=1 --stage 3:gpus=2,zero=1 ;;
   best-rdsp)         # rdsp's fastest layout on 8x 32 GB PCIe GPUs: 4 stages x DP2, no TP,
                      # encoder on all 8 GPUs, recompute only on the first stage (4
                      # microbatches in flight), cuts balanced by cost (head ~6.6 layers)
-    rdsp best-rdsp --rows 2 --microbatches 32 --stages 4 --cuts 7,17,27 \
+    rdsp best-rdsp --untie-embeddings --rows 2 --microbatches 32 --stages 4 --cuts 7,17,27 \
       --colocated-vision --vision-recompute --stage 0:gpus=2,zero=1,recompute=1 \
       --stage 1:gpus=2,zero=1 --stage 2:gpus=2,zero=1 --stage 3:gpus=2,zero=1 ;;
   coloc-rdsp)        # language as shared-rdsp, encoder on all 8 GPUs
-    rdsp coloc-rdsp --rows 2 --microbatches 32 --stages 2 --cuts 14 --colocated-vision \
+    rdsp coloc-rdsp --untie-embeddings --rows 2 --microbatches 32 --stages 2 --cuts 14 --colocated-vision \
       --stage 0:gpus=4,tp=2,zero=1,recompute=1 --stage 1:gpus=4,tp=2,zero=1 ;;
   gate)
     # 1) same layout, same first step: the reported losses must agree
@@ -142,7 +142,7 @@ case "${1:-}" in
     grep -a "^step 0" "$LOGS/shared-rdsp.log"
     # 2) rdsp against the unsplit HF model (a one-rank last stage, where the
     #    per-rank mean is the microbatch's mean)
-    rdsp gate-rdsp --rows 2 --microbatches 32 --stages 2 --cuts 16 --check --steps 1 \
+    rdsp gate-rdsp --untie-embeddings --rows 2 --microbatches 32 --stages 2 --cuts 16 --check --steps 1 \
       --stage 0:gpus=4,tp=2,zero=2 --stage 1:gpus=2,tp=2,zero=2 ;;
   *) sed -n 2,12p "$0"; exit 1 ;;
 esac

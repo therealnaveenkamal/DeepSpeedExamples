@@ -327,10 +327,19 @@ class DeepSpeedStageAdapter:
         hidden = out[0] if isinstance(out, tuple) else out
         self._acts[mb] = (inp, hidden)
         if self.is_last:
-            loss = self.loss_fn(hidden, labels.to(self.device)) * loss_weight
+            loss, reported = self._loss(hidden, labels.to(self.device), loss_weight)
             self._losses[mb] = loss
-            return float(loss.detach())
+            return float(reported)
         return self._boundary(out)
+
+    def _loss(self, outputs, labels, weight: float):
+        """(loss to train on, value to report): a loss_fn with split() (a
+        TokenMeanLoss) may report something other than what it trains on."""
+        split = getattr(self.loss_fn, "split", None)
+        if split is not None:
+            return split(outputs, labels, weight)
+        loss = self.loss_fn(outputs, labels) * weight
+        return loss, loss.detach()
 
     def _input_leaves(self, x):
         """(x, {name: leaf}) with the input_grads entries of a dict input
@@ -355,7 +364,7 @@ class DeepSpeedStageAdapter:
             out = self._call(_to_device(x, self.device), position_offset,
                              _to_device(extras, self.device))
             if self.is_last:
-                return float(self.loss_fn(out, labels.to(self.device)) * loss_weight)
+                return float(self._loss(out, labels.to(self.device), loss_weight)[1])
             return self._boundary(out)
 
     # -- backward -----------------------------------------------------------

@@ -177,19 +177,28 @@ def shard_vocab(module: nn.Module, vocab_size: int, rank: int, world: int, group
     callable returning the tensor-parallel process group (resolved at call
     time, so it can be created after this). gather_logits=False: heads
     return their shard's logits, tagged with .vocab_shard, for a loss that
-    takes vocabulary shards. Returns how many were replaced."""
+    takes vocabulary shards. A head tied to an embedding (one weight) stays
+    tied: both get the same shard parameter. Returns how many were replaced."""
     if vocab_size % world:
         return 0
     replaced = 0
+    shards = {}  # id(original weight) -> its shard, so tied modules share it
+
+    def shared(new, original):
+        new.weight = shards.setdefault(id(original), new.weight)
+        return new
+
     for parent in list(module.modules()):
         for name, child in list(parent.named_children()):
             if isinstance(child, nn.Embedding) and child.num_embeddings == vocab_size \
                     and child.padding_idx is None and not child.weight.is_meta:
-                setattr(parent, name, VocabShardedEmbedding(child, rank, world, group))
+                setattr(parent, name, shared(VocabShardedEmbedding(child, rank, world, group),
+                                             child.weight))
                 replaced += 1
             elif isinstance(child, nn.Linear) and child.out_features == vocab_size \
                     and child.bias is None and not child.weight.is_meta:
-                setattr(parent, name, VocabShardedHead(child, rank, world, group,
-                                                       gather=gather_logits))
+                setattr(parent, name, shared(VocabShardedHead(child, rank, world, group,
+                                                              gather=gather_logits),
+                                             child.weight))
                 replaced += 1
     return replaced
