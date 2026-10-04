@@ -118,13 +118,45 @@ def _ulysses_mpu(stage_module, micro_batch_size: int, sp: int, backend: str):
     return mpu
 
 
+def _with_immediate_grad_update(conf: dict) -> dict:
+    """bf16 with fp32 gradient accumulation under ZeRO-1 runs DeepSpeed's
+    BF16_Optimizer. With immediate_grad_update it adds each parameter's bf16
+    gradient into the fp32 buffer as soon as autograd produces it (instead of
+    in a pass after the backward); _free_bf16_grads_after_accumulating then
+    frees the bf16 copy. An explicit setting in the config is kept."""
+    bf16 = conf.get("bf16") or {}
+    zero = (conf.get("zero_optimization") or {}).get("stage")
+    accum = (conf.get("data_types") or {}).get("grad_accum_dtype")
+    if bf16.get("enabled") and zero == 1 and accum == "fp32":
+        conf["bf16"] = {**bf16, "immediate_grad_update": bf16.get("immediate_grad_update", True)}
+    return conf
+
+
+def _free_bf16_grads_after_accumulating(optimizer) -> None:
+    """Under immediate_grad_update, free each parameter's bf16 gradient once
+    it is in the fp32 buffer. DeepSpeed only zeroes it, so a bf16 copy of
+    every gradient stays allocated: 2 bytes per parameter that Megatron
+    (which accumulates straight into fp32) does not spend. The math is the
+    same: each microbatch's gradient is added into fp32 once."""
+    if not getattr(optimizer, "immediate_grad_update", False):
+        return
+    accumulate = optimizer.accumulate_hp_grads_and_remove_lp
+
+    def accumulate_and_free(lp, group_idx, param_idx):
+        accumulate(lp, group_idx, param_idx)
+        lp.grad = None
+
+    # DeepSpeed's hooks look the method up on the instance at call time
+    optimizer.accumulate_hp_grads_and_remove_lp = accumulate_and_free
+
+
 def _deepspeed_engine_factory(stage_module, ds_config: dict):
     """One stage-local DeepSpeed engine. The stage's TP/SP/EP degrees come
     from ds_config; model-specific details from the HF config the stage
     module carries."""
     import deepspeed
 
-    conf = json.loads(json.dumps(ds_config))  # deep copy
+    conf = _with_immediate_grad_update(json.loads(json.dumps(ds_config)))  # deep copy
     conf["gradient_accumulation_steps"] = 1  # the coordinator accumulates (module doc)
     # DeepSpeed derives train_batch_size from the per-rank micro batch and its
     # own data-parallel world, which excludes TP
@@ -253,6 +285,7 @@ class DeepSpeedStageAdapter:
         self.engine = (engine_factory or _deepspeed_engine_factory)(
             stage_module, ds_config)
         self.device = next(self.engine.module.parameters()).device
+        _free_bf16_grads_after_accumulating(getattr(self.engine, "optimizer", None))
         self._install_tp_grad_allreduce()
         self._install_folded_moe_grad_average()
         self._rng_at_generation_start = None

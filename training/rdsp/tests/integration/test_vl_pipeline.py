@@ -789,3 +789,15 @@ def test_compile_can_cover_only_the_vision_encoder(monkeypatch):
     inputs, _ = make_batches()[0]
     full = {k: torch.cat(v) if isinstance(v, list) else v for k, v in inputs.items()}
     assert torch.allclose(plain(**full)[0], fast(**full)[0], atol=1e-5)
+
+
+def test_one_stage_matches_unsplit_model(ray_ctx, stub_engines):
+    """No pipeline at all (one stage holding the whole model, here on 2
+    data-parallel ranks): the layout to compare with plain TP x DP."""
+    torch.manual_seed(0)
+    model = transformers.Qwen3VLForConditionalGeneration(tiny_qwen3_vl()).float()
+    reference = transformers.Qwen3VLForConditionalGeneration(tiny_qwen3_vl()).float()
+    reference.load_state_dict(model.state_dict())
+    expected = unsplit_losses(reference, make_batches(), steps=2)
+    got = pipelined_losses(model, (), steps=2, overrides=(StageOverride(stage=0, num_gpus=2),))
+    assert got == pytest.approx(expected, rel=1e-4)
