@@ -260,6 +260,9 @@ def main(argv=None):
                    "flash_attention_2, ...)")
     p.add_argument("--max-pixels", type=int, default=512 * 512,
                    help="cord-v2: scale images down to at most this many pixels")
+    p.add_argument("--sharded-loss", action="store_true",
+                   help="token-mean loss over vocab-parallel logits: tensor-parallel "
+                        "stages skip gathering the full logits")
     p.add_argument("--prefetch", action="store_true",
                    help="read and ship the next step's batches while this step runs")
     p.add_argument("--colocated-vision", action="store_true",
@@ -321,6 +324,10 @@ def main(argv=None):
         loss_fn = {"token-mean": rdsp.TokenMeanLoss(token_loss_sum_liger, token_count),
                    "microbatch-mean": lambda logits, labels: token_loss_sum_liger(
                        logits, labels) / max(token_count(labels), 1)}[args.loss]
+    if args.sharded_loss:
+        if args.loss != "token-mean":
+            raise SystemExit("--sharded-loss is a token-mean loss")
+        loss_fn = rdsp.TokenMeanLoss(rdsp.next_token_loss_sum, token_count)
     ray.init(ignore_reinit_error=True)
     engine, _, _, _ = rdsp.initialize(
         model=skeleton, config=ds_config(args), loss_fn=loss_fn, weights=weights,

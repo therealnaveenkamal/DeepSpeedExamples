@@ -262,8 +262,26 @@ class StageWorkerActor:
                 self.p2p.recv("bwd", peer, 0)
         self.p2p.end_step()
 
-    def run_step(self, generation: int, ops: list, train: bool, inputs=None,
-                 labels=None, vision=None, token_total=None):
+    def run_step(self, *args, **kwargs):
+        """_run_step, under the torch profiler on the training step named by
+        RDSP_TORCH_PROFILE (0-based), whose kernel table goes to
+        /tmp/rdsp_torch_profile_stage<s>_rank<r>.txt."""
+        at = os.environ.get("RDSP_TORCH_PROFILE")
+        self._steps_run = getattr(self, "_steps_run", 0) + 1
+        if at is None or self._steps_run - 1 != int(at):
+            return self._run_step(*args, **kwargs)
+        from torch.profiler import ProfilerActivity, profile
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+            out = self._run_step(*args, **kwargs)
+            torch.cuda.synchronize()
+        path = f"/tmp/rdsp_torch_profile_stage{self.stage}_rank{self.rank}.txt"
+        with open(path, "w") as f:
+            f.write(prof.key_averages().table(sort_by="cuda_time_total", row_limit=60,
+                                              max_name_column_width=90))
+        return out
+
+    def _run_step(self, generation: int, ops: list, train: bool, inputs=None,
+                  labels=None, vision=None, token_total=None):
         """Run this rank's whole step. ops: [(kind, mb, command_id)] in 1F1B
         order. inputs / labels: this rank's cell of every microbatch (first /
         last stage only). vision: this rank's vision.route_images() entry

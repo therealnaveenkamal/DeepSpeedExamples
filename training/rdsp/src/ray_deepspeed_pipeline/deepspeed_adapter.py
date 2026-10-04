@@ -87,7 +87,8 @@ def _shard_vocabulary(stage_module, hf_config, tp: int) -> None:
         from deepspeed.utils import groups
         return groups.get_tensor_model_parallel_group()
 
-    shard_vocab(stage_module, vocab, rank=dist.get_rank() % tp, world=tp, group=tp_group)
+    shard_vocab(stage_module, vocab, rank=dist.get_rank() % tp, world=tp, group=tp_group,
+                gather_logits=not getattr(stage_module, "_rdsp_logit_shards", False))
 
 
 def _ulysses_mpu(stage_module, micro_batch_size: int, sp: int, backend: str):
@@ -247,6 +248,8 @@ class DeepSpeedStageAdapter:
         self.is_last = is_last
         self.loss_fn = loss_fn
         self.input_grads = input_grads
+        # a loss that takes vocabulary shards lets a TP head skip the gather
+        stage_module._rdsp_logit_shards = bool(getattr(loss_fn, "takes_vocab_shards", False))
         self.engine = (engine_factory or _deepspeed_engine_factory)(
             stage_module, ds_config)
         self.device = next(self.engine.module.parameters()).device

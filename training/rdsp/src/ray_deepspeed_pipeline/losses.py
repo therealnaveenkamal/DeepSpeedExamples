@@ -26,6 +26,10 @@ class TokenMeanLoss:
     def __call__(self, outputs, labels):
         return self.sum_fn(outputs, labels)
 
+    @property
+    def takes_vocab_shards(self) -> bool:
+        return bool(getattr(self.sum_fn, "takes_vocab_shards", False))
+
 
 def token_weight(token_total: int, dp: int, n_microbatches: int) -> float:
     """Factor on one rank's summed loss so that the adapter's usual handling
