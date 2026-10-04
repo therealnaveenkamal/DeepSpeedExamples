@@ -35,6 +35,11 @@ def find_block_list(model: nn.Module) -> tuple[str, nn.ModuleList]:
         if isinstance(m, nn.ModuleList) and len(m) >= 2
         and len({type(c) for c in m}) == 1
     ]
+    # a vision-language model's pipeline cuts its decoder, never the encoder
+    # (which may be as deep: Qwen3.5-2B has 24 of each)
+    encoder = _vision_encoder_path(model)
+    if encoder is not None:
+        candidates = [(n, m) for n, m in candidates if not n.startswith(encoder + ".")]
     if not candidates:
         raise ValidationError(
             "no transformer block list found: expected a ModuleList of >=2 "
@@ -47,6 +52,16 @@ def find_block_list(model: nn.Module) -> tuple[str, nn.ModuleList]:
             f"ambiguous block lists {[n for n, _ in winners]}: "
             f"partitioning refuses to guess")
     return winners[0]
+
+
+def _vision_encoder_path(model: nn.Module) -> str | None:
+    if getattr(getattr(model, "config", None), "vision_config", None) is None:
+        return None
+    from ray_deepspeed_pipeline.vision import find_vision_encoder
+    try:
+        return find_vision_encoder(model)
+    except ValidationError:
+        return None
 
 
 def _cuts_for(policy, n_blocks: int, stages: int, vision: bool = False) -> list[int]:

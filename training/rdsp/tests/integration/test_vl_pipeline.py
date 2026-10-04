@@ -410,6 +410,18 @@ def test_colocated_vision_rejected_where_it_cannot_apply(make, cuts, match):
                                           colocated_vision=rdsp.ColocatedVision()), DS)
 
 
+@needs_qwen3_5
+def test_block_list_is_the_decoders_even_when_the_encoder_is_as_deep():
+    """Qwen3.5-2B: 24 vision blocks and 24 decoder layers. The pipeline's
+    blocks are the decoder's; the vision encoder is never cut."""
+    from ray_deepspeed_pipeline.partition import find_block_list
+
+    cfg = tiny_qwen3_5_vl()
+    cfg.vision_config.depth = cfg.text_config.num_hidden_layers
+    name, blocks = find_block_list(transformers.Qwen3_5ForConditionalGeneration(cfg))
+    assert name == "model.language_model.layers" and len(blocks) == 6
+
+
 def test_first_cut_at_zero_needs_a_vision_encoder():
     """Without a vision encoder, a first stage without blocks would only
     look up embeddings."""
