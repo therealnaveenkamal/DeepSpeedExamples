@@ -143,7 +143,7 @@ class StageWorkerActor:
         from ray_deepspeed_pipeline.partition import compile_blocks, recompute_blocks
         from ray_deepspeed_pipeline.vision import ColocatedVisionEngine
 
-        tower, recompute, compile_ = vision
+        tower, recompute, compile_, self._vision_per_microbatch = vision
         load_meta_parameters(tower, weights)
         if recompute:
             recompute_blocks(tower)
@@ -305,12 +305,13 @@ class StageWorkerActor:
             schedule, tail = {}, []
             if vision is not None:
                 self._local_features, self._image_rows, self._mine = {}, [], {}
-                if train:  # encode and backpropagate microbatch by microbatch
+                if train and self._vision_per_microbatch:
                     schedule, tail = vision_schedule(
                         ops, set(vision["own_mb"].values()), len(self._grids))
-                else:  # no graph to keep: everything at once
+                else:  # everything at once, backpropagated at the end
                     with timer.phase("vision_forward"):
                         self._encode_images(vision, train)
+                    tail = sorted(set(vision["own_mb"].values()))
             ready = True
             for i, (kind, mb, command_id) in enumerate(ops):
                 if i in schedule:

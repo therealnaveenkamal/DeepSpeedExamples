@@ -157,7 +157,8 @@ def _colocated_vision(model, pipeline_config: PipelineConfig, ds_config: dict | 
     names = tuple(n for n, _ in model.named_parameters() if n.startswith(module + "."))
     return VisionSpec(module=module, parameter_names=names,
                       recompute=pipeline_config.colocated_vision.recompute,
-                      compile=pipeline_config.colocated_vision.compile)
+                      compile=pipeline_config.colocated_vision.compile,
+                      per_microbatch=pipeline_config.colocated_vision.per_microbatch)
 
 
 def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> ExecutionPlan:

@@ -246,7 +246,9 @@ needs_qwen3_5 = pytest.mark.skipif(not hasattr(transformers, "Qwen3_5ForConditio
     ((3,), (StageOverride(stage=0, num_gpus=2),)),   # 3 vision ranks, 4 images
     ((2,), (StageOverride(stage=1, num_gpus=2),)),   # images reach stage 0 from stage 1
 ], ids=["dp-first-stage", "dp-last-stage"])
-def test_colocated_vision_matches_unsplit_model(ray_ctx, stub_engines, cuts, overrides):
+@pytest.mark.parametrize("per_microbatch", [False, True], ids=["whole-step", "per-microbatch"])
+def test_colocated_vision_matches_unsplit_model(ray_ctx, stub_engines, cuts, overrides,
+                                                per_microbatch):
     """Colocated vision: every rank of every stage hosts the vision encoder
     and encodes a share of the step's images; stage 0 gets their features
     in place of pixels, and the feature gradients go back to the rank that
@@ -254,7 +256,7 @@ def test_colocated_vision_matches_unsplit_model(ray_ctx, stub_engines, cuts, ove
     model, reference = qwen3_5_vl_pair(seed=8)
     expected = unsplit_losses(reference, make_batches(), steps=3)
     got = pipelined_losses(model, cuts, steps=3, overrides=overrides,
-                           colocated_vision=rdsp.ColocatedVision())
+                           colocated_vision=rdsp.ColocatedVision(per_microbatch=per_microbatch))
     assert got == pytest.approx(expected, rel=1e-4)
 
 

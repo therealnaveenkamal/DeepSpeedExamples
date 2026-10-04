@@ -91,10 +91,17 @@ class ColocatedVision:
     optimizer (Adam/AdamW/SGD) built from the DeepSpeed config's optimizer
     and scheduler, with fp32 master weights and optimizer state split over
     all ranks. recompute: keep only each encoder block's input for backward.
-    compile: torch.compile each encoder block (shapes dynamic)."""
+    compile: torch.compile each encoder block (shapes dynamic).
+    per_microbatch: in training, encode each microbatch's images just ahead
+    of the pipeline's need and backpropagate them as soon as their gradients
+    exist, instead of all at the start and end of the step: a rank keeps
+    graphs for about 2 x stages microbatches' images instead of the step's,
+    but the encoder work lands inside the pipeline schedule (vision.py,
+    vision_schedule), which slows the step when the encoder is heavy."""
 
     recompute: bool = False
     compile: bool = False
+    per_microbatch: bool = False
 
 
 @dataclass(frozen=True)

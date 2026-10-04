@@ -74,6 +74,7 @@ class VisionSpec:
     parameter_names: tuple[str, ...]
     recompute: bool = False
     compile: bool = False
+    per_microbatch: bool = False
 
 
 @dataclass(frozen=True)
