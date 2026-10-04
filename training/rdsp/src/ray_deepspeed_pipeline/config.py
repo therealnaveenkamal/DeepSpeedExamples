@@ -65,7 +65,8 @@ class StageOverride:
     offload_optimizer: keep the stage's optimizer state (fp32 master weights
     and Adam moments) in host memory and step it on the CPU (ZeRO-Offload;
     needs ZeRO stage 1 or 2). compile: torch.compile each of the stage's
-    blocks (shapes dynamic), compiled by each rank on its first step."""
+    blocks (shapes dynamic), compiled by each rank on its first step;
+    compile_vision: only the blocks of the vision encoder on this stage."""
 
     stage: int
     num_gpus: int = 1
@@ -77,6 +78,7 @@ class StageOverride:
     recompute: bool = False
     offload_optimizer: bool = False
     compile: bool = False
+    compile_vision: bool = False
 
 
 @dataclass(frozen=True)

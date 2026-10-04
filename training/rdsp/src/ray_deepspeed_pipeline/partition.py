@@ -308,11 +308,12 @@ class _CompiledForward:
         return {"forward": self.forward, "_compiled": None}
 
 
-def compile_blocks(stage: nn.Module) -> None:
+def compile_blocks(stage: nn.Module, encoder_only: bool = False) -> None:
     """Compile each of the stage's own blocks' forward: fuses the small
     elementwise ops between the matmuls. Like recompute_blocks, wraps the
-    forward, not the block; apply it after recompute_blocks."""
-    for block in stage.local_blocks():
+    forward, not the block; apply it after recompute_blocks. encoder_only:
+    only the blocks of the encoder the stage holds (its vision encoder)."""
+    for block in stage.encoder_blocks() if encoder_only else stage.local_blocks():
         block.forward = _CompiledForward(block.forward)
 
 

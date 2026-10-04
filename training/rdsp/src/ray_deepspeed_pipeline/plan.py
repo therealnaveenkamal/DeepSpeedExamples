@@ -35,8 +35,9 @@ class StageSpec:
     rows_per_rank: int = 1
     # rerun blocks in backward instead of keeping their activations
     recompute: bool = False
-    # torch.compile each block
+    # torch.compile each block, or only the vision encoder's
     compile: bool = False
+    compile_vision: bool = False
 
 
 @dataclass(frozen=True)

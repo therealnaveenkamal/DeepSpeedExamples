@@ -751,8 +751,41 @@ def test_right_padding_needs_no_mask():
     unmasked = model(**drop_padding_mask({**inputs, "attention_mask": mask})).logits
     real = mask.bool()
     assert torch.allclose(masked[real], unmasked[real], atol=1e-5)
-    assert float(lm_loss(masked, labels)) == pytest.approx(float(lm_loss(unmasked, labels)), rel=1e-5)
+    expected = float(lm_loss(unmasked, labels))
+    assert float(lm_loss(masked, labels)) == pytest.approx(expected, rel=1e-5)
 
     mask[1, 3] = 0  # a hole before real tokens: the mask matters there
     with pytest.raises(ValueError, match="right"):
         drop_padding_mask({**inputs, "attention_mask": mask})
+
+
+def test_compile_can_cover_only_the_vision_encoder(monkeypatch):
+    """A stage holding the vision encoder and decoder layers can compile just
+    the encoder's blocks; the decoder layers keep their plain forward, and
+    the stage computes the same thing."""
+    from ray_deepspeed_pipeline.hf_stage import build_hf_stage
+    from ray_deepspeed_pipeline.partition import (
+        _CompiledForward,
+        compile_blocks,
+        partition_parameters,
+    )
+
+    real = torch.compile
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: real(fn, backend="eager", **kw))
+    torch.manual_seed(6)
+    model = transformers.Qwen3VLForConditionalGeneration(tiny_qwen3_vl()).float()
+    part = partition_parameters(model, rdsp.ExplicitCuts((3,)), 2)[0]
+    plain, fast = (build_hf_stage(model, 0, 3, part.parameter_names) for _ in range(2))
+    compile_blocks(fast, encoder_only=True)
+
+    vision = fast.model.model.visual.blocks
+    decoder = fast.model.model.language_model.layers
+    assert all(isinstance(b.forward, _CompiledForward) for b in vision)
+    assert not any(isinstance(b.forward, _CompiledForward) for b in decoder)
+    in_encoder = set(map(id, fast.model.model.visual.modules()))
+    assert set(map(id, vision)) <= set(map(id, fast.encoder_blocks())) and all(
+        id(b) in in_encoder for b in fast.encoder_blocks())
+
+    inputs, _ = make_batches()[0]
+    full = {k: torch.cat(v) if isinstance(v, list) else v for k, v in inputs.items()}
+    assert torch.allclose(plain(**full)[0], fast(**full)[0], atol=1e-5)

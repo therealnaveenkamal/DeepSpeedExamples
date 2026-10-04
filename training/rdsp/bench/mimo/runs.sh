@@ -61,6 +61,9 @@ MIMO_TRAIN="--hf-model Qwen/$MODEL --dataset-name cord_v2 --seq-length 2048 \
   --log-interval 1 --experiment-root /workspace/runs"
 
 DATA=cord_steps-$MODEL                # Bridge's samples for this model (export)
+# S0..S3: extra stage keys for shared-rdsp / pp4-rdsp / coloc-rdsp, e.g.
+#   S0=,compile_vision=1 (a later recompute=0 undoes a recompute=1)
+# PP4_RC=0: pp4-megatron without recompute
 # VIS_OPTS / LANG_OPTS: extra stage keys for noncoloc-rdsp, e.g. VIS_OPTS=,compile=1
 # RDSP_EXTRA: more train_vl flags for one run, e.g. RDSP_EXTRA="--prefetch --profile"
 RDSP_TRAIN="--model Qwen/$MODEL --dataset exported:$WORK/$DATA --pad-multiple 128 \
@@ -103,8 +106,8 @@ case "${1:-}" in
     # keep more activations than Transformer Engine's, so 32 GB needs recompute.
     # Liger kernels; cut 14 with recompute only on the vision stage balances
     # the two stages best within 32 GB
-    rdsp shared-rdsp --untie-embeddings --rows 2 --microbatches 32 --stages 2 --cuts 14 \
-      --stage 0:gpus=4,tp=2,zero=1,recompute=1 --stage 1:gpus=4,tp=2,zero=1 ;;
+    rdsp shared-rdsp --untie-embeddings --rows 2 --microbatches 32 --stages 2 --cuts ${CUTS:-14} \
+      --stage 0:gpus=4,tp=2,zero=1,recompute=1${S0:-} --stage 1:gpus=4,tp=2,zero=1${S1:-} ;;
   noncoloc-mimo)     # language TP4 on ranks 0-3, images on rank 4. One language stage:
                      # MIMO's checkpoint load fails for a tied embedding (Qwen3.5-4B)
                      # split over pipeline stages. One image rank: with two, MIMO's
@@ -120,12 +123,12 @@ case "${1:-}" in
     container "python -m torch.distributed.run --nproc_per_node=8 scripts/training/run_recipe.py \
       --recipe $RECIPE --step_func qwen3_vl_step $STD_TRAIN \
       model.tensor_model_parallel_size=1 model.pipeline_model_parallel_size=4 \
-      model.recompute_granularity=full model.recompute_method=uniform model.recompute_num_layers=1" \
+      $( [ "${PP4_RC:-1}" = 1 ] && echo model.recompute_granularity=full model.recompute_method=uniform model.recompute_num_layers=1 )" \
       2>&1 | tee "$LOGS/pp4-megatron.log" ;;
   pp4-rdsp)          # the same layout, vision on stage 0; recompute where it must
-    rdsp pp4-rdsp --untie-embeddings --rows 2 --microbatches 32 --stages 4 --cuts 8,18,28 \
-      --stage 0:gpus=2,zero=1,recompute=1 --stage 1:gpus=2,zero=1,recompute=1 \
-      --stage 2:gpus=2,zero=1,recompute=1 --stage 3:gpus=2,zero=1 ;;
+    rdsp pp4-rdsp --untie-embeddings --rows 2 --microbatches 32 --stages 4 --cuts ${CUTS:-8,18,28} \
+      --stage 0:gpus=2,zero=1,recompute=1${S0:-} --stage 1:gpus=2,zero=1,recompute=1${S1:-} \
+      --stage 2:gpus=2,zero=1,recompute=1${S2:-} --stage 3:gpus=2,zero=1${S3:-} ;;
   best-rdsp)         # rdsp's fastest layout on 8x 32 GB PCIe GPUs: 4 stages x DP2, no TP,
                      # encoder on all 8 GPUs, recompute only on the first stage (4
                      # microbatches in flight), cuts balanced by cost (head ~6.6 layers)
@@ -133,8 +136,8 @@ case "${1:-}" in
       --colocated-vision --vision-recompute --stage 0:gpus=2,zero=1,recompute=1 \
       --stage 1:gpus=2,zero=1 --stage 2:gpus=2,zero=1 --stage 3:gpus=2,zero=1 ;;
   coloc-rdsp)        # language as shared-rdsp, encoder on all 8 GPUs
-    rdsp coloc-rdsp --untie-embeddings --rows 2 --microbatches 32 --stages 2 --cuts 14 --colocated-vision \
-      --stage 0:gpus=4,tp=2,zero=1,recompute=1 --stage 1:gpus=4,tp=2,zero=1 ;;
+    rdsp coloc-rdsp --untie-embeddings --rows 2 --microbatches 32 --stages 2 --cuts ${CUTS:-14} --colocated-vision \
+      --stage 0:gpus=4,tp=2,zero=1,recompute=1${S0:-} --stage 1:gpus=4,tp=2,zero=1${S1:-} ;;
   gate)
     # 1) same layout, same first step: the reported losses must agree
     STEPS=1 "$0" shared-megatron; STEPS=1 "$0" shared-rdsp

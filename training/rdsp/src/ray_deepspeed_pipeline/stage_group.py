@@ -276,8 +276,8 @@ def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
                              spec.parameter_names, **_builder_kwargs(builder, spec))
             if spec.recompute:
                 recompute_blocks(module)
-            if spec.compile:
-                compile_blocks(module)
+            if spec.compile or spec.compile_vision:
+                compile_blocks(module, encoder_only=not spec.compile)
             is_last = spec.index == n_stages - 1
             pg = None
             options = {"num_gpus": 1 if use_gpu else 0}

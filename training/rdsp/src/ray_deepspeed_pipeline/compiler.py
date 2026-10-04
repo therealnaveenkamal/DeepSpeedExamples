@@ -209,6 +209,7 @@ def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> Exe
             rows_per_rank=rows // grid.dp,
             recompute=bool(override.recompute) if override else False,
             compile=bool(override.compile) if override else False,
+            compile_vision=bool(override.compile_vision) if override else False,
         ))
 
     conn_overrides = {}

@@ -157,3 +157,8 @@ def test_prefetch_is_off_unless_asked_and_reaches_the_plan():
 def test_compile_is_per_stage():
     cfg = simple_config(stage_overrides=(StageOverride(stage=1, compile=True),))
     assert [s.compile for s in lower(ToyLM(), cfg, DS).stages] == [False, True]
+
+
+def test_compile_vision_is_per_stage():
+    cfg = simple_config(stage_overrides=(StageOverride(stage=0, compile_vision=True),))
+    assert [s.compile_vision for s in lower(ToyLM(), cfg, DS).stages] == [True, False]

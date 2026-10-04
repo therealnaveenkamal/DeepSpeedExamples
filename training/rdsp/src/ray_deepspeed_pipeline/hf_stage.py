@@ -169,11 +169,16 @@ class HFModelStage(nn.Module):
 
     def local_blocks(self):
         """The stage's own blocks: its range of the pipeline's block list, plus
-        every other block list it owns whole (a vision encoder's blocks), not
-        counting lists nested inside those (MoE experts)."""
+        encoder_blocks()."""
         start, stop = self._local
         pipeline = self.model.get_submodule(self._blocks_name)
-        blocks, taken = [pipeline[i] for i in range(start, stop)], [self._blocks_name + "."]
+        return [pipeline[i] for i in range(start, stop)] + self.encoder_blocks()
+
+    def encoder_blocks(self):
+        """Blocks of every other block list the stage owns whole (a vision
+        encoder's), not counting lists nested inside those (MoE experts)."""
+        pipeline = self.model.get_submodule(self._blocks_name)
+        blocks, taken = [], [self._blocks_name + "."]
         for name, module in self.model.named_modules():
             if (isinstance(module, nn.ModuleList) and len(module) >= 2
                     and not name.startswith(tuple(taken)) and module is not pipeline
