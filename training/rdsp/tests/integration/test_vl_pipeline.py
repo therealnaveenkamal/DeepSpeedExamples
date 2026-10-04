@@ -307,6 +307,25 @@ def test_colocated_vision_gradients_have_the_right_scale(ray_ctx, stub_engines):
 
 
 @needs_qwen3_5
+def test_colocated_vision_first_stage_encodes_its_first_images(ray_ctx, stub_engines):
+    """With enough images per step the first stage encodes its first
+    microbatches' images itself and the other stages the rest, features
+    and gradients crossing as each microbatch needs them."""
+    batches = make_batches(0) + make_batches(1)  # 4 microbatches, 8 images
+    config = dict(DS, train_batch_size=8, gradient_accumulation_steps=4)
+    model, reference = qwen3_5_vl_pair(seed=15)
+    expected = unsplit_losses(reference, batches, steps=2, config=config)
+    engine, _, _, _ = rdsp.initialize(
+        model=model, config=config, loss_fn=lm_loss,
+        pipeline_config=rdsp.PipelineConfig(
+            stages=2, partition=rdsp.ExplicitCuts((3,)),
+            stage_overrides=(StageOverride(stage=0, num_gpus=2),),
+            colocated_vision=rdsp.ColocatedVision()))
+    got = [float(engine.train_batch(data_iter=iter(batches))) for _ in range(2)]
+    assert got == pytest.approx(expected, rel=1e-4)
+
+
+@needs_qwen3_5
 def test_colocated_vision_leaves_the_encoder_off_every_stage():
     from ray_deepspeed_pipeline.compiler import lower
 

@@ -98,11 +98,39 @@ class VisionLayout:
     world: int
 
 
+# share of a fair split each first-stage cell encodes itself: enough to start
+# the pipeline at once, while the other stages encode the rest in its fill time
+_FIRST_STAGE_SHARE = 0.5
+
+
+def _owners(images: list, layout: VisionLayout, cell_rows: int, cell_ranks) -> dict:
+    """image -> encoding rank. Each first-stage cell's TP rank 0 encodes the
+    cell's first images (the ones its first microbatches need, so the
+    pipeline starts without waiting); the remaining images, in microbatch
+    order, are dealt in contiguous runs to the ranks of the other stages,
+    which are idle while the pipeline fills, the last stage's ranks first."""
+    # last stage first: it finishes its pipeline work first, and the first
+    # microbatches' feature gradients are the first to come back
+    others = list(range(layout.world - 1, layout.first.world - 1, -1))
+    own_first = int(len(images) / layout.world * _FIRST_STAGE_SHARE) if others else len(images)
+    owner, taken, rest = {}, {}, []
+    for image, _, row in images:
+        rep = cell_ranks(row)[0]
+        if taken.get(rep, 0) < max(own_first, 1 if not others else 0):
+            owner[image] = rep
+            taken[rep] = taken.get(rep, 0) + 1
+        else:
+            rest.append(image)
+    for i, image in enumerate(rest):
+        owner[image] = others[i * len(others) // len(rest)]
+    return owner
+
+
 def route_images(inputs: list, layout: VisionLayout, rank: int) -> dict:
     """What global `rank` does with the step's images. inputs: the step's
     first-stage inputs, one per microbatch. An image is a (microbatch, row)
-    with any image, numbered microbatch-major; images are dealt to ranks in
-    contiguous runs. Returns
+    with any image, numbered microbatch-major (see _owners for who encodes
+    which). Returns
       own:  [(image, pixel_values, grid_thw, destinations, gradient source)]
             to encode; destinations are the first-stage ranks of the row's
             cell (every TP rank), the gradient comes from its TP rank 0
@@ -116,13 +144,14 @@ def route_images(inputs: list, layout: VisionLayout, rank: int) -> dict:
                              "given per row (lists)")
         rows = len(pixels)
         images += [(mb * rows + row, mb, row) for row in range(rows) if grids[row].numel()]
-    owner = {image: i * layout.world // len(images) for i, (image, _, _) in enumerate(images)}
     first = layout.first
     cell_rows = rows // first.dp
 
     def cell_ranks(row):
         dp_index = row // cell_rows
         return [r for r in range(first.world) if rank_coords(first, r)[0] == dp_index]
+
+    owner = _owners(images, layout, cell_rows, cell_ranks)
 
     own, need = [], []
     for image, mb, row in images:

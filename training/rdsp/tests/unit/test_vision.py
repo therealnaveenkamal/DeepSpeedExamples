@@ -21,27 +21,28 @@ def step_inputs(has_image):
     return out
 
 
-def test_images_spread_over_every_rank_and_reach_their_rows_cell():
-    inputs = step_inputs([[1, 1], [1, 1]])  # images 0..3 = (mb, row) in order
-    layout = VisionLayout(first=Grid(dp=2), world=3)
-    routes = [route_images(inputs, layout, rank) for rank in range(3)]
-    owned = [[image for image, *_ in r["own"]] for r in routes]
-    assert owned == [[0, 1], [2], [3]]
+def test_first_stage_encodes_its_first_images_and_the_rest_go_to_later_stages():
+    """Each first-stage cell encodes half its fair share itself (its first
+    microbatches' images, so the pipeline starts at once); the other stages'
+    ranks encode the rest, in microbatch order, while the pipeline fills."""
+    inputs = step_inputs([[1, 1]] * 4)  # images 0..7 = (mb, row) in order
+    layout = VisionLayout(first=Grid(dp=2), world=4)
+    routes = [route_images(inputs, layout, rank) for rank in range(4)]
+    assert [[image for image, *_ in r["own"]] for r in routes] == [[0], [1], [5, 6, 7], [2, 3, 4]]
     # image 1 is row 1 of microbatch 0: data-parallel cell 1 of stage 0
-    assert [(image, dests, rep) for image, _, _, dests, rep in routes[0]["own"]] == \
-        [(0, [0], 0), (1, [1], 1)]
-    assert routes[0]["need"] == [(0, 0, 0), (1, 2, 1)]  # (microbatch, image, owner)
-    assert routes[1]["need"] == [(0, 1, 0), (1, 3, 2)]
-    assert routes[2]["need"] == []
+    assert [(i, dests, src) for i, _, _, dests, src in routes[1]["own"]] == [(1, [1], 1)]
+    assert routes[0]["need"] == [(0, 0, 0), (1, 2, 3), (2, 4, 3), (3, 6, 2)]  # (mb, image, owner)
+    assert routes[1]["need"] == [(0, 1, 1), (1, 3, 3), (2, 5, 2), (3, 7, 2)]
+    assert routes[2]["need"] == [] and routes[3]["need"] == []
 
 
 def test_rows_without_images_are_skipped_and_tp_peers_all_receive():
     inputs = step_inputs([[1, 0], [0, 1]])
-    layout = VisionLayout(first=Grid(dp=1, tp=2), world=4)
-    routes = [route_images(inputs, layout, rank) for rank in range(4)]
-    assert [[i for i, *_ in r["own"]] for r in routes] == [[0], [], [3], []]
+    layout = VisionLayout(first=Grid(dp=1, tp=2), world=2)  # one stage: it encodes all
+    routes = [route_images(inputs, layout, rank) for rank in range(2)]
+    assert [[i for i, *_ in r["own"]] for r in routes] == [[0, 3], []]
     assert routes[0]["own"][0][3:] == ([0, 1], 0)  # both TP ranks; TP rank 0 returns grads
-    assert routes[1]["need"] == [(0, 0, 0), (1, 3, 2)]
+    assert routes[1]["need"] == [(0, 0, 0), (1, 3, 0)]
 
 
 def test_per_row_pixels_required():

@@ -12,6 +12,7 @@ import json
 import os
 import socket
 import time
+import traceback
 
 import torch
 
@@ -33,12 +34,7 @@ from ray_deepspeed_pipeline.losses import token_weight
 _VISION_FILE = "colocated_vision.pt"
 
 
-def _channel(source: int, dest: int) -> str:
-    """The p2p group for a message between two global ranks: towards higher
-    ranks on "fwd", lower on "bwd", like the pipeline's own traffic. NCCL
-    runs a rank pair's sends and receives in issue order, so two ranks that
-    both send before receiving on one group would wait on each other."""
-    return "fwd" if source < dest else "bwd"
+_GRAD_KEYS = 1 << 20  # colocated vision: feature gradients' message numbers
 
 
 def _free_port() -> int:
@@ -231,8 +227,6 @@ class StageWorkerActor:
         self.p2p = PipelineP2P(self._p2p_store, global_rank, offsets[-1], epoch, timeout_s,
                                self.adapter.device, collective=self.vision is not None)
         self._warm_up_links()
-        if self.vision is not None:
-            self._warm_up_vision_links()
         return True
 
     def _peers(self):
@@ -268,26 +262,6 @@ class StageWorkerActor:
                 self.p2p.recv("bwd", peer, 0)
         self.p2p.end_step()
 
-    def _warm_up_vision_links(self):
-        """Colocated vision sends between every first-stage rank and every
-        other rank, both ways. NCCL sets up a rank pair's link on first use,
-        with both ranks taking part; doing it here, pair by pair in one
-        global order, keeps two ranks from each waiting on the other's
-        setup inside a step."""
-        me, world, first = self._global_rank(), self._offsets[-1], self._grids[0].world
-        pairs = sorted({(min(a, b), max(a, b)) for a in range(first) for b in range(world)
-                        if a != b})
-        dummy = torch.zeros(1, device=self.adapter.device)
-        self.p2p.begin_step()
-        for low, high in pairs:
-            if me == low:
-                self.p2p.send("fwd", dummy, high, 0)
-                self.p2p.recv("bwd", high, 0)
-            elif me == high:
-                self.p2p.recv("fwd", low, 0)
-                self.p2p.send("bwd", dummy, low, 0)
-        self.p2p.end_step()
-
     def run_step(self, generation: int, ops: list, train: bool, inputs=None,
                  labels=None, vision=None, token_total=None):
         """Run this rank's whole step. ops: [(kind, mb, command_id)] in 1F1B
@@ -301,17 +275,14 @@ class StageWorkerActor:
         # DeepSpeed averages gradients over DP and sums over SP, so the gradient
         # entering this stage must be dp_s x dL/d(output): scale by dp_s/dp_{s+1}
         scale = gradient_scale(self._grids[self.stage + 1].dp, self.grid.dp) if next_ else 1.0
-        losses, feature_grads = {}, {}
+        losses = {}
         loss_weight = (token_weight(token_total, self.grid.dp, adapter.n_mb)
                        if token_total is not None else 1.0)
         p2p.begin_step()
         try:
             if vision is not None:
                 with timer.phase("vision_forward"):
-                    features = self._encode_images(vision, train)
-                if inputs is not None:  # the features stand in for the pixels
-                    inputs = [dict(x, pixel_values=features[mb]) if mb in features else x
-                              for mb, x in enumerate(inputs)]
+                    self._encode_images(vision, train)
             ready = True
             for kind, mb, command_id in ops:
                 self.executed.append(command_id)
@@ -324,6 +295,11 @@ class StageWorkerActor:
                             x, extras = self._receive_forward(prev[0], mb)
                     else:
                         x, extras = inputs[mb], None
+                        if vision is not None:  # the features stand in for the pixels
+                            with timer.phase("wait_features"):
+                                features = self._features_for(vision, mb)
+                            if features is not None:
+                                x = dict(x, pixel_values=features)
                     mb_labels = labels[mb] if labels is not None else None
                     with timer.phase("forward"):
                         out = self._forward(kind, mb, x, mb_labels, extras, loss_weight)
@@ -346,13 +322,20 @@ class StageWorkerActor:
                     if prev:
                         for peer in prev[1]:
                             p2p.send("bwd", input_grad, peer, mb)
-                    elif input_grad is not None:
-                        feature_grads[mb] = input_grad["pixel_values"]
+                    elif input_grad is not None and vision is not None and train:
+                        # on its way at once: the owners backpropagate when
+                        # their own pipeline work is done
+                        self._send_feature_grads(mb, input_grad["pixel_values"])
             if vision is not None and train:
                 with timer.phase("vision_backward"):
-                    self._return_feature_grads(vision, feature_grads)
+                    self._vision_backward(vision)
             with timer.phase("wait_sends"):
                 p2p.end_step()
+        except Exception:
+            # printed at once: the driver may be waiting on another stage that
+            # is itself waiting on this one, and would only report it later
+            traceback.print_exc()
+            raise
         finally:
             p2p.begin_step()  # drop per-step shape records either way
             timer.report(stage=self.stage, rank=self.rank, kind="step")
@@ -364,50 +347,55 @@ class StageWorkerActor:
     def _global_rank(self) -> int:
         return self._offsets[self.stage] + self.rank
 
-    def _encode_images(self, vision: dict, train: bool) -> dict:
-        """Encode this rank's images, send each image's features to the
-        first-stage ranks of its row, and (on the first stage) receive this
-        rank's. Returns {microbatch: features of its rows' images, in row
-        order}. Sends go out before any receive, so no rank waits on another
-        that is itself waiting."""
+    def _encode_images(self, vision: dict, train: bool) -> None:
+        """Encode this rank's images in one batch and send each image's
+        features to the first-stage ranks of its row (over gloo: a send may
+        wait for its receiver as long as needed without holding the GPU)."""
         me, p2p = self._global_rank(), self.p2p
         features = self.vision.forward([(i, px, grid) for i, px, grid, _, _ in vision["own"]],
                                        train)
+        self._local_features, self._image_rows, self._mine = {}, [], {}
         for image, _, _, dests, _ in vision["own"]:
             for dest in dests:
-                if dest != me:
-                    p2p.send_sized(_channel(me, dest), features[image], dest, image)
-        per_mb = collections.defaultdict(list)
-        self._image_rows = []  # (microbatch, image, owner, feature rows) for the way back
-        for mb, image, owner in vision["need"]:
-            got = (features[image] if owner == me
-                   else p2p.recv_sized(_channel(owner, me), owner, image))
-            per_mb[mb].append(got)
-            self._image_rows.append((mb, image, owner, got.shape[0]))
-        return {mb: torch.cat(parts) for mb, parts in per_mb.items()}
+                if dest == me:
+                    self._local_features[image] = features[image]
+                else:
+                    p2p.send_cpu(features[image], dest, image)
 
-    def _return_feature_grads(self, vision: dict, feature_grads: dict) -> None:
-        """First stage, TP rank 0: split each microbatch's feature gradient
-        per image and send it to the image's owner. Every rank: receive its
-        images' gradients, backpropagate through its encoder and sum the
-        encoder gradients over all ranks."""
+    def _features_for(self, vision: dict, mb: int):
+        """First stage: the features of microbatch mb's images, in row order,
+        received just before its forward; None if it has no images."""
+        me, parts = self._global_rank(), []
+        for m, image, owner in vision["need"]:
+            if m != mb:
+                continue
+            got = (self._local_features.pop(image) if owner == me
+                   else self.p2p.recv_cpu(owner, image))
+            parts.append(got)
+            self._image_rows.append((mb, image, owner, got.shape[0]))
+        return torch.cat(parts) if parts else None
+
+    def _send_feature_grads(self, mb: int, grad) -> None:
+        """First stage, TP rank 0, right after microbatch mb's backward:
+        split its feature gradient per image and send each to its owner."""
+        if rank_coords(self.grid, self.rank)[2] != 0:
+            return
+        me, entries = self._global_rank(), [e for e in self._image_rows if e[0] == mb]
+        for (_, image, owner, _), part in zip(entries, grad.split([e[3] for e in entries])):
+            if owner == me:
+                self._mine[image] = part
+            else:
+                self.p2p.send_cpu(part, owner, _GRAD_KEYS + image)
+
+    def _vision_backward(self, vision: dict) -> None:
+        """Receive this rank's images' feature gradients, backpropagate
+        through its encoder and sum the encoder gradients over all ranks."""
         me, p2p = self._global_rank(), self.p2p
-        mine = {}
-        if self.stage == 0 and rank_coords(self.grid, self.rank)[2] == 0:
-            by_mb = collections.defaultdict(list)
-            for mb, image, owner, rows in self._image_rows:
-                by_mb[mb].append((image, owner, rows))
-            for mb, entries in by_mb.items():
-                parts = feature_grads[mb].split([rows for _, _, rows in entries])
-                for (image, owner, _), grad in zip(entries, parts):
-                    if owner == me:
-                        mine[image] = grad
-                    else:
-                        p2p.send_sized(_channel(me, owner), grad, owner, image)
         for image, _, _, _, source in vision["own"]:
             if source != me:
-                mine[image] = p2p.recv_sized(_channel(source, me), source, image)
-        self.vision.backward(mine)
+                self._mine[image] = p2p.recv_cpu(source, _GRAD_KEYS + image)
+        self.vision.backward(self._mine)
+        self._mine = {}
         # the first stage's gradients carry its data-parallel degree
         self.vision.reduce_gradients(p2p.all, divide_by=self._grids[0].dp)
 

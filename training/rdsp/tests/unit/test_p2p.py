@@ -63,3 +63,15 @@ def test_boundary_without_extras():
     got = _run_pair(lambda p2p: p2p.send_boundary("fwd", hidden, {}, 1, 0),
                     lambda p2p: p2p.recv_boundary("fwd", 0, 0))
     assert torch.equal(got[0], hidden) and got[1] == {}
+
+
+def test_bf16_crosses_the_cpu_group_as_its_bits():
+    """send_cpu sends bf16 as int16 bits (gloo may lack bf16); the header
+    marks it so recv_cpu views the bits back, exactly."""
+    from ray_deepspeed_pipeline.p2p import _decode, _encode
+
+    t = torch.randn(3, 5).to(torch.bfloat16)
+    bits = t.view(torch.int16)
+    dtype, shape, flag = _decode(_encode(bits, n_extras=1))
+    assert (dtype, shape, flag) == (torch.int16, (3, 5), 1)
+    assert torch.equal(bits.clone().view(torch.bfloat16), t)

@@ -25,7 +25,7 @@ import torch
 import torch.distributed as dist
 
 _DTYPES = [torch.float32, torch.bfloat16, torch.float16, torch.float64, torch.int64,
-           torch.bool, torch.int32]
+           torch.bool, torch.int32, torch.int16]
 _HEADER_LEN = 10  # dtype code, ndim, up to 7 dims, extras count
 _SLOTS = 64  # messages per microbatch and direction: hidden, extras' names, extras
 _SIZED_TAGS = 1 << 24  # sized messages (colocated vision) use tags from here on
@@ -49,8 +49,10 @@ def _decode(header: torch.Tensor) -> tuple[torch.dtype, tuple[int, ...], int]:
 
 class PipelineP2P:
     """One rank's two cross-stage groups, plus per-step bookkeeping.
-    collective: also a third group over every rank for collectives (the
-    colocated vision encoder's gradient sum), in `self.all`."""
+    collective: also, for colocated vision, `self.all` (its gradient sum) and
+    `self.cpu`, a gloo group for its features and feature gradients: a
+    message there can wait any time for its receiver without holding up the
+    GPU, which an NCCL send does."""
 
     def __init__(self, store, rank: int, world: int, epoch: int, timeout_s: float,
                  device: torch.device, collective: bool = False):
@@ -58,8 +60,11 @@ class PipelineP2P:
         timeout = datetime.timedelta(seconds=timeout_s)
         self.fwd = self._group(dist.PrefixStore(f"e{epoch}/fwd", store), timeout)
         self.bwd = self._group(dist.PrefixStore(f"e{epoch}/bwd", store), timeout)
-        self.all = (self._group(dist.PrefixStore(f"e{epoch}/all", store), timeout)
-                    if collective else None)
+        self.all = self.cpu = None
+        if collective:
+            self.all = self._group(dist.PrefixStore(f"e{epoch}/all", store), timeout)
+            self.cpu = dist.ProcessGroupGloo(dist.PrefixStore(f"e{epoch}/cpu", store),
+                                             rank, world, timeout)
         self._pending = []       # (work, tensor) sends in flight this step
         self._shapes = {}        # (direction, peer, slot) -> decoded header, this step
         self._announced = set()  # (direction, peer, slot) already sent a header this step
@@ -77,7 +82,7 @@ class PipelineP2P:
         sit on an NCCL stream; aborting releases it before the watchdog would
         kill the process."""
         self._pending.clear()
-        for pg in (self.fwd, self.bwd, self.all):
+        for pg in (self.fwd, self.bwd, self.all, self.cpu):
             if pg is None:
                 continue
             for name in ("abort", "shutdown"):
@@ -146,6 +151,30 @@ class PipelineP2P:
         buf = torch.empty(shape, dtype=dtype, device=self.device)
         pg.recv([buf], peer, tag + 1).wait()
         return buf
+
+    def send_cpu(self, t: torch.Tensor, peer: int, key: int) -> None:
+        """A tensor over the gloo group, staged through host memory, with its
+        header; returns at once. key: a per-step message number both ends
+        agree on."""
+        t = t.detach().to("cpu").contiguous()
+        bf16 = t.dtype == torch.bfloat16  # sent as its bits: gloo may lack bf16
+        if bf16:
+            t = t.view(torch.int16)
+        header, tag = _encode(t, n_extras=int(bf16)), _SIZED_TAGS + 2 * key
+        self._pending.append((self.cpu.send([header], peer, tag), header))
+        self._pending.append((self.cpu.send([t], peer, tag + 1), t))
+
+    def recv_cpu(self, peer: int, key: int) -> torch.Tensor:
+        """The matching receive, onto this rank's device."""
+        tag = _SIZED_TAGS + 2 * key
+        header = torch.empty(_HEADER_LEN, dtype=torch.int64)
+        self.cpu.recv([header], peer, tag).wait()
+        dtype, shape, bf16 = _decode(header)
+        buf = torch.empty(shape, dtype=dtype)
+        self.cpu.recv([buf], peer, tag + 1).wait()
+        if bf16:
+            buf = buf.view(torch.bfloat16)
+        return buf.to(self.device)
 
     def send_boundary(self, direction: str, hidden: torch.Tensor, extras: dict,
                       peer: int, mb: int) -> None:
