@@ -82,11 +82,14 @@ class StageGroupClient:
         self.placement_group = placement_group
         self.node_id = None  # set at bootstrap; rebuilds prefer this node
 
-    def submit(self, command: Command, *, inputs=None, labels=None, control=None):
+    def submit(self, command: Command, *, inputs=None, labels=None, control=None,
+               prepared=None):
         """Send a command to every rank; returns a handle resolving to one
-        stage-level result."""
+        stage-level result. prepared: prepare()'s result, in place of
+        inputs and labels."""
         if command.kind in ("step", "eval_step"):
-            return self._submit_step(command, inputs, labels, control)
+            payloads = prepared if prepared is not None else self._rank_payloads(inputs, labels)
+            return self._submit_step(command, payloads, control)
         refs = [actor.execute.remote(command.command_id, command.kind,
                                      generation=command.generation, control=control)
                 for actor in self.actors]
@@ -94,15 +97,24 @@ class StageGroupClient:
             return _GroupHandle(refs, self._stage_record)
         return _GroupHandle(refs, _all_ok)
 
-    def _submit_step(self, command, inputs, labels, control):
-        """One call per rank carrying the rank's whole op list for the step.
-        Under colocated vision every stage gets the inputs: each rank takes
-        its images, and the first stage the rest without the pixels."""
-        refs = []
+    def prepare(self, inputs=None, labels=None):
+        """A step's per-rank payloads, already in Ray's object store, so a
+        later submit() sends only references. Safe to call from another
+        thread while a step runs."""
+        import ray
+        return [{k: v if v is None or k == "token_total" else ray.put(v)
+                 for k, v in payload.items()}
+                for payload in self._rank_payloads(inputs, labels)]
+
+    def _rank_payloads(self, inputs, labels) -> list[dict]:
+        """Each rank's share of a step. Under colocated vision every stage
+        gets the inputs: each rank takes its images, and the first stage the
+        rest without the pixels."""
         token_total = None
         if self.count_tokens is not None and labels is not None:
             token_total = sum(int(self.count_tokens(y)) for y in labels)
-        for rank, actor in enumerate(self.actors):
+        payloads = []
+        for rank in range(len(self.actors)):
             cell = rank_cell(self.grid, rank)
             routes, cell_inputs = None, None
             if self.vision is not None and inputs is not None:
@@ -113,11 +125,17 @@ class StageGroupClient:
                                                 cell) for x in inputs]
             elif inputs is not None:
                 cell_inputs = [slice_inputs(x, cell) for x in inputs]
-            refs.append(actor.run_step.remote(
-                command.generation, control["ops"], command.kind == "step",
-                inputs=cell_inputs,
-                labels=[cell_slice(y, cell) for y in labels] if labels is not None else None,
-                vision=routes, token_total=token_total))
+            payloads.append({
+                "inputs": cell_inputs,
+                "labels": [cell_slice(y, cell) for y in labels] if labels is not None else None,
+                "vision": routes, "token_total": token_total})
+        return payloads
+
+    def _submit_step(self, command, payloads, control):
+        """One call per rank carrying the rank's whole op list for the step."""
+        refs = [actor.run_step.remote(command.generation, control["ops"],
+                                      command.kind == "step", **payload)
+                for actor, payload in zip(self.actors, payloads)]
         reps = representatives(self.grid)
 
         def reduce(results):
@@ -206,6 +224,13 @@ def connect_p2p(clients, epoch: int) -> None:
     ray.get([ref for client in clients for ref in client.init_p2p(host, port, epoch, grids)])
 
 
+def _builder_kwargs(builder, spec) -> dict:
+    """The HF stage builder also takes the stage's index: after a
+    vision-only stage, the next one starts at block 0 too."""
+    from ray_deepspeed_pipeline.hf_stage import build_hf_stage
+    return {"stage_index": spec.index} if builder is build_hf_stage else {}
+
+
 def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
                          use_gpu: bool | None = None, stage_builder=None,
                          prefer_nodes: list | None = None, weights: str | None = None):
@@ -248,7 +273,7 @@ def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
         for spec in plan.stages:
             grid = Grid(dp=spec.dp, sp=spec.sp, tp=spec.tp)
             module = builder(model, spec.block_start, spec.block_stop,
-                             spec.parameter_names)
+                             spec.parameter_names, **_builder_kwargs(builder, spec))
             if spec.recompute:
                 recompute_blocks(module)
             is_last = spec.index == n_stages - 1

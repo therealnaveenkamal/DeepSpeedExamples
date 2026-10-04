@@ -260,6 +260,8 @@ def main(argv=None):
                    "flash_attention_2, ...)")
     p.add_argument("--max-pixels", type=int, default=512 * 512,
                    help="cord-v2: scale images down to at most this many pixels")
+    p.add_argument("--prefetch", action="store_true",
+                   help="read and ship the next step's batches while this step runs")
     p.add_argument("--colocated-vision", action="store_true",
                    help="run the vision encoder on every GPU (rdsp.ColocatedVision)")
     p.add_argument("--vision-recompute", action="store_true",
@@ -325,7 +327,8 @@ def main(argv=None):
         pipeline_config=rdsp.PipelineConfig(
             stages=args.stages, partition=partition, stage_overrides=tuple(args.stage),
             colocated_vision=(rdsp.ColocatedVision(recompute=args.vision_recompute)
-                              if args.colocated_vision else None)))
+                              if args.colocated_vision else None),
+            prefetch=args.prefetch))
     cuts = [(s.block_start, s.block_stop) for s in engine._coordinator._plan.stages]
     print(f"stages (blocks): {cuts}", flush=True)
 
@@ -335,13 +338,22 @@ def main(argv=None):
               f"rel diff {abs(piped - reference) / reference:.2e}", flush=True)
 
     padded = args.rows * args.seq * args.microbatches
+    counts = {}  # step -> (real, supervised), filled as its batches are read
+
+    def stream():
+        """Every step's batches through one iterator (prefetch reads ahead)."""
+        for step in range(args.steps):
+            entries = first if step == 0 else [next(data) for _ in range(args.microbatches)]
+            # real tokens: what the attention mask covers (padding excluded)
+            counts[step] = (sum(int(x["attention_mask"].sum()) for x, _ in entries),
+                            sum(token_count(y) for _, y in entries))
+            yield from entries
+
+    batches = stream()
     for step in range(args.steps):
-        entries = first if step == 0 else [next(data) for _ in range(args.microbatches)]
-        # real tokens: what the attention mask covers (padding excluded)
-        real = sum(int(x["attention_mask"].sum()) for x, _ in entries)
-        supervised = sum(token_count(y) for _, y in entries)
         start = time.perf_counter()
-        loss = float(engine.train_batch(data_iter=iter(entries)))
+        loss = float(engine.train_batch(data_iter=batches))
+        real, supervised = counts.pop(step)
         ms = (time.perf_counter() - start) * 1e3
         print(f"step {step} loss {loss:.4f} {ms:.0f} ms {real / ms * 1e3:.0f} real tok/s "
               f"{padded / ms * 1e3:.0f} padded tok/s real {real} supervised {supervised}",

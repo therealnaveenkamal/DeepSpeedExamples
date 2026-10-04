@@ -7,8 +7,11 @@ the pipeline until load_checkpoint() restores it. Every attempt runs under a new
 generation id, so results from failed attempts are never mistaken for current ones.
 """
 
+import json
 import os
+import time
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Protocol
 
 from ray_deepspeed_pipeline import checkpoint as ckpt
@@ -57,6 +60,8 @@ class PipelineCoordinator:
         self._poisoned = False
         self._p2p_epoch = 0
         self._p2p_dirty = False  # a failed stage-local step left the p2p links unusable
+        self._ahead = None  # (data iterator, future of the next step) under prefetch
+        self._reader = None
 
     @property
     def global_steps(self) -> int:
@@ -175,18 +180,48 @@ class PipelineCoordinator:
                 "a previous generation partially applied optimizer updates; "
                 "train/eval calls are rejected until load_checkpoint() restores "
                 "the last committed global checkpoint")
-        # consume exactly the step's microbatches before dispatching anything
-        entries = take_microbatch_entries(data_iter, self._plan.global_microbatches)
+        prepared = None
+        if train and self._ahead is not None:
+            source, future = self._ahead
+            if source is not data_iter:
+                raise StepFailed(
+                    "prefetch read this step's data ahead from another iterator; pass "
+                    "the same iterator to every train_batch() call")
+            self._ahead = None
+            entries, prepared = future.result()  # raises if the iterator ran out
+        else:
+            # consume exactly the step's microbatches before dispatching anything
+            entries = take_microbatch_entries(data_iter, self._plan.global_microbatches)
         inputs = [e[0] for e in entries]
         labels = [e[1] for e in entries]
 
         self._generation += 1
         sequences = generate_commands(self._plan, self._generation,
                                       self._global_steps, train=train)
-        losses = self._run_step(sequences, inputs, labels, train)
+        ahead = data_iter if train and self._plan.prefetch else None
+        losses = self._run_step(sequences, inputs, labels, train, prepared, ahead)
         return self._finish(sequences, losses, train)
 
-    def _run_step(self, sequences, inputs, labels, train: bool) -> list:
+    def _stage_payload(self, s: int, inputs, labels) -> dict:
+        """What stage s is sent with a step: the inputs (first stage, or
+        every stage under colocated vision) and the labels (last stage)."""
+        colocated = self._plan.colocated_vision is not None
+        return {"inputs": inputs if s == 0 or colocated else None,
+                "labels": labels if s == len(self._plan.stages) - 1 else None}
+
+    def _read_ahead(self, data_iter):
+        """The next step's entries, and each stage's payload made ready."""
+        entries = take_microbatch_entries(data_iter, self._plan.global_microbatches)
+        inputs, labels = [e[0] for e in entries], [e[1] for e in entries]
+        prepared = {}
+        for s, worker in enumerate(self._workers):
+            prepare = getattr(worker, "prepare", None)
+            if prepare is not None:
+                prepared[s] = prepare(**self._stage_payload(s, inputs, labels))
+        return entries, prepared
+
+    def _run_step(self, sequences, inputs, labels, train: bool, prepared=None,
+                  ahead=None) -> list:
         """Send each stage its whole op list as one command; stages exchange
         boundary tensors among themselves. Returns per-microbatch losses."""
         n_stages = len(self._plan.stages)
@@ -194,9 +229,8 @@ class PipelineCoordinator:
         if self._p2p_dirty:
             self._reconnect_p2p(strict=True)
         kinds = ("forward", "backward", "eval", "ready")
-        # every rank encodes a share of the images (vision.py)
-        colocated = self._plan.colocated_vision is not None
         cmds, handles = {}, {}
+        started = time.perf_counter()
         for s in range(n_stages):
             ops = [(c.kind, c.microbatch, c.command_id)
                    for c in sequences[s] if c.kind in kinds]
@@ -205,12 +239,17 @@ class PipelineCoordinator:
                 generation=self._generation, global_step=self._global_steps, stage=s,
                 kind="step" if train else "eval_step", microbatch=None, predecessors=())
             try:
-                handles[s] = self._submit(
-                    cmds[s], inputs=inputs if s == 0 or colocated else None,
-                    labels=labels if s == terminal else None, control={"ops": ops})
+                payload = ({"prepared": prepared[s]} if prepared and s in prepared
+                           else self._stage_payload(s, inputs, labels))
+                handles[s] = self._submit(cmds[s], control={"ops": ops}, **payload)
             except StepFailed:
                 self._p2p_dirty = True
                 raise
+        dispatched = time.perf_counter()
+        if ahead is not None:  # read and ship the next step while this one runs
+            if self._reader is None:
+                self._reader = ThreadPoolExecutor(max_workers=1)
+            self._ahead = (ahead, self._reader.submit(self._read_ahead, ahead))
         results, errors = {}, []
         for s, handle in handles.items():  # resolve all, so no stage is left mid-step
             try:
@@ -227,6 +266,11 @@ class PipelineCoordinator:
             for s, result in results.items():
                 if not result["ready"]:
                     raise self._not_ready(s)
+        if os.environ.get("RDSP_PROFILE") == "1":
+            print(json.dumps({"rdsp_profile": {"driver": "step"},
+                              "dispatch": round((dispatched - started) * 1e3, 1),
+                              "wait": round((time.perf_counter() - dispatched) * 1e3, 1)}),
+                  flush=True)
         return results[terminal]["losses"]
 
     def _not_ready(self, stage: int) -> StepFailed:
@@ -254,6 +298,7 @@ class PipelineCoordinator:
         # once any apply is dispatched, stages may disagree on weights: poison on failure
         apply_cmds = {s: next(c for c in sequences[s] if c.kind == "apply")
                       for s in range(n_stages)}
+        started = time.perf_counter()
         try:
             applied = {s: self._submit(apply_cmds[s]) for s in range(n_stages)}
             for s, handle in applied.items():
@@ -265,6 +310,10 @@ class PipelineCoordinator:
                 f"partial optimizer apply in generation {self._generation}: {e}; "
                 f"restore from the last committed checkpoint") from e
 
+        if os.environ.get("RDSP_PROFILE") == "1":
+            print(json.dumps({"rdsp_profile": {"driver": "apply"},
+                              "apply": round((time.perf_counter() - started) * 1e3, 1)}),
+                  flush=True)
         self._global_steps += 1
         return mean_loss
 

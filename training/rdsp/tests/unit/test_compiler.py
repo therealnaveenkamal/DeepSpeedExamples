@@ -2,6 +2,7 @@
 
 Test names double as acceptance selectors; keep them stable."""
 
+import dataclasses
 import json
 
 import pytest
@@ -145,3 +146,9 @@ def test_balanced_cuts_give_a_multi_gpu_stage_more_blocks():
         stages=3, partition=BalancedTransformerBlocks(),
         stage_overrides=(StageOverride(stage=1, num_gpus=2),)), DS)
     assert [(s.block_start, s.block_stop) for s in plan.stages] == [(0, 1), (1, 5), (5, 6)]
+
+
+def test_prefetch_is_off_unless_asked_and_reaches_the_plan():
+    assert not lower(ToyLM(), simple_config(), DS).prefetch
+    cfg = dataclasses.replace(simple_config(), prefetch=True)
+    assert lower(ToyLM(), cfg, DS).prefetch

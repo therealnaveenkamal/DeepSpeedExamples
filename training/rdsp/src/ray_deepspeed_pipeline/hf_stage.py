@@ -102,6 +102,7 @@ class _Recorded(Exception):
 
 
 _FORM_KEY = "@block_form"
+_TOKEN_IDS_KEY = "@input_ids"
 
 
 def _pack(per_block: dict, rows: int, block_form: int | None) -> dict:
@@ -134,7 +135,7 @@ def _pack(per_block: dict, rows: int, block_form: int | None) -> dict:
 def _unpack(extras: dict) -> dict:
     per_block = {}
     for key, t in extras.items():
-        if key == _FORM_KEY:
+        if key.startswith("@"):
             continue
         blocks, _, name = key.partition("/")
         for block in blocks.split("+"):
@@ -150,13 +151,18 @@ class HFModelStage(nn.Module):
     otherwise (hidden, extras) for the next stage."""
 
     def __init__(self, model, blocks_name: str, block_start: int, block_stop: int,
-                 is_first: bool, is_last: bool, block_form: list):
+                 is_first: bool, is_last: bool, block_form: list,
+                 sends_token_ids: bool = False, embeds_token_ids: bool = False):
         super().__init__()
         self.model = model
         self._block_form = block_form  # shared with the _PassThrough blocks
         self._blocks_name = blocks_name
         self._local = (block_start, block_stop)
         self.is_first, self.is_last = is_first, is_last
+        # a vision-only first stage sends the token ids; the next stage, which
+        # owns the embeddings, embeds the text tokens and keeps the received
+        # image features at the image positions
+        self._sends_token_ids, self._embeds_token_ids = sends_token_ids, embeds_token_ids
         self._hooked = False
         self._input = self._received = self._hidden = None
         self._downstream = {}
@@ -221,6 +227,18 @@ class HFModelStage(nn.Module):
             return args, kwargs
         return hook
 
+    def _embed_text(self, received, ids):
+        """The input embeddings: the text tokens' own, the received image
+        (and video) features at their positions."""
+        config = self.model.config
+        media = torch.zeros_like(ids, dtype=torch.bool)
+        for name in ("image_token_id", "video_token_id"):
+            token = getattr(config, name, None)
+            if token is not None:
+                media |= ids == token
+        text = self.model.get_input_embeddings()(ids).to(received.dtype)
+        return torch.where(media.unsqueeze(-1), received, text)
+
     def _setup_input(self, x):
         """What the model's setup code gets as inputs_embeds on a later stage:
         the hidden state itself when it is embedding-shaped, else zeros of
@@ -235,11 +253,13 @@ class HFModelStage(nn.Module):
     def forward(self, x=None, position_ids=None, **kwargs):
         """position_ids: a sequence shard's global positions (Ulysses SP)."""
         self._install_hooks()
-        extras = {k: v for k, v in kwargs.items() if "/" in k or k == _FORM_KEY}
+        extras = {k: v for k, v in kwargs.items() if "/" in k or k.startswith("@")}
         if x is None:
             x = {k: v for k, v in kwargs.items() if k not in extras}
         if self._block_form[0] is None and _FORM_KEY in extras:
             self._block_form[0] = int(extras[_FORM_KEY][0, 0])  # once: it syncs
+        if self._embeds_token_ids:
+            x = self._embed_text(x, extras[_TOKEN_IDS_KEY])
         self._input, self._received, self._downstream = x, _unpack(extras), {}
         try:
             kw = {"use_cache": False}
@@ -257,17 +277,22 @@ class HFModelStage(nn.Module):
             if self.is_last:
                 return out.logits if hasattr(out, "logits") else out[0]
             hidden = self._hidden
-            return hidden, _pack(self._downstream, hidden.shape[0], self._block_form[0])
+            out = _pack(self._downstream, hidden.shape[0], self._block_form[0])
+            if self._sends_token_ids:
+                out[_TOKEN_IDS_KEY] = x["input_ids"]
+            return hidden, out
         finally:
             self._input = self._received = self._hidden = None
             self._downstream = {}
 
 
 def build_hf_stage(model: nn.Module, block_start: int, block_stop: int,
-                   parameter_names: tuple[str, ...]) -> HFModelStage:
+                   parameter_names: tuple[str, ...],
+                   stage_index: int | None = None) -> HFModelStage:
     """One stage of an HF model as an HFModelStage. Modules it does not own
     are never copied, so building from a full model costs only the stage's
-    own share of memory."""
+    own share of memory. stage_index: the stage's position; without it the
+    first stage is the one owning the input embeddings or a vision-only one."""
     blocks_name, blocks = find_block_list(model)
     depth = vision_injection_depth(model)
     if block_start == 0 and block_stop < depth:
@@ -278,7 +303,11 @@ def build_hf_stage(model: nn.Module, block_start: int, block_stop: int,
     # the first stage owns the input embeddings; the one after a vision-only
     # stage starts at block 0 too
     embedding = model.get_input_embeddings()
-    is_first = any(p is embedding.weight for n, p in model.named_parameters() if n in owned)
+    owns_embedding = any(p is embedding.weight for n, p in model.named_parameters()
+                         if n in owned)
+    vision_only = block_stop == 0
+    is_first = (stage_index == 0 if stage_index is not None
+                else owns_embedding or vision_only)
     block_form = [None]
     memo = {}
     for i, block in enumerate(blocks):
@@ -300,7 +329,9 @@ def build_hf_stage(model: nn.Module, block_start: int, block_stop: int,
             f"({sorted(kept ^ owned)[:3]}...)")
     stage = HFModelStage(stage_model, blocks_name, block_start, block_stop,
                          is_first=is_first, is_last=block_stop == len(blocks),
-                         block_form=block_form)
+                         block_form=block_form,
+                         sends_token_ids=is_first and vision_only and not owns_embedding,
+                         embeds_token_ids=not is_first and owns_embedding)
     # what intra-stage parallelism reads: the AutoTP plan, head counts
     # (Ulysses) and MoE settings (AutoEP), all on the text model's config
     config = getattr(model, "config", None)

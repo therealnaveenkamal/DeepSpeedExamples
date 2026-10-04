@@ -220,6 +220,9 @@ def partition_parameters(model: nn.Module, policy, stages: int,
         raise ValidationError(f"block list {blocks_name} has no parameters")
     first_block, last_block = block_positions[0], block_positions[-1]
 
+    # a vision-only first stage (first cut at 0) holds only the vision
+    # encoder; the embeddings go to the first decoder stage
+    encoder = _vision_encoder_path(model) if stages > 1 and bounds[1] == 0 else None
     assignment: dict[str, int] = {}
     by_id: dict[int, list[str]] = {}
     for i, (name, param) in enumerate(named):
@@ -227,7 +230,7 @@ def partition_parameters(model: nn.Module, policy, stages: int,
             block_index = int(name[len(prefix):].split(".", 1)[0])
             stage = stage_of_block(block_index)
         elif i < first_block:
-            stage = 0
+            stage = 1 if encoder is not None and not _under(name, encoder) else 0
         elif i > last_block:
             stage = stages - 1
         else:

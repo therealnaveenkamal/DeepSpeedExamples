@@ -85,6 +85,8 @@ class ExecutionPlan:
     microbatch_rows: int = 1
     # vision encoder on every rank instead of the first stage (vision.py)
     colocated_vision: VisionSpec | None = None
+    # read and ship the next training step's data while this one runs
+    prefetch: bool = False
 
     def to_canonical_dict(self) -> dict:
         return dataclasses.asdict(self)

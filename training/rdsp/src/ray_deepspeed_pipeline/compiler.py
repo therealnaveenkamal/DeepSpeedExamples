@@ -246,4 +246,5 @@ def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> Exe
         failure=FailureSpec(poison_on_partial_apply=True),
         microbatch_rows=rows,
         colocated_vision=vision,
+        prefetch=pipeline_config.prefetch,
     )

@@ -146,13 +146,17 @@ def stub_engines(monkeypatch):
 
 
 def pipelined_losses(model, cuts, steps, overrides=(), weights=None, colocated_vision=None,
-                     evaluate=False, config=DS):
+                     evaluate=False, config=DS, prefetch=False):
     engine, _, _, _ = rdsp.initialize(
         model=model, config=config, loss_fn=lm_loss, weights=weights,
         pipeline_config=rdsp.PipelineConfig(
             stages=len(cuts) + 1, partition=rdsp.ExplicitCuts(cuts),
-            stage_overrides=overrides, colocated_vision=colocated_vision))
+            stage_overrides=overrides, colocated_vision=colocated_vision,
+            prefetch=prefetch))
     run = engine.eval_batch if evaluate else engine.train_batch
+    if prefetch:  # one iterator for the whole run
+        data = iter([b for _ in range(steps) for b in make_batches()])
+        return [float(run(data_iter=data)) for _ in range(steps)]
     return [float(run(data_iter=iter(make_batches()))) for _ in range(steps)]
 
 
@@ -203,15 +207,16 @@ def test_qwen3_5_vl_with_data_parallel_vision_stage_matches_unsplit_model(ray_ct
 @pytest.mark.skipif(not hasattr(transformers, "Qwen3_5ForConditionalGeneration"),
                     reason="transformers without Qwen3.5")
 def test_vision_only_first_stage_matches_unsplit_model(ray_ctx, stub_engines):
-    """A first cut at 0 gives the vision encoder (and the embeddings) a
-    stage of its own, here on 2 data-parallel ranks; it sends the merged
-    input embeddings and the rotary tables, and holds no decoder block."""
+    """A first cut at 0 gives the vision encoder a stage of its own (here on
+    2 data-parallel ranks) holding nothing else: it sends the image
+    features at the image positions, the token ids and the rotary tables;
+    the next stage owns the embeddings and embeds the text tokens itself."""
     from ray_deepspeed_pipeline.partition import partition_parameters
 
     model, reference = qwen3_5_vl_pair(seed=7)
-    first = partition_parameters(model, rdsp.ExplicitCuts((0, 3)), 3)[0]
-    assert not any(".layers." in n for n in first.parameter_names)
-    assert any(".visual." in n for n in first.parameter_names)
+    first, second, _ = partition_parameters(model, rdsp.ExplicitCuts((0, 3)), 3)
+    assert all(".visual." in n for n in first.parameter_names)
+    assert any("embed_tokens" in n for n in second.parameter_names)
 
     expected = unsplit_losses(reference, make_batches(), steps=2)
     got = pipelined_losses(model, (0, 3), steps=2,
@@ -236,6 +241,29 @@ def test_colocated_vision_matches_unsplit_model(ray_ctx, stub_engines, cuts, ove
     model, reference = qwen3_5_vl_pair(seed=8)
     expected = unsplit_losses(reference, make_batches(), steps=3)
     got = pipelined_losses(model, cuts, steps=3, overrides=overrides,
+                           colocated_vision=rdsp.ColocatedVision())
+    assert got == pytest.approx(expected, rel=1e-4)
+
+
+def test_prefetch_matches_unsplit_model(ray_ctx, stub_engines):
+    """Reading the next step ahead changes when data moves, not what trains."""
+    torch.manual_seed(0)
+    model = transformers.Qwen3VLForConditionalGeneration(tiny_qwen3_vl()).float()
+    reference = transformers.Qwen3VLForConditionalGeneration(tiny_qwen3_vl()).float()
+    reference.load_state_dict(model.state_dict())
+
+    expected = unsplit_losses(reference, make_batches(), steps=3)
+    got = pipelined_losses(model, (3,), steps=3, prefetch=True,
+                           overrides=(StageOverride(stage=1, num_gpus=2),))
+    assert got == pytest.approx(expected, rel=1e-4)
+
+
+@needs_qwen3_5
+def test_prefetch_with_colocated_vision_matches_unsplit_model(ray_ctx, stub_engines):
+    model, reference = qwen3_5_vl_pair(seed=8)
+    expected = unsplit_losses(reference, make_batches(), steps=3)
+    got = pipelined_losses(model, (2,), steps=3, prefetch=True,
+                           overrides=(StageOverride(stage=1, num_gpus=2),),
                            colocated_vision=rdsp.ColocatedVision())
     assert got == pytest.approx(expected, rel=1e-4)
 
