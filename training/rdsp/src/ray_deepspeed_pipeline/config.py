@@ -26,10 +26,10 @@ class BalancedTransformerBlocks:
     what precedes the blocks (a vision encoder), the last what follows them
     (norm, output head). An estimate: measure, then tune with ExplicitCuts.
 
-    vision_token_ratio: tokens the vision encoder processes per text token
-    (patches per row / sequence length; ~3 for one 448-pixel image in 256
-    tokens). Its cost is its parameters times the tokens it sees, so its
-    estimate is scaled by this ratio."""
+    vision_token_ratio: the vision encoder's cost per text token, which
+    scales its parameter-count estimate. Measure it from a step's batch with
+    partition.vision_token_ratio(): patches over the text tokens actually
+    computed, weighted for the encoder's attention over each image."""
 
     vision_token_ratio: float = 1.0
 

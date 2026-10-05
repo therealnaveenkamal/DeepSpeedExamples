@@ -131,6 +131,32 @@ def _compute_costs(model: nn.Module, blocks_name: str, blocks,
     return pre, per_block, post
 
 
+def vision_token_ratio(hf_config, sample) -> float:
+    """The vision encoder's cost per text token, for
+    BalancedTransformerBlocks(vision_token_ratio=...), measured from a step's
+    batch. sample: [(inputs, labels)], inputs with input_ids and
+    image_grid_thw (one grid per row; empty for a row without an image).
+
+    Text tokens are those actually computed (each microbatch at its own
+    length, not a configured maximum). Each image's patches are weighted up
+    for the encoder's attention over them: per patch, attention costs about
+    4 x patches x width multiply-adds against 2 x a layer's parameters for
+    its matrix products, so its share grows with the patches per image."""
+    vision = getattr(hf_config, "vision_config", None)
+    if vision is None:  # no encoder: the ratio does not matter
+        return 1.0
+    width = vision.hidden_size
+    layer = 4 * width * width + 2 * width * vision.intermediate_size
+    tokens = weighted = 0
+    for inputs, _ in sample:
+        tokens += inputs["input_ids"].numel()
+        for grid in inputs.get("image_grid_thw") or []:
+            for image in grid.reshape(-1, 3):
+                patches = int(image.prod())
+                weighted += patches * (1 + 2 * patches * width / layer)
+    return weighted / max(tokens, 1)
+
+
 def _balanced_cuts(costs: tuple, stages: int, min_first: int,
                    stage_gpus: tuple[int, ...]) -> list[int]:
     """Contiguous split minimising the most expensive stage, a stage's cost

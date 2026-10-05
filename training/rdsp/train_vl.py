@@ -350,10 +350,10 @@ def main(argv=None):
         skeleton = transformers.AutoModelForImageTextToText.from_config(config,
                                                                          dtype=torch.bfloat16)
     if args.cuts in ("balanced", "auto"):
-        # the vision encoder's cost scales with the patches it sees per text token
-        patches = sum(p.shape[0] for p in first[0][0]["pixel_values"])
+        # the encoder's cost per text token, measured from the first step
+        from ray_deepspeed_pipeline.partition import vision_token_ratio
         partition = rdsp.BalancedTransformerBlocks(
-            vision_token_ratio=patches / (args.rows * args.seq))
+            vision_token_ratio=vision_token_ratio(config, first))
     elif args.cuts == "even":
         partition = rdsp.UniformTransformerBlocks()
     else:

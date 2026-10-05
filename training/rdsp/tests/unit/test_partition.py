@@ -241,3 +241,24 @@ def test_balanced_cuts_spread_the_slack_evenly():
 
     parts = partition_parameters(ToyLM(n_blocks=8), BalancedTransformerBlocks(), 4)
     assert [(p.block_start, p.block_stop) for p in parts] == [(0, 3), (3, 5), (5, 7), (7, 8)]
+
+
+def test_vision_token_ratio_counts_real_tokens_and_the_encoders_attention():
+    """Encoder cost per text token for BalancedTransformerBlocks: the step's
+    patches over the text tokens actually computed (each microbatch at its
+    own length, not the configured maximum), weighted up for attention over
+    each image's patches, which grows with the patches per image."""
+    from types import SimpleNamespace
+
+    from ray_deepspeed_pipeline.partition import vision_token_ratio
+
+    config = SimpleNamespace(vision_config=SimpleNamespace(hidden_size=8, intermediate_size=16))
+    layer = 4 * 8 * 8 + 2 * 8 * 16  # 512 parameters per encoder layer
+    sample = [({"input_ids": torch.zeros(2, 10, dtype=torch.long),
+                "image_grid_thw": [torch.tensor([[1, 4, 4]]), torch.tensor([[1, 2, 4]])]}, None),
+              ({"input_ids": torch.zeros(2, 6, dtype=torch.long),
+                "image_grid_thw": [torch.tensor([[1, 4, 4]]), torch.zeros(0, 3, dtype=torch.long)]},
+               None)]
+    images = [16, 8, 16]  # patches per image; the empty grid is a row without an image
+    weighted = sum(p * (1 + 2 * p * 8 / layer) for p in images)
+    assert vision_token_ratio(config, sample) == pytest.approx(weighted / (2 * 10 + 2 * 6))
