@@ -97,7 +97,7 @@ def ds_config(args) -> dict:
     }
 
 
-def main(argv=None):
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--model", default="Qwen/Qwen3-0.6B")
     p.add_argument("--stages", type=int, default=2)
@@ -117,7 +117,11 @@ def main(argv=None):
     p.add_argument("--deepspeed_config", default="", help="JSON file; overrides the flags above")
     p.add_argument("--save_dir", default="", help="checkpoint here after the last step")
     p.add_argument("--seed", type=int, default=0)
-    args = p.parse_args(argv)
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
 
     torch.manual_seed(args.seed)
     ray.init(ignore_reinit_error=True)

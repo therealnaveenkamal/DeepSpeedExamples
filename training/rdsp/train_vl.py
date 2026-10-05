@@ -256,7 +256,7 @@ def ds_config(args) -> dict:
     return conf
 
 
-def main(argv=None):
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--model", default="Qwen/Qwen3-VL-2B-Instruct")
     p.add_argument("--stages", type=int, default=2)
@@ -320,7 +320,11 @@ def main(argv=None):
                    help="first compare the pipeline's loss with the unsplit model on one GPU")
     p.add_argument("--profile", action="store_true",
                    help="print per-stage phase times (RDSP_PROFILE=1; slows steps)")
-    args = p.parse_args(argv)
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
 
     import accelerate
     import huggingface_hub
