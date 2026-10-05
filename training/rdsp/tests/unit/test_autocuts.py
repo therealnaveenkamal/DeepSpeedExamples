@@ -55,3 +55,20 @@ def test_one_noisy_reading_does_not_stop_the_walk_early():
 
     best, _ = search_cuts(measure, start=(13,), n_blocks=24)
     assert best == (10,)
+
+
+def test_close_finalists_are_timed_again_so_one_lucky_reading_cannot_win():
+    """Cut 9 reads fast once by luck, then its true time; cut 10 is the
+    fastest. The walk ends on 9, but the cuts within the tolerance are timed
+    again and the best average wins."""
+    readings = {}
+
+    def measure(cuts):
+        n = readings[cuts] = readings.get(cuts, 0) + 1
+        if cuts == (9,):
+            return 7.20 if n == 1 else 7.60
+        return {(10,): 7.30, (11,): 7.50}.get(cuts, 8.0 + abs(cuts[0] - 10) * 0.1)
+
+    best, trials = search_cuts(measure, start=(11,), n_blocks=24, recheck=0.03)
+    assert best == (10,)
+    assert readings[(9,)] == 2 and readings[(10,)] == 2
