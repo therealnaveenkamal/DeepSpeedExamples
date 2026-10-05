@@ -23,13 +23,23 @@ class FakeStage:
     """One stage group: writes one shard per rank plus RNG, like a real
     stage (DeepSpeed files + rng/rank<r>.pt), and reports a stage record."""
 
-    def __init__(self, stage, world_size, fail_save=False, drop_rank=None):
-        self.stage, self.world_size = stage, world_size
+    def __init__(self, stage, world_size, fail_save=False, drop_rank=None, is_last=False):
+        self.stage, self.world_size, self.is_last = stage, world_size, is_last
+        self.last_inputs = None
         self.fail_save, self.drop_rank = fail_save, drop_rank
         self.loaded = []
         self.is_alive = True
 
-    def submit(self, command, *, control=None, **_):
+    def prepare(self, inputs=None, labels=None):
+        return (inputs, labels)
+
+    def submit(self, command, *, control=None, inputs=None, labels=None, prepared=None):
+        if command.kind == "step":  # a training step, for prefetch tests
+            self.last_inputs = prepared[0] if prepared is not None else inputs
+            forwards = [mb for kind, mb, _ in control["ops"] if kind == "forward"]
+            return {"losses": [0.5] * len(forwards) if self.is_last else None, "ready": True}
+        if command.kind == "apply":
+            return True
         if command.kind == "save":
             if self.fail_save:
                 raise RuntimeError("disk full")
@@ -65,14 +75,14 @@ class FakeStage:
         return self.is_alive
 
 
-def make_coordinator(world_sizes=(1, 2), stage_kwargs=None):
+def make_coordinator(world_sizes=(1, 2), stage_kwargs=None, prefetch=False):
     stage_kwargs = stage_kwargs or {}
     overrides = [StageOverride(stage=i, num_gpus=n) for i, n in enumerate(world_sizes)]
     cfg = rdsp.PipelineConfig(stages=len(world_sizes),
                               partition=rdsp.UniformTransformerBlocks(),
-                              stage_overrides=overrides)
+                              stage_overrides=overrides, prefetch=prefetch)
     plan = lower(ToyLM(), cfg, DS)
-    stages = [FakeStage(i, n, **stage_kwargs.get(i, {}))
+    stages = [FakeStage(i, n, is_last=i == len(world_sizes) - 1, **stage_kwargs.get(i, {}))
               for i, n in enumerate(world_sizes)]
     return plan, stages, PipelineCoordinator(plan, stages)
 
@@ -212,3 +222,14 @@ def test_dead_worker_without_rebuild_stays_poisoned(tmp_path):
         coord.load_checkpoint(str(tmp_path), "t")
     with pytest.raises(PipelinePoisoned):
         coord.train_batch(iter([(torch.zeros(1), torch.zeros(1))] * 2))
+
+
+def test_load_drops_the_step_prefetch_read_ahead(tmp_path):
+    """After a load the caller hands in a new iterator; the step read ahead
+    from the old one belongs to a run that no longer exists."""
+    _, stages, coord = make_coordinator((1, 1), prefetch=True)
+    coord.save_checkpoint(str(tmp_path), "t1")
+    coord.train_batch(iter([(f"a{k}", f"y{k}") for k in range(4)]))  # reads a2, a3 ahead
+    coord.load_checkpoint(str(tmp_path), "t1")
+    coord.train_batch(iter([(f"b{k}", f"y{k}") for k in range(4)]))
+    assert stages[0].last_inputs == ["b0", "b1"]

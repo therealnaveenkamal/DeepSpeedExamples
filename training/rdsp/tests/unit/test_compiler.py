@@ -11,6 +11,7 @@ from test_partition import ToyLM
 from ray_deepspeed_pipeline.compiler import lower, resolve_microbatches
 from ray_deepspeed_pipeline.config import (
     ConnectionOverride,
+    ExplicitCuts,
     PipelineConfig,
     StageOverride,
     UniformTransformerBlocks,
@@ -162,3 +163,21 @@ def test_compile_is_per_stage():
 def test_compile_vision_is_per_stage():
     cfg = simple_config(stage_overrides=(StageOverride(stage=0, compile_vision=True),))
     assert [s.compile_vision for s in lower(ToyLM(), cfg, DS).stages] == [True, False]
+
+
+def test_gradient_clipping_is_rejected_for_one_stage_too():
+    """One stage would otherwise force clipping off silently."""
+    one = PipelineConfig(stages=1, partition=UniformTransformerBlocks())
+    with pytest.raises(ValidationError, match="gradient_clipping"):
+        lower(ToyLM(), one, dict(DS, gradient_clipping=1.0))
+
+
+def test_settings_that_do_not_change_checkpoints_keep_the_plan_hash():
+    """A checkpoint is bound to the plan hash; prefetch, recompute and
+    compile change how steps run, not what a stage saves."""
+    base = lower(ToyLM(), simple_config(), DS).plan_hash()
+    runtime = simple_config(prefetch=True, stage_overrides=(
+        StageOverride(stage=0, recompute=True, compile=True, compile_vision=True),))
+    assert lower(ToyLM(), runtime, DS).plan_hash() == base
+    moved = PipelineConfig(stages=2, partition=ExplicitCuts((1,)))
+    assert lower(ToyLM(), moved, DS).plan_hash() != base

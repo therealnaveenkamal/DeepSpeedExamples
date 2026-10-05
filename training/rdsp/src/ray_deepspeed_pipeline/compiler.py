@@ -168,7 +168,7 @@ def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> Exe
     clip = 0.0
     if isinstance(ds_config, dict):
         clip = float(ds_config.get("gradient_clipping", 0.0))
-    if clip > 0 and n > 1:
+    if clip > 0:
         raise ValidationError(
             f"gradient_clipping={clip} would clip each stage by its own gradient "
             f"norm, which is not global-norm clipping; unsupported in v1 — set "

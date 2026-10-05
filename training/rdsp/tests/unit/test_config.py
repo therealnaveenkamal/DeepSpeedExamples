@@ -4,6 +4,7 @@ import dataclasses
 
 import pytest
 
+import ray_deepspeed_pipeline as rdsp
 from ray_deepspeed_pipeline.config import (
     ConnectionOverride,
     ExplicitCuts,
@@ -84,3 +85,16 @@ def test_bad_deepspeed_config_file_rejected(tmp_path, tiny_model, content, match
                         pipeline_config=rdsp.PipelineConfig(
                             stages=2, partition=rdsp.UniformTransformerBlocks()))
 
+
+
+def test_prefetch_needs_a_caller_iterator():
+    """With training_data the engine counts batches handed out for
+    checkpoints; a step read ahead would be counted before it ran."""
+    import torch.nn as nn
+
+    with pytest.raises(ValidationError, match="prefetch"):
+        rdsp.initialize(model=nn.Linear(2, 2),
+                        config={"train_batch_size": 2, "gradient_accumulation_steps": 2},
+                        loss_fn=lambda o, y: o.sum(), training_data=[(1, 2)] * 4,
+                        pipeline_config=PipelineConfig(
+                            stages=2, partition=UniformTransformerBlocks(), prefetch=True))

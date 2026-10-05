@@ -133,6 +133,11 @@ def initialize(
     if not isinstance(pipeline_config, PipelineConfig):
         raise ValidationError(
             f"pipeline_config must be a PipelineConfig, got {type(pipeline_config)}")
+    if pipeline_config.prefetch and training_data is not None:
+        raise ValidationError(
+            "prefetch needs the caller's iterator (train_batch(data_iter=...)): with "
+            "training_data the engine counts batches for checkpoints, and the step "
+            "read ahead would be counted before it ran")
 
     ds_config = _validate_config(config)
     _validate_loss_fn(loss_fn)

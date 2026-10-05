@@ -124,8 +124,9 @@ class PipelineConfig:
     connection_overrides: tuple[ConnectionOverride, ...] = ()
     colocated_vision: ColocatedVision | None = None
     # read the next training step's microbatches from the data iterator while
-    # this step runs, and ship them to the stages ahead of time. The same
-    # iterator must then be passed to every train_batch() call.
+    # this step runs, and ship them to the stages ahead of time. The caller
+    # passes the same iterator to every train_batch() call (not available with
+    # initialize(training_data=...)); load_checkpoint() drops the step read ahead.
     prefetch: bool = False
 
     def __post_init__(self):

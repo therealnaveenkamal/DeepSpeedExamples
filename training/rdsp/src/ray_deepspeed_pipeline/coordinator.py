@@ -128,6 +128,7 @@ class PipelineCoordinator:
         manifest = ckpt.read_and_verify(
             load_dir, tag, plan_hash=self._plan.plan_hash(),
             plan_stages=list(range(len(self._plan.stages))))
+        self._drop_read_ahead()
         tag = manifest["tag"]
 
         # invalidates handles from failed generations
@@ -219,6 +220,15 @@ class PipelineCoordinator:
         colocated = self._plan.colocated_vision is not None
         return {"inputs": inputs if s == 0 or colocated else None,
                 "labels": labels if s == len(self._plan.stages) - 1 else None}
+
+    def _drop_read_ahead(self) -> None:
+        """Forget the step prefetch read ahead: after a load the caller
+        resumes from its own position. Waits for the reader so it no longer
+        touches the old iterator."""
+        if self._ahead is not None:
+            _, future = self._ahead
+            self._ahead = None
+            future.exception()  # wait; its entries and errors are dropped
 
     def _read_ahead(self, data_iter):
         """The next step's entries, and each stage's payload made ready."""
