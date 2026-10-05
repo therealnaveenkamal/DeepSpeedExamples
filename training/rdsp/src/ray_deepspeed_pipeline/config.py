@@ -101,6 +101,12 @@ class ColocatedVision:
 
 @dataclass(frozen=True)
 class ConnectionOverride:
+    """Declares the tensor conversion on the edge from stage `source` to
+    stage `source + 1` (identity, replicate-to-shard, shard-to-replicate or
+    shard-to-shard). The conversion is always derived from the two stages'
+    layouts; a declared one must match it, or lower() raises
+    ValidationError. Use it to make a layout's expectation explicit."""
+
     source: int
     dest: int
     # None: derived from the two stages' layouts; if given, must match it.
@@ -109,6 +115,17 @@ class ConnectionOverride:
 
 @dataclass(frozen=True)
 class PipelineConfig:
+    """How one model is split into a pipeline.
+
+    stages: pipeline depth. partition: where the cuts go
+    (UniformTransformerBlocks, BalancedTransformerBlocks, ExplicitCuts).
+    microbatches: microbatches per step; None takes the DeepSpeed config's
+    gradient_accumulation_steps. stage_overrides: per-stage GPUs and
+    parallelism (StageOverride); stages without one get 1 GPU.
+    colocated_vision, prefetch: see their comments below. Invalid
+    combinations raise ValidationError when the config is built or lowered,
+    before any Ray actor exists."""
+
     stages: int
     partition: PartitionConfig
     schedule: str = "1f1b"

@@ -58,10 +58,19 @@ class RayPipelineEngine:
         return self._owned_iter
 
     def train_batch(self, data_iter=None) -> torch.Tensor:
+        """One optimizer step over exactly M microbatches (M = the plan's
+        microbatches). data_iter yields (inputs, labels) entries; the engine's
+        own loader is used when initialize() got training_data. Returns the
+        step loss (mean over microbatches, or the token mean under
+        TokenMeanLoss). Raises StepFailed when a stage fails before any stage
+        applied its update (the step may be retried), PipelinePoisoned when a
+        failure left some stages updated (only load_checkpoint() recovers)."""
         source = self._data_iter(data_iter)
         return _public_loss(resolve(self._coordinator.train_batch(source)))
 
     def eval_batch(self, data_iter=None) -> torch.Tensor:
+        """Forward only over M microbatches; no gradients, weights unchanged.
+        Same data and error contract as train_batch()."""
         source = self._data_iter(data_iter)
         return _public_loss(resolve(self._coordinator.eval_batch(source)))
 

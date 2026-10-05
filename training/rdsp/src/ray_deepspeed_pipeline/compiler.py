@@ -163,6 +163,18 @@ def _colocated_vision(model, pipeline_config: PipelineConfig, ds_config: dict | 
                           pipeline_config.colocated_vision.encode_per_microbatch))
 
 
+def _check_tp_divides_heads(model, tp: int, stage: int) -> None:
+    """TP splits attention heads across a stage's GPUs, so it must divide the
+    key/value head count (read from the model's text config, if it has one)."""
+    config = getattr(model, "config", None)
+    text = config.get_text_config() if hasattr(config, "get_text_config") else config
+    heads = getattr(text, "num_key_value_heads", None)
+    if tp > 1 and isinstance(heads, int) and heads % tp:
+        raise ValidationError(
+            f"stage {stage}: tp={tp} does not divide the model's {heads} key/value "
+            f"heads; use a tp that divides {heads}")
+
+
 def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> ExecutionPlan:
     """Validate and lower; raises ValidationError before any Ray actor exists."""
     n = pipeline_config.stages
@@ -199,6 +211,7 @@ def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> Exe
     for part in partitions:
         override = overrides.get(part.index)
         grid, ep = _stage_grid(override, part.index, n, rows)
+        _check_tp_divides_heads(model, grid.tp, part.index)
         grids.append(grid)
         stages.append(StageSpec(
             index=part.index,

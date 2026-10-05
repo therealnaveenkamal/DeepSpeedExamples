@@ -117,7 +117,12 @@ def initialize(
     Returns (engine, None, training_dataloader_or_None, None): the optimizer and
     scheduler live inside the stage actors, so they are never returned.
     weights: an HF checkpoint directory; model parameters still on the meta
-    device are loaded from it by each stage, only the stage's own tensors."""
+    device are loaded from it by each stage, only the stage's own tensors.
+
+    Raises ValidationError (bad config, unsupported layout, TP that does not
+    divide the key/value heads, a stage that cannot be placed on the Ray
+    cluster) or UnsupportedInV1 (a DeepSpeed feature rdsp does not run)
+    before training starts."""
     if optimizer is not None:
         raise UnsupportedInV1(
             "optimizer must be None in v1: a driver-side optimizer object "
