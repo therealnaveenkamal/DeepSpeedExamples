@@ -221,3 +221,21 @@ def test_public_initialize_builds_hf_causal_lm_stages(ray_ctx, monkeypatch):
     finally:
         for c in built[-1]:
             c.shutdown()
+
+
+def test_too_few_gpus_fails_before_any_actor_starts(ray_ctx):
+    """A layout that needs more GPUs than the cluster has raises at once,
+    naming both counts, instead of waiting out the placement timeout."""
+    model = ToyLM()
+    cfg = rdsp.PipelineConfig(stages=2, partition=rdsp.UniformTransformerBlocks())
+    plan = lower(model, cfg, DS)
+    actors_before = len(ray.util.list_named_actors(all_namespaces=True)) \
+        if hasattr(ray.util, "list_named_actors") else None
+    have = int(ray.cluster_resources().get("GPU", 0))
+    if have >= 2:
+        pytest.skip("this cluster has enough GPUs")
+    with pytest.raises(rdsp.errors.ValidationError, match=f"needs 2 GPUs.*has {have}"):
+        create_stage_clients(model, plan, loss_fn, engine_factory=stub_engine_factory,
+                             use_gpu=True)
+    if actors_before is not None:
+        assert len(ray.util.list_named_actors(all_namespaces=True)) == actors_before

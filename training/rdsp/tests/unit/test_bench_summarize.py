@@ -29,3 +29,19 @@ def test_pairs_megatron_and_rdsp_logs(tmp_path, capsys):
     row = next(line for line in out.splitlines() if "TP2xPP2xDP2" in line)
     assert "10.00" in row and "8.00" in row and "-20%" in row
     assert "TP4xPP2xDP1" not in out  # pairs without logs are left out
+
+
+def test_published_logs_give_the_readme_numbers(capsys):
+    """bench/published holds the logs behind the README table; summarize.py
+    on them prints every step time the README reports."""
+    published = os.path.join(HERE, "..", "..", "bench", "published")
+    rows = []
+    for size in ("2b", "4b"):
+        summarize.main([os.path.join(published, size)])
+        rows += capsys.readouterr().out.splitlines()[1:]
+    got = [tuple(line.split()[-6:-4]) for line in rows]
+    assert got == [("9.64", "8.30"), ("7.39", "5.30"), ("10.04", "8.69"), ("15.93", "13.29")]
+    with open(os.path.join(HERE, "..", "..", "README.md")) as f:
+        readme = f.read()
+    for megatron, rdsp in got:
+        assert f"| {megatron} s | {rdsp} s |" in readme

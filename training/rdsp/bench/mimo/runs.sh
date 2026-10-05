@@ -9,6 +9,8 @@
 #   MODEL=Qwen3.5-4B runs.sh tp4pp2-megatron | tp4pp2-rdsp    # TP4xPP2xDP1
 #   python summarize.py ~/runs                   # the results table
 #
+# Case names are the same for both models: set LOGS=~/runs-4b for the 4B runs.
+#
 # Settings held equal: seq 2048, 64 rows per step, one row per GPU per
 # microbatch, AdamW lr 1e-5 constant, betas 0.9/0.95, eps 1e-8, no weight
 # decay, no clipping, no warm-up, bf16 with fp32 gradients and optimizer
@@ -102,5 +104,5 @@ case "${1:-}" in
     megatron tp4pp2-megatron 4 2 ;;
   tp4pp2-rdsp)
     rdsp tp4pp2-rdsp "qwen35-$SIZE-tp4pp2dp1.sh" ;;
-  *) sed -n 2,10p "$0"; exit 1 ;;
+  *) sed -n 2,12p "$0"; exit 1 ;;
 esac

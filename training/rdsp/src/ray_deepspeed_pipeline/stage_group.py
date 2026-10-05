@@ -256,6 +256,12 @@ def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
             "(the package uses the current context and never creates one)")
     if use_gpu is None:
         use_gpu = torch.cuda.is_available()
+    needed = sum(spec.num_gpus for spec in plan.stages)
+    available = int(ray.cluster_resources().get("GPU", 0))
+    if use_gpu and needed > available:  # placement would wait out its timeout
+        raise ValidationError(
+            f"the pipeline needs {needed} GPUs; this Ray cluster has {available}. "
+            f"Reduce gpus= in the stage layouts, or add GPUs")
     backend = "nccl" if use_gpu else "gloo"
     actor_cls = ray.remote(StageWorkerActor)
 

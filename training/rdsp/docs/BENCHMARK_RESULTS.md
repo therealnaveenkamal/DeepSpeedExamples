@@ -1,6 +1,6 @@
 # Benchmark results
 
-rdsp against MegatronMIMO and Megatron-Bridge, training Qwen3.5-2B and 4B on CORD-v2. One AWS g7.48xlarge: 8× RTX PRO 4500 Blackwell, 32 GB, PCIe, no NVLink. Settings held equal, software versions and how to rerun: [REPRODUCE.md](REPRODUCE.md). Raw logs: `bench/results/box_runs_20261005/`, and `box_runs_20261004b/` for the 4B Megatron runs.
+rdsp against MegatronMIMO and Megatron-Bridge, training Qwen3.5-2B and 4B on CORD-v2. One AWS g7.48xlarge: 8× RTX PRO 4500 Blackwell, 32 GB, PCIe, no NVLink. Settings held equal, software versions and how to rerun: [REPRODUCE.md](REPRODUCE.md). Raw logs: `bench/published/{2b,4b}/`; `python bench/mimo/summarize.py bench/published/2b` prints the table rows, and `tests/unit/test_bench_summarize.py` checks them against the README.
 
 ## Results
 
@@ -63,7 +63,7 @@ rdsp started 40% slower than MegatronMIMO in MIMO's own layout. 2B step time aft
 | `torch.compile` on the vision encoder: its forward and backward fell from 7.8 s to 6.7 s per step | 9.62 s |
 | Split-vocabulary loss: TP ranks keep their slice of the 248k-wide logits instead of gathering 2 GB per microbatch | 9.25 s |
 | No padding mask: rows pad only on the right, so causal attention ignores the padding anyway, and SDPA picks its flash kernel | 9.05 s |
-| bf16 gradients freed after fp32 accumulation (12 bytes per parameter, as in Megatron, instead of 14), and padding per microbatch (1.71 → 1.20 padded tokens per real token) | 8.30 s |
+| bf16 gradients freed after fp32 accumulation (2 bytes per parameter less, as in Megatron), and padding per microbatch (1.71 → 1.20 padded tokens per real token) | 8.30 s |
 
 Same chain for 4B TP2×PP2×DP2: 13.51 s → 11.57 s → 10.58 s → 8.71 s → 8.69 s. The freed gradients removed the out-of-memory errors that had forced recompute, and the corrected balanced cut did the rest.
 

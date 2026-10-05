@@ -29,7 +29,7 @@ Both depend on the pinned commit (unit tests in `tests/unit/test_deepspeed_adapt
 - the conversion on every edge between stages;
 - a hash that binds checkpoints.
 
-Every check runs here, before any actor starts. TP must divide the key/value heads, rows must divide every stage's DP degree, parameters can't be tied across stages, and so on. Settings that change how a step runs but not what a stage saves (`prefetch`, `recompute`, `compile`, `compile_vision`, `encode_per_microbatch`) are left out of the hash, so toggling them keeps checkpoints loadable.
+Every check runs here, before any actor starts (the cluster's GPU count just after, still before any actor). TP must divide the key/value heads, rows must divide every stage's DP degree, parameters can't be tied across stages, and so on. Settings that change how a step runs but not what a stage saves (`prefetch`, `recompute`, `compile`, `compile_vision`, `encode_per_microbatch`) are left out of the hash, so toggling them keeps checkpoints loadable.
 
 The splitter finds the model's longest `ModuleList` of same-class blocks; a vision encoder's blocks are never cut. Everything before the blocks goes to the first stage, everything after them to the last.
 
@@ -120,7 +120,7 @@ The estimate takes milliseconds and runs no trial steps. It picks the fastest me
 
 ## Memory
 
-- **12 bytes per parameter** of training state under bf16 + ZeRO-1 + fp32 accumulation: bf16 weights, fp32 accumulator, fp32 master, Adam's two moments, the last three split over DP. rdsp sets `bf16.immediate_grad_update` so each bf16 gradient is added into fp32 as soon as autograd produces it, then frees the bf16 copy; DeepSpeed alone only zeroes it, keeping 2 more bytes per parameter. Megatron spends the same 12. On 4B this removed the out-of-memory errors that had forced recompute.
+- **2 + 4 + 12/dp bytes per parameter** of training state under bf16 + ZeRO-1 + fp32 accumulation: bf16 weights, fp32 accumulator, then fp32 master and Adam's two moments split over DP (12 bytes at DP=2). rdsp sets `bf16.immediate_grad_update` so each bf16 gradient is added into fp32 as soon as autograd produces it, then frees the bf16 copy; DeepSpeed alone only zeroes it, keeping 2 more bytes per parameter. Megatron spends the same. On 4B this removed the out-of-memory errors that had forced recompute.
 - **Per-microbatch padding.** With `--pad-per-microbatch`, each microbatch is padded to its own longest row, like Megatron's collator, instead of the whole step being padded to its longest row. On CORD-v2 this cut padded tokens from 1.71 to 1.20 per real token.
 - **Recompute** (`recompute=1` per stage, or `ColocatedVision(recompute=True)`) keeps only each block's input and recomputes the rest in backward.
 

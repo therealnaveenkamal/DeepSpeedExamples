@@ -2,7 +2,7 @@
 
 rdsp (`ray_deepspeed_pipeline`) splits a model into pipeline stages and gives each stage its own GPU count and parallel layout. Every stage is a group of Ray actors, one per GPU, each running a stock DeepSpeed engine. Stages pass activations and gradients over NCCL in a 1F1B schedule. You can split a Hugging Face vision-language model so the vision encoder gets its own stage and layout, and train it from the HF checkpoint without converting it.
 
-On 8 PCIe GPUs, rdsp trains Qwen3.5-2B and 4B 13–28% faster per step than Megatron-Bridge and MegatronMIMO on the same layouts, data and settings.
+On 8 PCIe GPUs, rdsp takes 13–28% less time per training step (1.15–1.40× the throughput) than Megatron-Bridge and MegatronMIMO on Qwen3.5-2B and 4B, with the same layouts, data and settings.
 
 ## Terms
 
@@ -46,7 +46,7 @@ Throughput at the same steps, in real (non-padding) tokens/s: 7,837 vs 6,780; 12
 - Loss averaging: the MegatronMIMO run trains on per-microbatch means (its only mode), so the rdsp run against it does the same. The Bridge runs train on the per-token mean.
 - Embeddings: in the pipeline layouts, Megatron ties the input embedding and output layer across stages. rdsp trains two copies.
 
-How to rerun all of it: [docs/REPRODUCE.md](docs/REPRODUCE.md). What moved the numbers: [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md).
+Logs behind every number: `bench/published/`. How to rerun all of it: [docs/REPRODUCE.md](docs/REPRODUCE.md). What moved the numbers: [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md).
 
 ## Install
 
@@ -77,12 +77,15 @@ Importing `ray_deepspeed_pipeline` doesn't import Ray or DeepSpeed; only the sta
 ```python
 import ray, ray_deepspeed_pipeline as rdsp
 
+def count_tokens(labels):            # tokens the loss is computed on
+    return int((labels[:, 1:] != -100).sum())
+
 ray.init()
 engine, _, _, _ = rdsp.initialize(
     model=model,                    # HF model, built under accelerate.init_empty_weights()
     weights="/path/to/hf/checkpoint",  # each stage loads only its own tensors
     config=ds_config,               # DeepSpeed config dict
-    loss_fn=rdsp.next_token_loss_sum,
+    loss_fn=rdsp.TokenMeanLoss(rdsp.next_token_loss_sum, count_tokens),  # mean over the step's tokens
     pipeline_config=rdsp.PipelineConfig(
         stages=2,
         partition=rdsp.BalancedTransformerBlocks(vision_token_ratio=ratio),
@@ -98,7 +101,7 @@ If the input embedding and output layer share a weight and land on different sta
 
 ## How it works
 
-- **Planning.** `rdsp.initialize` lowers the config into an immutable plan: cuts, each stage's grid (`gpus = dp × sp × tp`), each stage's DeepSpeed config, and a hash that binds checkpoints. Every check runs before any actor starts.
+- **Planning.** `rdsp.initialize` lowers the config into an immutable plan: cuts, each stage's grid (`gpus = dp × sp × tp`), each stage's DeepSpeed config, and a hash that binds checkpoints. Every check, including the cluster's GPU count, runs before any actor starts.
 - **Stages.** Each stage runs the HF model's own `forward`. Blocks outside the stage pass their input through, and a hook injects what arrived from upstream. No per-architecture code is needed.
 - **Step.** The driver hands each stage its 1F1B op list. Stages exchange activations and gradients directly over NCCL. Each stage applies its optimizer step only after every stage reports its backward done.
 - **Failures.** A failure before any update raises `StepFailed`: weights are unchanged and a retry is exact. A failure during the update raises `PipelinePoisoned` until a checkpoint is loaded.
@@ -107,7 +110,7 @@ If the input embedding and output layer share a weight and land on different sta
   - on its own stage, via a first cut of 0;
   - colocated on every GPU.
 - **Balanced cuts.** `--cuts balanced` charges the vision encoder per image patch. It measures patches per text token from the first batch, then picks the cut that minimises the slowest stage.
-- **Memory.** Each bf16 gradient is folded into the fp32 accumulator as soon as it exists, then freed: 12 bytes per parameter. Each microbatch is padded only to its own longest row.
+- **Memory.** Each bf16 gradient is folded into the fp32 accumulator as soon as it exists, then freed, saving 2 bytes per parameter (12 instead of 14 at DP=2, as in Megatron). Each microbatch is padded only to its own longest row.
 
 Design and the reasoning behind it: [docs/ENGINEERING.md](docs/ENGINEERING.md).
 

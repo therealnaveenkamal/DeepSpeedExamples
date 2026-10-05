@@ -10,7 +10,7 @@ import ray_deepspeed_pipeline as rdsp
 
 | Name | Guarantees | Raises |
 |---|---|---|
-| `rdsp.initialize(model=, config=, loss_fn=, pipeline_config=, weights=None, training_data=None)` | Returns `(engine, None, dataloader_or_None, None)`. Every check runs before any Ray actor starts. With `weights`, each stage loads only its own tensors from the HF checkpoint. | `ValidationError`, `UnsupportedInV1` |
+| `rdsp.initialize(model=, config=, loss_fn=, pipeline_config=, weights=None, training_data=None)` | Returns `(engine, None, dataloader_or_None, None)`. Every check, including the cluster's GPU count, runs before any Ray actor starts; only fitting each stage on one node is checked at placement. With `weights`, each stage loads only its own tensors from the HF checkpoint. | `ValidationError`, `UnsupportedInV1` |
 | `rdsp.PipelineConfig` | Lowered once into an immutable plan. The plan's hash binds checkpoints. | `ValidationError` |
 | `rdsp.StageOverride(stage, num_gpus, tp, sp, ep, zero_stage, recompute, offload_optimizer, compile, compile_vision)` | One stage's grid: `num_gpus = dp × sp × tp`, with dp derived. Stages without an override get 1 GPU. | `ValidationError` (grid does not divide, ep does not divide `num_gpus`, tp does not divide the key/value heads) |
 | `rdsp.ConnectionOverride(source, dest, conversion)` | The conversion on an edge is derived from the two layouts; a declared one must match. | `ValidationError` |
@@ -46,7 +46,7 @@ import ray_deepspeed_pipeline as rdsp
 | A stage fails while updates are being applied | `PipelinePoisoned` | Every call is refused until `load_checkpoint()`. |
 | A checkpoint fails verification | `CheckpointError` | Nothing loaded. |
 
-A checkpoint loads only into a pipeline with the same plan hash: same model split, layouts and microbatches. Settings that change how a step runs but not what a stage saves are left out of the hash: `prefetch`, `recompute`, `compile`, `compile_vision`, `encode_per_microbatch`.
+A checkpoint loads only into a pipeline with the same plan hash: same model split, layouts, microbatches and DeepSpeed config (including optimizer settings such as the learning rate). Settings that change how a step runs but not what a stage saves are left out of the hash: `prefetch`, `recompute`, `compile`, `compile_vision`, `encode_per_microbatch`.
 
 ## DeepSpeed settings rdsp changes
 
@@ -55,7 +55,7 @@ Every stage runs a stock DeepSpeed engine, with these settings changed:
 - `gradient_accumulation_steps = 1`: the coordinator accumulates over the step's microbatches.
 - `gradient_clipping = 0`: DeepSpeed would clip each stage by its own norm, not the global one. A nonzero value is rejected.
 - `train_batch_size` is dropped: each stage's DeepSpeed derives it from its own grid.
-- `bf16.immediate_grad_update = true` under bf16 with fp32 accumulation and ZeRO-1, unless the config sets it. Each bf16 gradient is added into fp32 as soon as it exists and then freed: 12 bytes of state per parameter instead of 14.
+- `bf16.immediate_grad_update = true` under bf16 with fp32 accumulation and ZeRO-1, unless the config sets it. Each bf16 gradient is added into fp32 as soon as it exists and then freed: 2 fewer bytes of state per parameter.
 
 ## Supported layouts
 

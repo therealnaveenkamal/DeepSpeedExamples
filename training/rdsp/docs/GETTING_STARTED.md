@@ -69,10 +69,10 @@ For your own data, write a loader that yields `(inputs, labels)` entries (see `d
 **Not enough GPUs.** The layout asks for more GPUs than the node has:
 
 ```
-ValidationError: stage 1: cannot place 4 GPUs (STRICT_PACK) in this Ray cluster: ...
+ValidationError: the pipeline needs 8 GPUs; this Ray cluster has 4. Reduce gpus= in the stage layouts, or add GPUs
 ```
 
-Reduce `gpus=` in the `--stage` flags, or use a bigger node.
+On a multi-node cluster with enough GPUs in total, a stage that doesn't fit on one node fails after `RDSP_PLACEMENT_TIMEOUT_S` (default 600 s) with `stage S: cannot place G GPUs (STRICT_PACK) in this Ray cluster`.
 
 **TP doesn't divide the key/value heads.** Qwen3.5-2B has 2 key/value heads:
 
