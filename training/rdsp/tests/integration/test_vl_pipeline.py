@@ -848,23 +848,3 @@ def test_colocated_vision_compile_reaches_the_plan_and_covers_the_encoder(monkey
     compile_blocks(tower)
     assert tower.local_blocks() and all(
         isinstance(b.forward, _CompiledForward) for b in tower.local_blocks())
-
-
-@pytest.mark.parametrize("prefetch", [False, True], ids=["plain", "prefetch"])
-def test_pick_cuts_times_trials_and_leaves_the_model_alone(ray_ctx, stub_engines, prefetch):
-    """pick_cuts trains throwaway pipelines on the first batch and returns
-    the fastest cut it found; the model it was given is unchanged, so the
-    real run starts from the same weights."""
-    torch.manual_seed(0)
-    model = transformers.Qwen3VLForConditionalGeneration(tiny_qwen3_vl()).float()
-    before = {k: v.clone() for k, v in model.state_dict().items()}
-    lines = []
-    cuts = rdsp.pick_cuts(model=model, config=DS, loss_fn=lm_loss,
-                          pipeline_config=rdsp.PipelineConfig(
-                              stages=2, partition=rdsp.BalancedTransformerBlocks(),
-                              prefetch=prefetch),
-                          sample=make_batches(), steps=3, log=lines.append)
-    assert isinstance(cuts, rdsp.ExplicitCuts) and len(cuts.cuts) == 1
-    assert 0 < cuts.cuts[0] < tiny_qwen3_vl().text_config.num_hidden_layers
-    assert any("s per step" in line for line in lines) and lines[-1].startswith("picked cuts")
-    assert all(torch.equal(v, before[k]) for k, v in model.state_dict().items())

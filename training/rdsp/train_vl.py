@@ -18,7 +18,6 @@ built by the model's own processor; the loss covers the caption tokens only.
 """
 
 import argparse
-import dataclasses
 import glob
 import itertools
 import json
@@ -259,9 +258,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--model", default="Qwen/Qwen3-VL-2B-Instruct")
     p.add_argument("--stages", type=int, default=2)
-    p.add_argument("--cuts", default="balanced",
-                   help="'balanced', 'even', 'auto' (time a few steps of neighbouring cuts "
-                        "from the balanced estimate and keep the fastest), or e.g. 9,18")
+    p.add_argument("--cuts", default="balanced", help="'balanced', 'even', or e.g. 9,18")
     p.add_argument("--stage", type=parse_stage, action="append", default=[],
                    help="per-stage layout, as in train.py")
     p.add_argument("--microbatches", type=int, default=8)
@@ -349,7 +346,7 @@ def main(argv=None):
     with accelerate.init_empty_weights():
         skeleton = transformers.AutoModelForImageTextToText.from_config(config,
                                                                          dtype=torch.bfloat16)
-    if args.cuts in ("balanced", "auto"):
+    if args.cuts == "balanced":
         # the encoder's cost per text token, measured from the first step
         from ray_deepspeed_pipeline.partition import vision_token_ratio
         partition = rdsp.BalancedTransformerBlocks(
@@ -373,13 +370,6 @@ def main(argv=None):
                                                per_microbatch=args.vision_per_microbatch)
                           if args.colocated_vision else None),
         prefetch=args.prefetch)
-    if args.cuts == "auto":
-        # trials replay the first step, prepared as the training stream prepares it
-        sample = [(drop_padding_mask(x) if args.drop_padding_mask else x, y) for x, y in first]
-        pipeline_config = dataclasses.replace(pipeline_config, partition=rdsp.pick_cuts(
-            model=skeleton, config=ds_config(args), loss_fn=loss_fn,
-            pipeline_config=pipeline_config, sample=sample, weights=weights,
-            log=lambda line: print(line, flush=True)))
     engine, _, _, _ = rdsp.initialize(
         model=skeleton, config=ds_config(args), loss_fn=loss_fn, weights=weights,
         pipeline_config=pipeline_config)

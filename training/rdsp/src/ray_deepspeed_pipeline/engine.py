@@ -60,13 +60,6 @@ class RayPipelineEngine:
         source = self._data_iter(data_iter)
         return _public_loss(resolve(self._coordinator.eval_batch(source)))
 
-    def shutdown(self) -> None:
-        """Release the stage actors and their GPUs (best effort)."""
-        for worker in getattr(self._coordinator, "_workers", ()):
-            stop = getattr(worker, "shutdown", None)
-            if stop is not None:
-                stop()
-
     def save_checkpoint(self, save_dir, tag=None, client_state=None,
                         save_latest=True) -> bool:
         """Save every stage plus global step and the owned loader's position.
