@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Qwen3.5-2B, 2 pipeline stages, each TP2 x DP2. The vision encoder sits on
 # stage 0; rdsp places the cut (--cuts balanced picks 5 decoder layers for
-# stage 0 on CORD-v2).
+# stage 0 on the exported CORD-v2 samples).
 #
 # GPUs:     8 (32 GB each is enough)
 # Measured: 5.30 s per step, 64 rows of up to 2048 tokens, 8x RTX PRO 4500
 #           (PCIe), DATA=exported:<dir> (Megatron-Bridge: 7.39 s)
 #
-# DATA: cord-v2 (default, pads rows to --seq) or exported:<dir> from
-# bench/mimo/runs.sh export (pads each microbatch to its longest row).
+# DATA: cord-v2 (default; downloads CORD-v2, images scaled to --max-pixels)
+# or exported:<dir> from bench/mimo/runs.sh export (the benchmark's samples).
+# Both pad each microbatch to its longest row. The cut and times above were
+# measured on exported data; cord-v2's smaller images change both.
 # Extra arguments are passed to train_vl.py and override the flags below.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

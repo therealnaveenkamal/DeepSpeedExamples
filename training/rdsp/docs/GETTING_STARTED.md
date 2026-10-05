@@ -49,7 +49,7 @@ step 12 loss 0.0931 5312 ms 12187 real tok/s 24672 padded tok/s real 64725 super
 
 **Data.** `train_vl.py --dataset`:
 
-- `cord-v2`: downloads CORD-v2 and pads every row to `--seq`.
+- `cord-v2`: downloads CORD-v2, scales images to at most `--max-pixels`, and pads rows to `--seq` (with `--pad-multiple N --pad-per-microbatch`, each microbatch to its longest row, as the recipes do).
 - `exported:DIR`: steps exported from Megatron-Bridge's loader (`bench/mimo/runs.sh export`). With `--pad-multiple 128 --pad-per-microbatch`, each microbatch is padded to its longest row.
 - `synthetic`: random images, for smoke tests.
 

@@ -90,3 +90,25 @@ def test_padding_trimmed_to_each_microbatchs_longest_row(tmp_path):
                                               pad_per_microbatch=True))
     assert [x["input_ids"].shape for x, _ in got] == [(2, 8), (2, 4)]
     assert [y.shape for _, y in got] == [(2, 8), (2, 4)]
+
+
+def test_cord_microbatches_pad_to_their_own_longest_row(monkeypatch):
+    """--pad-multiple applies to downloaded rows too: each microbatch is cut
+    to its longest real row rounded up to the multiple, not padded to --seq."""
+    import train_vl
+
+    def fake_row(processor, length, caption, seq):
+        ids = torch.zeros(seq, dtype=torch.long)
+        ids[:length] = 1
+        mask = (ids == 1).long()
+        row = {"input_ids": ids, "attention_mask": mask, "mm_token_type_ids": mask * 0,
+               "pixel_values": torch.zeros(1), "image_grid_thw": torch.ones(1, 3)}
+        return row, torch.where(mask.bool(), ids, -100)
+
+    monkeypatch.setattr(train_vl, "encode_row", fake_row)
+    source = iter([(5, ""), (3, ""), (9, ""), (2, "")])
+    got = train_vl.microbatches(None, rows=2, seq=16, source=source, pad_multiple=4)
+    shapes = [next(got) for _ in range(2)]
+    assert [x["input_ids"].shape[1] for x, _ in shapes] == [8, 12]
+    assert [y.shape[1] for _, y in shapes] == [8, 12]
+    assert int(shapes[1][0]["attention_mask"].sum()) == 11

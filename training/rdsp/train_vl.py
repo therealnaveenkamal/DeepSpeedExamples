@@ -99,19 +99,22 @@ def encode_row(processor, image, caption: str, seq: int) -> tuple[dict, torch.Te
     return row, F.pad(labels, (0, pad), value=-100)
 
 
-def microbatches(processor, rows: int, seq: int, source):
+def microbatches(processor, rows: int, seq: int, source, pad_multiple: int = 0):
     """Endless (inputs, labels) microbatches from (image, caption) pairs:
     row-shaped values stacked, images given per row (rdsp concatenates each
-    rank's rows). Pairs too long for `seq` are skipped."""
+    rank's rows). Pairs too long for `seq` are skipped. pad_multiple: cut each
+    microbatch to its longest row rounded up to this multiple, instead of
+    `seq` (the pipeline then sends every boundary with its shape)."""
     encoded_rows = (encode_row(processor, image, caption, seq) for image, caption in source)
     fitting = (row for row in encoded_rows if row is not None)
     while True:
         encoded = [next(fitting) for _ in range(rows)]
-        inputs = {k: torch.stack([r[k] for r, _ in encoded])
+        length = _padded_length([r for r, _ in encoded], pad_multiple, seq)
+        inputs = {k: torch.stack([r[k][:length] for r, _ in encoded])
                   for k in ("input_ids", "attention_mask", "mm_token_type_ids")}
         inputs["pixel_values"] = [r["pixel_values"] for r, _ in encoded]
         inputs["image_grid_thw"] = [r["image_grid_thw"] for r, _ in encoded]
-        yield inputs, torch.stack([labels for _, labels in encoded])
+        yield inputs, torch.stack([labels[:length] for _, labels in encoded])
 
 
 _EXPORTED_KEYS = ("input_ids", "attention_mask", "mm_token_type_ids")
@@ -276,7 +279,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Liger fused RMSNorm/SwiGLU kernels and cross entropy")
     p.add_argument("--pad-multiple", type=int, default=0,
                    help="exported data: trim each step's padding to its longest row, "
-                   "rounded up to this multiple (0 keeps the exported length)")
+                   "rounded up to this multiple (0 keeps the exported length); with "
+                   "--pad-per-microbatch, also applies to cord-v2 and synthetic rows")
     p.add_argument("--betas", default="0.9,0.999", help="AdamW betas")
     p.add_argument("--eps", type=float, default=1e-8)
     p.add_argument("--weight-decay", type=float, default=0.0)
@@ -340,7 +344,8 @@ def main(argv=None):
     else:
         source = (cord_rows(args.max_pixels, args.seed) if args.dataset == "cord-v2"
                   else synthetic_rows(args.image_size, args.seed))
-        data = microbatches(processor, args.rows, args.seq, source)
+        data = microbatches(processor, args.rows, args.seq, source,
+                            args.pad_multiple if args.pad_per_microbatch else 0)
     first = [next(data) for _ in range(args.microbatches)]
 
     reference = unsplit_loss(weights, first) if args.check else None

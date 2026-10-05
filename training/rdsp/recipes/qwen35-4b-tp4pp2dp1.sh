@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Qwen3.5-4B, 2 pipeline stages, each TP4 (no data parallelism). One row
 # per microbatch, 64 microbatches per step, as Megatron runs this layout.
-# rdsp places the cut (--cuts balanced picks 12 on CORD-v2).
+# rdsp places the cut (--cuts balanced picks 12 on the exported CORD-v2 samples).
 #
 # GPUs:     8, 32 GB each (peak about 26 GB per GPU)
 # Measured: 13.29 s per step, 64 rows of up to 2048 tokens, 8x RTX PRO 4500
 #           (PCIe), DATA=exported:<dir> (Megatron-Bridge: 15.93 s)
 #
-# DATA: cord-v2 (default, pads rows to --seq) or exported:<dir> from
-# bench/mimo/runs.sh export (pads each microbatch to its longest row).
+# DATA: cord-v2 (default; downloads CORD-v2, images scaled to --max-pixels)
+# or exported:<dir> from bench/mimo/runs.sh export (the benchmark's samples).
+# Both pad each microbatch to its longest row. The cut and times above were
+# measured on exported data; cord-v2's smaller images change both.
 # Extra arguments are passed to train_vl.py and override the flags below.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
