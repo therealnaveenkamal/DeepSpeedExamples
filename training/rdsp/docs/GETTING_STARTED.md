@@ -28,6 +28,7 @@ The DeepSpeed commit is the one every result was measured with.
 | `qwen35-2b-tp2pp2dp2.sh` | Qwen3.5-2B | TP2×PP2×DP2 | 8 |
 | `qwen35-4b-tp2pp2dp2.sh` | Qwen3.5-4B | TP2×PP2×DP2 | 8 |
 | `qwen35-4b-tp4pp2dp1.sh` | Qwen3.5-4B | TP4×PP2×DP1 | 8 |
+| `qwen35-4b-vision1-tp2dp2.sh` | Qwen3.5-4B | vision on 1 GPU + language TP2×DP2 (80 GB GPUs) | 5 |
 | `qwen3-text-pp.sh` | Qwen3-0.6B | DP2 (ZeRO-2) → TP2 | 4 |
 
 ```bash

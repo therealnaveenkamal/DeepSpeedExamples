@@ -13,6 +13,7 @@ uv venv -p 3.12 ~/venv
 uv pip install "torch==2.13.*" torchvision "transformers==5.17.0" ray cloudpickle accelerate \
     safetensors datasets pillow ninja packaging numpy pytest
 CUDA_HOME=/usr/local/cuda-$(python -c "import torch; print(torch.version.cuda)")
+[ -d "$CUDA_HOME" ] || CUDA_HOME=/usr/local/cuda   # no toolkit matching torch's CUDA
 echo "export CUDA_HOME=$CUDA_HOME" > ~/cuda_env.sh
 export CUDA_HOME DS_BUILD_OPS=0
 uv pip install --no-build-isolation \

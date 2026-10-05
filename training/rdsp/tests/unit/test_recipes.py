@@ -30,7 +30,7 @@ def _command(text: str) -> tuple[str, list[str]]:
 def test_there_is_a_recipe_per_validated_layout():
     assert RECIPES == ["qwen3-text-pp.sh", "qwen35-2b-tp2pp2dp2.sh",
                        "qwen35-2b-vision1-tp2dp2.sh", "qwen35-4b-tp2pp2dp2.sh",
-                       "qwen35-4b-tp4pp2dp1.sh"]
+                       "qwen35-4b-tp4pp2dp1.sh", "qwen35-4b-vision1-tp2dp2.sh"]
 
 
 @pytest.mark.parametrize("recipe", RECIPES)
