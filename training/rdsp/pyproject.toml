@@ -5,20 +5,18 @@ build-backend = "hatchling.build"
 [project]
 name = "ray-deepspeed-pipeline"
 version = "0.0.1"
-description = "External pipeline engine connecting DeepSpeed stages on Ray (provisional name, see docs/P0.md)"
+description = "Pipeline parallelism on Ray + DeepSpeed with per-stage layouts"
 requires-python = ">=3.12"
 dependencies = [
     "torch",
     "cloudpickle",
-    # ray is a runtime dependency of the actor phases (P5+) but is imported
-    # lazily: importing ray_deepspeed_pipeline must not import ray (see
-    # tests/architecture/test_import_boundaries.py).
+    # imported lazily: importing ray_deepspeed_pipeline does not import ray
     "ray",
 ]
 
 [project.optional-dependencies]
-# deepspeed is only importable on Linux+CUDA; the adapter (P5) imports it
-# lazily inside actors, never at package import time.
+# deepspeed is only importable on Linux+CUDA; the stage actors import it
+# lazily, never at package import time.
 gpu = ["deepspeed"]
 dev = ["pytest", "ruff"]
 
