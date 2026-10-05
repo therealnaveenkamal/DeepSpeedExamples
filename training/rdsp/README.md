@@ -94,7 +94,7 @@ loss = engine.train_batch(data_iter)   # consumes exactly M (inputs, labels) ent
 engine.save_checkpoint("ckpt/", tag="step100")
 ```
 
-The model's tied embeddings must be untied first, as `train_vl.py --untie-embeddings` does. Every public name, what it guarantees and what it raises are listed in [docs/CONTRACTS.md](docs/CONTRACTS.md). `train_vl.py` is a complete training script.
+If the input embedding and output layer share a weight and land on different stages, untie them first (`train_vl.py --untie-embeddings`); on one stage they stay tied. Every public name, what it guarantees and what it raises are listed in [docs/CONTRACTS.md](docs/CONTRACTS.md). `train_vl.py` is a complete training script.
 
 ## How it works
 
@@ -149,7 +149,7 @@ The GPU tests (parity against the unsplit model, checkpoint round trip, rank-kil
   - 1F1B only, no interleaved stages.
   - No global-norm gradient clipping: a nonzero `gradient_clipping` is rejected.
 - **Weights.** No parameters tied across stages.
-- **Colocated vision.** Matches the unsplit model, but isn't fast yet on 32 GB GPUs: Qwen3.5-4B TP2×PP2×DP2 takes about 9.7 s per step against 8.69 s with the encoder on the first stage.
+- **Colocated vision.** Matches the unsplit model, but isn't fast yet on 32 GB GPUs: Qwen3.5-4B TP2×PP2×DP2 takes 9.66 s per step against 8.69 s with the encoder on the first stage.
 - **Balanced cuts.**
   - The cost model ignores communication.
   - It counts MoE experts in full, not by the active fraction.

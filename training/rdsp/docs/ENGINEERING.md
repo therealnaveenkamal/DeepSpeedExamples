@@ -1,351 +1,205 @@
-# Training one model across many GPUs, with Ray between the pieces
+# How rdsp works
 
-*Engineering writeup — `ray_deepspeed_pipeline` (rdsp), 2026-08-30*
+rdsp splits a model's stack of blocks into contiguous stages, places each stage on its own group of GPUs, and trains the result so it computes what the unsplit model would. Each GPU runs a Ray actor holding a stock DeepSpeed engine for its stage's slice. Activations go forward and gradients go back over NCCL.
 
-## What this is
+Why split by depth: only activations cross a cut, once per microbatch, so it is the cheapest split across slow links. And stages do unequal work (a vision encoder, an output head over a 248k vocabulary), so each stage gets its own GPU count and layout.
 
-rdsp is a library that takes a transformer, splits its stack of layers into
-contiguous chunks, puts each chunk on its own GPU worker, and trains the whole
-thing as if it were still one model. The chunks are called stages. During the
-forward pass, activations flow from each stage to the next; during the
-backward pass, gradients flow back the other way. Inside each stage, an
-ordinary DeepSpeed engine does what DeepSpeed always does — run the layers,
-hold the optimizer, manage precision and memory. Between the stages, Ray
-carries the tensors and messages. Neither framework is modified: the entire
-pipeline lives in our code, which sits on top of both.
+## Design rules
 
-The user's side of it is five lines:
+**Stock DeepSpeed and Ray.** DeepSpeed is pinned to one commit and installed unmodified; every stage calls `deepspeed.initialize()`. rdsp crosses into DeepSpeed internals in exactly two places, both in `deepspeed_adapter.py`:
 
-```python
-engine, _, _, _ = rdsp.initialize(
-    model=model,                      # a normal HuggingFace model
-    config=deepspeed_config,          # a normal DeepSpeed config, unchanged
-    pipeline_config=rdsp.PipelineConfig(stages=2,
-        partition=rdsp.UniformTransformerBlocks()),
-    loss_fn=my_loss)
+- `_free_bf16_grads_after_accumulating` wraps one bf16 optimizer method on the instance to free each bf16 gradient once it's folded into fp32 (see Memory).
+- `reset()` clears two private ZeRO running sums that `zero_grad()` leaves behind, so a retried step doesn't add onto an abandoned one.
 
-for _ in range(steps):
-    loss = engine.train_batch()       # one call = one optimizer step
+Both depend on the pinned commit (unit tests in `tests/unit/test_deepspeed_adapter_grads.py`, the abandoned-step GPU test); a DeepSpeed upgrade has to re-run the GPU suite.
+
+**The driver never touches tensors.** The driver, meaning the user's process, holds no weights and never receives an activation or gradient. Autograd graphs can't leave their process, so whichever GPU ran a forward runs its backward, the loss is computed on the last stage (labels travel there), and only losses and statuses return to the driver.
+
+**The API doesn't pretend.**
+- `rdsp.initialize()` mirrors `deepspeed.initialize()`, but returns `None` for the optimizer: the real optimizers live in the actors, and a look-alike object whose changes do nothing would be worse.
+- `engine.forward/backward/step` raise and point at `train_batch()`: one step interleaves hundreds of operations across stages, so there's no single "the forward" for them to mean.
+
+## Planning
+
+`rdsp.initialize()` lowers `PipelineConfig` into an immutable plan (`compiler.lower`):
+
+- the cuts;
+- each stage's grid, `gpus = dp × sp × tp`;
+- each stage's DeepSpeed config;
+- the conversion on every edge between stages;
+- a hash that binds checkpoints.
+
+Every check runs here, before any actor starts. TP must divide the key/value heads, rows must divide every stage's DP degree, parameters can't be tied across stages, and so on. Settings that change how a step runs but not what a stage saves (`prefetch`, `recompute`, `compile`, `compile_vision`, `encode_per_microbatch`) are left out of the hash, so toggling them keeps checkpoints loadable.
+
+The splitter finds the model's longest `ModuleList` of same-class blocks; a vision encoder's blocks are never cut. Everything before the blocks goes to the first stage, everything after them to the last.
+
+With `weights=<HF checkpoint>`, the driver model is built empty and each stage reads only its own tensors from the safetensors files.
+
+## One training step
+
+1. The driver takes exactly M `(inputs, labels)` entries. Too few raises `StepFailed` with nothing dispatched; extra entries stay in the iterator.
+2. Each GPU gets one Ray call: its stage's whole 1F1B op list for the step. Stage *s* of *N* runs `min(N−1−s, M)` warm-up forwards, then alternates.
+3. Forward: receive from the overlapping upstream ranks, assemble, `x.detach().requires_grad_()`, run the engine, send downstream asynchronously.
+4. Backward: receive the gradient `g` for this stage's output, then call `engine.backward((out * g).sum())`. Differentiating that scalar reproduces `g` exactly, and it is the only form DeepSpeed's backward accepts. Send `x.grad` upstream. The last stage backpropagates its loss.
+5. Only the M-th backward is a DeepSpeed accumulation boundary. Intra-stage gradient reduction happens once per step.
+6. Each rank reports *ready*. Only when every rank of every stage is ready does the driver send *apply*, and each engine steps exactly once.
+
+Two NCCL groups span all ranks of all stages: `fwd` for activations and `bwd` for gradients. They sit next to each stage's own DeepSpeed world.
+
+An earlier design dispatched every forward and backward from the driver as a separate Ray call. At about 5 ms of Ray overhead per call, that overhead set the pace. The current path is checked against losses recorded from the old one (`test_losses_match_recorded_reference`).
+
+**Failures.**
+- A failure before any apply raises `StepFailed`. Weights are unchanged, links are rebuilt, and on retry each rank discards leftovers (`reset()`) and rewinds its RNG, so the retry equals a clean step.
+- A failure during apply means some stages updated and others didn't. The engine raises `PipelinePoisoned` and refuses every call until `load_checkpoint()`.
+
+## Stages with different layouts
+
+A stage can use several GPUs in four ways, each an ordinary DeepSpeed feature running inside that stage alone:
+
+| | Each GPU gets |
+|---|---|
+| DP (any ZeRO stage) | different rows |
+| TP (AutoTP) | the same rows, a slice of every weight matrix |
+| SP (Ulysses) | the same rows, a different stretch of the sequence |
+| EP (AutoEP), optionally folded onto TP | different rows, some of the experts |
+
+**Boundaries.** A rank's cell is its block of rows (`rows / dp`) and of sequence (`seq / sp`); TP ranks share a cell. Each receiving rank asks for exactly the upstream pieces that overlap its cell and stitches them together. Only TP rank 0 of a cell sends, and nothing is gathered in one place. Gradients take the same routes in reverse, scaled by `dp_s / dp_(s+1)`: DeepSpeed averages over DP and sums over SP, so without the factor a stage learns at the wrong rate.
+
+**Shapes.** Each message carries a small header with dtype and shape. Normally a header is sent once per step per peer. When a step's microbatches differ in length (per-microbatch padding), every message carries its own.
+
+## Running Hugging Face models without per-model code
+
+`HFModelStage` runs the model's own `forward` on every stage:
+
+- Blocks outside the stage return their input.
+- Modules whose weights the stage doesn't own return their input, or zeros for an embedding.
+- A pre-hook on each block injects what arrived from upstream.
+- The stage's output is whatever the loop hands the next block. Work between blocks counts; work after the last block (norm, head) belongs to the last stage.
+
+The boundary carries the hidden state plus the tensors the model passes to each block: rotary tables, position ids, masks. For Qwen3-VL-32B that's about 5% over the hidden state.
+
+TP uses the model's AutoTP plan. For configs without one, rdsp generates a plan for the standard `q/k/v/o_proj` and `gate/up/down_proj` names, the vision blocks' `attn.qkv`/`attn.proj`/`mlp.linear_fc1/fc2`, and Qwen3.5's linear-attention projections.
+
+## Vision encoder placement
+
+| Placement | How | Encoder runs on |
+|---|---|---|
+| First stage | default | the first stage's GPUs, in its layout |
+| Vision-only stage | first cut at 0 (`--cuts 0`) | its own stage, with its own GPU count and layout |
+| Colocated | `PipelineConfig(colocated_vision=rdsp.ColocatedVision())` | every GPU, data parallel |
+
+**Vision-only stage.** This stage holds the encoder and nothing else. It sends image embeddings and rotary tables, and the next stage embeds the text itself. This is MegatronMIMO's layout. It freed enough memory to drop recompute and took the 2B MIMO-layout step from 13.51 s to 11.3 s.
+
+**Colocated** (`vision.py`).
+1. Each rank encodes its share of the step's images and sends each image's features to the first-stage ranks whose rows hold it.
+2. The language pipeline runs its normal 1F1B.
+3. The first stage returns each image's feature gradient to the rank that encoded it, and the encoder's gradients are reduced over all ranks.
+
+The encoder trains with a torch optimizer built from the DeepSpeed config, with fp32 master weights and optimizer state split over all ranks.
+
+- `encode_per_microbatch` encodes just ahead of the pipeline's need instead of all at the start, keeping graphs for about 2 × stages microbatches instead of the whole step.
+- Colocation only works for encoders whose output enters through the input embeddings (Qwen3.5). Qwen3-VL's deepstack feeds its first blocks, so it keeps the encoder on the first stage.
+- It matches the unsplit model, but on 32 GB GPUs it's slower than the first-stage placement (4B: 9.66 s vs 8.69 s).
+
+## Balanced cuts
+
+`BalancedTransformerBlocks` picks the contiguous split that minimises the most expensive stage, each stage's cost divided by its GPU count. Ties go to the lowest sum of squared stage costs, so no stage idles.
+
+- A decoder block costs its parameter count.
+- The output head, on the last stage, costs the same way.
+- Embeddings are lookups and cost nothing.
+- The vision encoder costs its parameter count times `vision_token_ratio`, measured from the first batch by `partition.vision_token_ratio`:
+
+```
+ratio = Σ_images patches × (1 + 2 × patches × width / layer_params) / text tokens computed
 ```
 
-Why bother splitting by depth at all? Two reasons. A model too big for one
-GPU has to be split *somehow*, and splitting by depth moves the least data —
-only activations cross between stages, once per boundary, instead of the
-constant chatter that splitting individual layers requires. And second, the
-different parts of a model do very different amounts of work: in our own
-measurements, the stage holding the output head ran at 85% utilization while a
-middle stage sat at 29%. When each stage is its own group of workers, you can
-hand the busy stage more or better GPUs. That per-stage resource knob is the
-reason this project exists.
+The second term in the sum is the encoder's attention over each image: about 4 × patches × width multiply-adds per patch, against 2 × layer_params for its matrix products. The denominator counts text tokens at each microbatch's padded length, not the configured maximum.
 
-## The rules the design follows
+The estimate takes milliseconds and runs no trial steps. It picks the fastest measured cut in both TP2×PP2×DP2 layouts and is one layer off under TP4 ([BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md)). It ignores communication and counts MoE experts in full. `ExplicitCuts` overrides it.
 
-**DeepSpeed and Ray stay untouched.** Not as a preference — as a checked
-invariant. DeepSpeed is pinned to one exact source revision, our GPU
-environments install it *from* that revision, and a `git diff` against the
-pinned checkout proving zero changes is part of the acceptance criteria. This
-forces the design to be honest: if the pipeline can't be built on the public
-APIs of both frameworks, the design is wrong, and we'd rather find that out
-than quietly patch around it. (We never had to patch: the public APIs were
-enough everywhere.)
+## Memory
 
-**The driver never touches tensors.** The user's process holds no weights and
-never receives an activation or gradient. There's a hard technical reason:
-when PyTorch runs a forward pass it builds an invisible record of every
-operation, and running backward later *requires* that record — which cannot
-leave the process it was created in. So whichever worker ran a forward must
-run the matching backward, the loss must be computed on the last stage (the
-labels are shipped there, not the outputs shipped back), and the only things
-that ever return to the driver are loss values and ok/failed statuses.
+- **12 bytes per parameter** of training state under bf16 + ZeRO-1 + fp32 accumulation: bf16 weights, fp32 accumulator, fp32 master, Adam's two moments, the last three split over DP. rdsp sets `bf16.immediate_grad_update` so each bf16 gradient is added into fp32 as soon as autograd produces it, then frees the bf16 copy; DeepSpeed alone only zeroes it, keeping 2 more bytes per parameter. Megatron spends the same 12. On 4B this removed the out-of-memory errors that had forced recompute.
+- **Per-microbatch padding.** With `--pad-per-microbatch`, each microbatch is padded to its own longest row, like Megatron's collator, instead of the whole step being padded to its longest row. On CORD-v2 this cut padded tokens from 1.71 to 1.20 per real token.
+- **Recompute** (`recompute=1` per stage, or `ColocatedVision(recompute=True)`) keeps only each block's input and recomputes the rest in backward.
 
-**The API doesn't pretend.** `rdsp.initialize()` looks like
-`deepspeed.initialize()` on purpose, but where DeepSpeed returns an optimizer
-object, we return `None` — because the real optimizers live inside the
-workers, and handing back a look-alike object whose mutations silently do
-nothing would be worse than returning nothing. For the same reason
-`engine.forward()`, `engine.backward()`, and `engine.step()` raise errors that
-point at `train_batch()`: one training step interleaves dozens of operations
-across all the workers, and there is no single "the forward" for a driver-side
-method to mean. (DeepSpeed's own pipeline engine disables these same methods,
-for the same reason.)
+## Data prefetch
 
-## How one training step works
+With `PipelineConfig(prefetch=True)`, the driver reads the next step's M entries while the current step runs and ships them to the stages ahead of time. For 2B on CORD-v2 that's about 576 MB of images per step, and handing a step to the GPUs fell from 1.1 s to 1 ms.
 
-**Startup (once).** The library reads the config and produces a plan: which
-layers go to which stage, how many microbatches per step, which stage gets how
-many GPUs. Splitting is deterministic — find the model's list of transformer
-blocks, cut it at computed boundaries, give everything before the blocks
-(embeddings) to the first stage and everything after (final norm, output head)
-to the last. Each stage's slice of the model is copied out and shipped to its
-worker, where a normal `deepspeed.initialize()` wraps it.
+- The caller passes the same iterator to every `train_batch()`.
+- `initialize(training_data=...)` rejects prefetch, since rdsp would own the iterator.
+- `load_checkpoint()` drops the step that was read ahead.
 
-One check at this point matters more than it looks: some models make the
-input embedding and the output head share one weight tensor. Split those onto
-different machines and the sharing silently becomes two diverging copies, each
-receiving only half the gradient — we measured exactly this failure in an
-early prototype before writing the check. The library refuses such a split at
-startup rather than training it wrong; for our test model we break the
-sharing explicitly (copy the embedding into the head) before splitting.
+## Loss
 
-**The step itself.** A naive pipeline would push the whole batch through
-stage 0, then stage 1 — each GPU idle while the other works. Instead the
-batch is cut into microbatches that stream through like an assembly line:
-while stage 1 works on microbatch 1, stage 0 is already on microbatch 2. The
-order of operations per stage (forwards and backwards interleaved, so that
-memory for each microbatch is freed as early as possible) is computed up
-front as a simple list per worker.
+- **Default.** `loss_fn(outputs, labels)` returns one rank's loss for one microbatch, and the step loss is the mean over microbatches and DP ranks.
+- **Token mean.** `TokenMeanLoss(sum_fn, count_fn)` averages over every counted token of the step instead, like Megatron's `calculate_per_token_loss`. The driver counts the step's tokens from the labels before dispatch, so each backward already carries its final weight. `per_microbatch=True` trains on per-microbatch means (MegatronMIMO's only mode) and still reports the token mean.
+- **Split-vocabulary loss.** `next_token_loss_sum` declares `takes_vocab_shards`. On a TP last stage, each rank then keeps its slice of the logits, and the ranks exchange the max, the sum of exponentials and the target logit per token, instead of gathering the full 248k-wide logits (2 GB per microbatch for Qwen3.5). Megatron does the same.
 
-The driver then fires all of those operations without waiting for any of
-them, and correctness comes from two things Ray guarantees: a worker executes
-its messages in the order they were sent, and a message that uses another
-worker's output automatically waits for that output to exist. Those two rules
-replace every lock and barrier a hand-rolled version would need. We verified
-the ordering empirically: each worker records the operations it actually
-executed, and the recorded order matches the planned order exactly.
+## Checkpoints
 
-**Backward across the process boundary.** This is the one genuinely tricky
-mechanism. Stage 1's backward pass can only walk back as far as its own
-input; the rest of the model lives in another process. The handoff: stage 0
-sends its output with the graph record stripped (it can't be serialized
-anyway); stage 1 tells PyTorch to treat that received tensor as a starting
-point for gradients; after stage 1's backward, the gradient that accumulated
-on that tensor — "how the loss changes per element of stage 0's output" — is
-sent back, and stage 0 resumes its own backward using it as the seed. It's
-the chain rule, split across two machines.
+Each stage saves with DeepSpeed's own `save_checkpoint`, plus each rank's RNG state. The driver then writes `manifest.json` last and atomically. It holds the plan hash, the step, the data position, and the SHA-256 of every file. A directory without a manifest is an unfinished save and is never loaded.
 
-One wrinkle: DeepSpeed's public backward entry point only accepts a single
-scalar. So stage 0 hands it the number `(out · g).sum()` — a quantity
-constructed so that differentiating it reproduces exactly the incoming
-gradient `g`. We tested this composition in isolation before building
-anything on it: against an unsplit single-process model, gradients came out
-bit-identical, across every DeepSpeed memory-sharding mode (ZeRO 0 through
-3), in bf16, and with gradient accumulation. Two useful discoveries came out
-of that test: DeepSpeed actively *blocks* the more obvious alternative
-(calling `tensor.backward(gradient=...)` directly raises an error under its
-default mode), and once ZeRO shards gradients, the standard `.grad` attribute
-is empty — there's a public accessor function that must be used instead.
+`load_checkpoint()` works in four steps:
+1. Verify the manifest and plan hash.
+2. Rebuild every actor if any died, preferring the same nodes so local files are still there.
+3. Have each stage verify its own files on its node.
+4. Only when every stage passes, load.
 
-**Who presses the optimizer button.** DeepSpeed normally counts backward
-calls and runs the optimizer automatically after N of them. In a pipeline
-that's a hazard: it would update stage 1's weights while stage 0 might still
-fail — and weight updates on separate machines can't be rolled back. So the
-library keeps DeepSpeed's counter at 1, averages the microbatch losses
-itself, and after all backwards are done runs an explicit two-phase finish:
-first ask every stage "are you completely done?", and only when every stage
-says yes, tell every stage to run its optimizer exactly once. A failure
-before that point is a clean error — nothing changed, call again. A failure
-*during* the update phase means some stages updated and some didn't; the
-engine then locks itself and refuses every further call until all stages are
-restored from the last checkpoint, because loudly refusing beats silently
-training a half-updated model.
+A test trains, saves and keeps training, then loads into a pipeline built from different random weights; its losses match bit for bit.
 
 ## How we know it works
 
-One yardstick, applied at every layer of the stack: **the split model must
-produce the same numbers as the unsplit model** — the same losses and the
-same gradients, not just "it runs."
+One yardstick at every level: the split model must produce the unsplit model's numbers.
 
-- The backward handoff alone, against a single-process model: gradients
-  bit-identical (4 GPUs, all ZeRO modes, bf16, accumulation).
-- The full library, training a small model across two Ray workers on a
-  laptop, versus the same model unsplit: losses match to 1e-7 at every one
-  of five steps. This is `python demo.py` — it prints both loss columns
-  side by side and takes about 30 seconds, no GPU needed.
-- The full library on real hardware: Qwen3-0.6B (28 layers) split across two
-  GPUs, real DeepSpeed engines in bf16 — evaluation and training losses match
-  the unsplit single-GPU model, and training converges. The whole acceptance
-  run takes 76 seconds.
-- After all of the above: `git diff` against the pinned DeepSpeed source is
-  empty, and Ray was never touched.
+- **CPU suite** (~430 tests). The full runtime runs on Ray with a stub engine:
+  - schedules and boundary routing;
+  - exact data consumption;
+  - the failure contract;
+  - checkpoint round trips;
+  - 24 HF families trained through `rdsp.initialize()` against the unsplit model;
+  - the import-time guarantee that `import ray_deepspeed_pipeline` pulls in neither Ray nor DeepSpeed.
+- **GPU suite on Modal.** Every supported layout in [CONTRACTS.md](CONTRACTS.md) with real DeepSpeed and NCCL, on fp32 tiny models. Each run checks:
+  - loss parity within 1e-4;
+  - per-parameter update parity;
+  - checkpoint resume;
+  - a killed rank recovering through `load_checkpoint()`.
 
-The library also carries a large test suite for the unglamorous parts —
-the exact-consumption rule (a step uses exactly N microbatches; too few fails
-cleanly, extras are left untouched), the eval path (provably changes no
-weight), the API's refusals, and the guarantee that importing the library
-pulls in neither ray nor deepspeed until they're actually needed.
+**Why SGD, not Adam, in parity tests.** The first parity test used Adam, which normalizes away a uniformly wrong gradient scale: a stage receiving half its true gradient still trained identically, and a deliberately broken build passed. The tests now use SGD with momentum, and refuse to run unless each step moves the loss by at least 20× the tolerance. That stricter test found four real bugs, all fixed:
 
-## Saving and recovering the whole pipeline
-
-A pipeline checkpoint has to be *one* consistent moment across every
-worker. Each stage still saves itself with DeepSpeed's ordinary
-`save_checkpoint` (weights, optimizer, learning-rate schedule), into its own
-folder. What the library adds is the part that makes those folders belong
-together:
-
-- **A manifest, written last.** When every rank of every stage reports back,
-  the driver writes one small file listing each stage, each rank, a
-  fingerprint (sha256) of every file, the plan it was written by, the
-  training step, and where in the data the run was. A folder without that
-  file is an unfinished save and is never loaded. So a crash halfway
-  through saving can never leave a half-new, half-old checkpoint that looks
-  valid. The previous checkpoint simply stays the latest one.
-- **Everything needed to continue *exactly*.** Each worker also saves its
-  random-number state (so dropout masks continue where they left off) and the
-  driver records how many batches the data loader had handed out. A test
-  proves the point: train, save, keep training; then build a brand-new
-  pipeline from *different* random weights, load, and train. Its losses
-  match the original run bit-for-bit.
-- **Loading checks before it touches anything.** A checkpoint written for a
-  different split of the model, or with a missing or altered file, is
-  rejected before any worker changes. Each stage re-checks its own files on
-  its own machine (stages on other machines keep their files on local
-  disk), and only when *every* stage has passed does any stage load.
-- **Recovery rebuilds everything.** If a worker died, loading tears the whole
-  pipeline down and rebuilds it (preferring the same machines, so their
-  local checkpoint files are still there), then loads. This is also the only
-  way out of the locked state described above.
-
-Two correctness details surfaced while building this, both now tested:
-
-- **A failed step must leave no trace.** If a step dies halfway through its
-  backward passes, some gradients have already been added up inside
-  DeepSpeed. Retrying without clearing them would count them twice. Workers
-  now discard everything from an abandoned step (including one internal
-  running sum that DeepSpeed's own "zero the gradients" call misses) and
-  rewind their random-number state to where that step began. The retried
-  step's numbers equal a clean step's exactly, under every ZeRO mode.
-- **Gradient clipping is off unless global.** DeepSpeed clips gradients by
-  default. Inside one stage that means clipping by *that stage's* gradient
-  size, which is a different algorithm from clipping a whole model. The
-  library turns DeepSpeed's default off for every stage and rejects an
-  explicit clipping setting, until true whole-pipeline clipping exists.
-
-## Giving each stage its own shape
-
-The point of the project is that stages need not be alike: the stage with
-the output head does far more work, so it should get more GPUs. A stage can
-now use several GPUs in any of four ways, each an ordinary DeepSpeed
-feature running inside that stage alone:
-
-| way to use more GPUs in a stage | what each GPU gets |
-|---|---|
-| data parallel (with any ZeRO memory mode) | a different slice of the rows |
-| tensor parallel (DeepSpeed AutoTP) | the same rows; each GPU holds a slice of every weight matrix |
-| sequence parallel (DeepSpeed Ulysses) | the same rows, a different stretch of the sequence |
-| expert parallel (DeepSpeed AutoEP), optionally "folded" with tensor parallel | a different slice of the rows; each GPU holds some of the experts |
-
-**Moving data between differently shaped stages.** If stage 1 splits each
-batch 2 ways and stage 2 splits it 4 ways, the halves have to become
-quarters on the way. Each receiving GPU asks for exactly the pieces that
-overlap its own slice and stitches them together. Nothing is ever gathered
-in one place. The same routine runs in reverse for gradients.
-
-**Keeping gradients right across the boundary.** DeepSpeed *averages*
-gradients over the GPUs that split rows, but *adds* them over GPUs that
-split the sequence. So a gradient passed from a 4-way stage to a 2-way
-stage must be rescaled, or one stage learns at the wrong speed. The
-library applies that factor at every boundary.
-
-**How the new shapes are checked.** Every row of the support table below
-runs the same acceptance test on real GPUs, with the same four checks:
-
-- the losses match an unsplit single-process model;
-- each step consumes exactly the right number of batches;
-- a checkpoint loads into a fresh pipeline and continues identically;
-- killing one GPU's worker leads to a clean error and then full recovery.
-
-The tensor-, sequence- and expert-parallel rows also compare, parameter by
-parameter, how much each weight moved in one step against the unsplit model.
-
-We learned to be careful about *how* to compare. The first version of the
-test used the Adam optimizer. Adam ignores a gradient that is uniformly too
-big or too small, so a stage receiving half its true gradient still
-trained identically. A deliberately broken build passed. The test now uses
-plain SGD with momentum, where any gradient error shows up. It also refuses
-to run unless each step moves the loss by at least 20 times the tolerance,
-so an error can't hide inside it.
-
-That stricter test found four real problems, all fixed:
-
-- **Only the last microbatch counted (ZeRO 1/2).** When a stage holds
-  gradients sharded across GPUs, DeepSpeed was replacing, not adding, the
-  gradient of each microbatch, so the optimizer saw only the last one.
-- **Tensor parallel with Qwen3.** Qwen3 normalizes each attention head
-  separately. With tensor parallel, each GPU only saw its own heads' share
-  of that weight's gradient, and the GPUs slowly disagreed.
-- **The sequence-parallel scale factor** above was first applied the wrong
-  way, doubling updates.
-- **Expert-parallel "folding"** leaves each GPU holding a different partial
-  gradient, which only DeepSpeed's own bookkeeping reconciles. The
-  gradient handed to the previous stage was one GPU's partial. It is now
-  averaged across those GPUs first.
-
-**Support table** (every row: real DeepSpeed, Modal 8×L4, fp32 tiny models
-so that "matches" can mean within 1 part in 10,000):
-
-| row | stages (GPUs) | status | how closely it matches the unsplit model |
-|---|---|---|---|
-| first row (P6) | 1 · 1, Qwen3-0.6B bf16 | supported | losses within bf16 rounding |
-| static boundary | 1 · 2 (split rows) · 1 | supported | losses 1e-4 |
-| resource mesh | 2 · 4 · 2 | supported | losses 1e-4 |
-| data parallel + ZeRO | 4 (ZeRO-2) · 2 (ZeRO-1) · 2 (ZeRO-0) | supported | losses 1e-4 |
-| tensor parallel | 1 · 2 (TP) · 4 (TP×DP) | supported | losses 1e-4; every weight's update within 2.4e-5 |
-| sequence parallel | 2 (SP) · 4 (SP×DP) · 1 | supported | losses 1e-4; every weight's update within 2.4e-5 |
-| expert parallel + folding | 1 · 4 (EP) · 2 (EP folded with TP) | supported | losses 1e-4; weight updates within 3e-4 |
-| four kinds combined, 8 GPUs | 2 (SP) · 2 (TP) · 2 (EP+TP) · 2 (TP) | passes (not a table row) | losses 1e-4; weight updates within 2.4e-5 |
-| the design doc's 32-GPU topology | 8 · 8 · 8 · 8 on 4 machines | **not run** | blocked: the Modal account allows 10 GPUs at once |
-
-Each passing row also passed the checkpoint and GPU-failure checks.
+- Under ZeRO-1/2, DeepSpeed replaced instead of accumulating each microbatch's sharded gradient.
+- Qwen3's per-head q/k norms drifted across TP ranks.
+- The SP gradient scale was applied inverted.
+- AutoEP folding sent upstream one rank's partial gradient instead of the average.
 
 ## Honest edges
 
-- **Models the splitter understands.** Plain layer stacks, and HF
-  Llama-style models (Qwen, Llama) through a dedicated stage type. Other
-  architectures need their own.
-- **Sequence parallelism never sits on the last stage.** The loss there
-  would need labels that straddle two GPUs' stretches of the sequence.
-- **Tensor and sequence parallelism can't share a stage.** This is a
-  DeepSpeed limitation.
-- **One stage fits on one machine** (up to 8 GPUs). That keeps each stage's
-  fast communication and its checkpoint files on a single machine.
-- **Checkpoints on local disks survive worker crashes, not machine loss.**
-  Surviving a lost machine needs a shared checkpoint folder.
-- **No gradient clipping yet** (see above).
+- **SP.**
+  - Never on the last stage: its labels would straddle ranks.
+  - Never on the first stage of a vision model: image positions need the whole sequence.
+- **TP and SP** can't share a stage (a DeepSpeed limitation).
+- **Placement.** One stage fits on one node.
+- **Checkpoints.** Node-local: they survive actor loss, not node loss.
+- **No global gradient clipping.** DeepSpeed would clip each stage by its own norm, a different algorithm, so a nonzero `gradient_clipping` is rejected.
+- **Untested at scale.**
+  - The multi-node path is tested on Ray, not on real multi-node hardware.
+  - The 32-GPU four-stage layout hasn't run: the Modal account caps at 10 GPUs.
 
-## Who runs the schedule
+## Profiling
 
-The first design had the driver send every forward and every backward to
-every stage as a separate Ray call, and let Ray carry the tensors between
-them. It was simple and correct, but profiling on 8 GPUs showed ~5 ms of
-Ray overhead per call. With hundreds of calls per step, that overhead,
-not the GPUs, set the pace (see `BENCHMARK_RESULTS.md`).
+- `RDSP_PROFILE=1` (or `train_vl.py --profile`) prints, per rank and step, the time in forward, backward, waiting on neighbours and the optimizer step. It synchronizes the GPU per reading, so steps run slower.
+- `RDSP_TORCH_PROFILE=<step>` (0-based) writes a torch profiler kernel table for that step to `/tmp/rdsp_torch_profile_stage<s>_rank<r>.txt`.
 
-Now each stage gets **one** command per step: its whole list of forwards
-and backwards, in 1F1B order. Every GPU works through its list on its own
-and hands activations and gradients straight to its neighbours over direct
-GPU-to-GPU links (two extra NCCL groups per GPU, one per direction, next to
-the stage's own DeepSpeed world). The layout conversions between
-differently shaped stages and the gradient scaling are the same as before,
-just computed by each GPU for its own neighbours.
+## Running the tests
 
-Guarantees that are unchanged:
-
-- identical numbers to the old path (tested bit for bit on CPU);
-- the all-stage "everyone done → everyone step" barrier;
-- the failure contract. If a step fails midway, it fails cleanly, the links
-  are rebuilt, and a retry equals a clean step. A dead GPU worker still
-  means recovery via `load_checkpoint`.
-
-The driver-dispatched path was removed on 2026-09-26. Before removal, its losses
-were recorded as a fixed reference that the stage-local path must reproduce
-exactly (`test_losses_match_recorded_reference`).
-
-## Moving tensors without the CPU
-
-Stage-local dispatch moves tensors GPU-to-GPU over rdsp's own NCCL groups.
-The removed driver dispatch sent a stage's output GPU → CPU → Ray's object
-store → CPU → next GPU, with Ray Direct Transport (`RDSP_TRANSPORT=nccl`) as
-an option that kept it on the GPU. Both went with the driver path.
-
-## Reproduce everything
-
-From the repository root (GPU commands are billed):
-
-```
-python demo.py             # laptop, ~30s: pipeline vs unsplit, side by side
-pytest -q                  # the full CPU suite
-modal run scripts/modal_tests.py --gpus L4:2 --tests tests/integration/test_p6_first_row.py
-modal run scripts/modal_tests.py --gpus L4:2 --tests tests/integration/test_p7_checkpoint_gpu.py
+```bash
+python demo.py           # CPU, ~30 s: pipeline vs unsplit losses side by side
+pytest -q                # CPU suite; GPU tests skip
+modal run scripts/modal_tests.py --gpus L4:2 --tests tests/integration/test_two_stage_baseline.py
+modal run scripts/modal_tests.py --gpus L4:2 --tests tests/integration/test_checkpoint_gpu.py
 modal run scripts/modal_tests.py --gpus L4:8 --tests tests/integration/test_heterogeneous_pipeline.py
-modal run scripts/modal_cluster.py --tests "tests/integration/test_heterogeneous_pipeline.py -k four-stage-mixed"
 ```
+
+GPU runs are billed.
