@@ -15,6 +15,7 @@ from test_partition import ToyLM
 
 from ray_deepspeed_pipeline.config import UniformTransformerBlocks
 from ray_deepspeed_pipeline.deepspeed_adapter import DeepSpeedStageAdapter
+from ray_deepspeed_pipeline.errors import CheckpointError, ValidationError
 from ray_deepspeed_pipeline.partition import build_stage_module, partition_parameters
 
 N_MB, ROWS, SEQ, VOCAB = 4, 2, 6, 20
@@ -143,7 +144,7 @@ def make_data():
 
 def test_loss_fn_only_on_terminal():
     model = ToyLM()
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValidationError, match="terminal stage"):
         parts = partition_parameters(model, UniformTransformerBlocks(), 2)
         m = build_stage_module(model, parts[0].block_start,
                                parts[0].block_stop, parts[0].parameter_names)
@@ -263,3 +264,9 @@ def test_abandoned_generation_clears_offloaded_gradient_sums():
     optimizer.micro_step_id = 0
     a0.begin_generation()
     assert optimizer.accumulated_grads_in_cpu == {} and optimizer.micro_step_id == -1
+
+
+def test_loading_a_missing_shard_is_a_checkpoint_error(tmp_path):
+    first, _, _ = make_adapters(ToyLM())
+    with pytest.raises(CheckpointError, match="no checkpoint"):
+        first.load_shard(str(tmp_path), "missing")

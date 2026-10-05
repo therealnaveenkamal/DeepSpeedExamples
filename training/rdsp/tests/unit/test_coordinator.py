@@ -4,7 +4,7 @@ import pytest
 from test_schedule import make_plan
 
 from ray_deepspeed_pipeline.coordinator import PipelineCoordinator
-from ray_deepspeed_pipeline.errors import PipelinePoisoned, StepFailed
+from ray_deepspeed_pipeline.errors import PipelinePoisoned, StepFailed, ValidationError
 
 
 class FakeStageWorker:
@@ -230,3 +230,18 @@ def test_prefetch_reports_an_exhausted_iterator_on_the_step_that_needs_it():
     coord.train_batch(data)  # reading ahead finds only one entry: not this step's problem
     with pytest.raises(StepFailed, match="exhausted"):
         coord.train_batch(data)
+
+
+def test_a_missing_stage_client_is_a_validation_error():
+    plan = make_plan(2, 2)
+    with pytest.raises(ValidationError, match="stage clients"):
+        PipelineCoordinator(plan, [FakeStageWorker(0, False)])
+
+
+def test_engine_reports_each_stages_blocks():
+    """Which transformer blocks each stage holds, e.g. to log the cut."""
+    from ray_deepspeed_pipeline.engine import RayPipelineEngine
+
+    coord, _ = build(stages=2)
+    blocks = RayPipelineEngine(coord).stage_blocks
+    assert len(blocks) == 2 and blocks[0][0] == 0 and blocks[0][1] == blocks[1][0]

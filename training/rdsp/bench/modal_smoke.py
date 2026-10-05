@@ -68,7 +68,7 @@ def smoke():
                            "--pipeline-model-parallel-layout' | head")
     results["rdsp_install"] = _sh("pip install -e /root/rdsp")
     results["rdsp_acceptance"] = _sh("cd /root/rdsp && python -m pytest -q -x "
-                             "tests/integration/test_p6_first_row.py 2>&1 | tail -5")
+                             "tests/integration/test_two_stage_baseline.py 2>&1 | tail -5")
     results["megatron_pp2"] = _sh(
         "cd /root/rdsp/bench && PP=2 M=4 SEQ=512 ITERS=20 VARIANT=plain "
         "MEGATRON=/opt/Megatron-LM bash megatron_pretrain.sh 2>&1 | "

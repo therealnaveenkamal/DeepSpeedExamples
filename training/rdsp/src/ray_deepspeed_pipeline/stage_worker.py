@@ -143,11 +143,12 @@ class StageWorkerActor:
         from ray_deepspeed_pipeline.partition import compile_blocks, recompute_blocks
         from ray_deepspeed_pipeline.vision import ColocatedVisionEngine
 
-        tower, recompute, compile_, self._vision_per_microbatch = vision
+        tower, spec = vision  # the tower and its plan.VisionSpec
+        self._vision_per_microbatch = spec.encode_per_microbatch
         load_meta_parameters(tower, weights)
-        if recompute:
+        if spec.recompute:
             recompute_blocks(tower)
-        if compile_:
+        if spec.compile:
             compile_blocks(tower)
         self.vision = ColocatedVisionEngine(tower, json.loads(ds_config_json),
                                             self.adapter.device)

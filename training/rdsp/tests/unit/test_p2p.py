@@ -93,3 +93,18 @@ def test_microbatches_of_different_lengths_cross_in_one_step():
     for mb, (h, e) in enumerate(got):
         assert torch.equal(h, hidden[mb])
         assert torch.equal(e["position_embeddings.0"], extras[mb]["position_embeddings.0"])
+
+
+def test_boundary_limits_are_validation_errors():
+    """Limits a user's model can hit raise the user-facing error type."""
+    import pytest
+
+    from ray_deepspeed_pipeline.errors import ValidationError
+    from ray_deepspeed_pipeline.p2p import _encode
+
+    with pytest.raises(ValidationError, match="7 dims"):
+        _encode(torch.zeros([1] * 8))
+    p2p = PipelineP2P.__new__(PipelineP2P)
+    with pytest.raises(ValidationError, match="extra tensors"):
+        p2p.send_boundary("fwd", torch.zeros(1), {str(i): torch.zeros(1) for i in range(63)},
+                          1, 0)

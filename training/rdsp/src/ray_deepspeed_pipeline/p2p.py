@@ -27,11 +27,13 @@ import datetime
 import torch
 import torch.distributed as dist
 
+from ray_deepspeed_pipeline.errors import ValidationError
+
 _DTYPES = [torch.float32, torch.bfloat16, torch.float16, torch.float64, torch.int64,
            torch.bool, torch.int32, torch.int16]
 _HEADER_LEN = 10  # dtype code, ndim, up to 7 dims, extras count
 _SLOTS = 64  # messages per microbatch and direction: hidden, extras' names, extras
-_SIZED_TAGS = 1 << 24  # sized messages (colocated vision) use tags from here on
+_SIZED_TAGS = 1 << 24  # CPU-group messages (colocated vision) use tags from here on
 
 
 def _tag(mb: int, slot: int) -> int:
@@ -40,7 +42,8 @@ def _tag(mb: int, slot: int) -> int:
 
 def _encode(t: torch.Tensor, n_extras: int = 0) -> torch.Tensor:
     header = [_DTYPES.index(t.dtype), t.dim(), *t.shape]
-    assert len(header) < _HEADER_LEN, f"boundary tensors have at most 7 dims, got {t.dim()}"
+    if len(header) >= _HEADER_LEN:
+        raise ValidationError(f"boundary tensors have at most 7 dims, got {t.dim()}")
     header += [0] * (_HEADER_LEN - 1 - len(header)) + [n_extras]
     return torch.tensor(header, dtype=torch.int64)
 
@@ -139,24 +142,6 @@ class PipelineP2P:
         pg.recv([buf], peer, _tag(mb, slot) + 1).wait()
         return buf
 
-    def send_sized(self, direction: str, t: torch.Tensor, peer: int, key: int) -> None:
-        """A tensor whose shape the receiver does not know: its header goes
-        with it every time. key: a per-step message number both ends agree on."""
-        pg, t = self._pg(direction), t.detach().contiguous()
-        header = _encode(t).to(self.device)
-        tag = _SIZED_TAGS + 2 * key
-        self._pending.append((pg.send([header], peer, tag), header))
-        self._pending.append((pg.send([t], peer, tag + 1), t))
-
-    def recv_sized(self, direction: str, peer: int, key: int) -> torch.Tensor:
-        pg, tag = self._pg(direction), _SIZED_TAGS + 2 * key
-        header = torch.empty(_HEADER_LEN, dtype=torch.int64, device=self.device)
-        pg.recv([header], peer, tag).wait()
-        dtype, shape, _ = _decode(header.cpu())
-        buf = torch.empty(shape, dtype=dtype, device=self.device)
-        pg.recv([buf], peer, tag + 1).wait()
-        return buf
-
     def send_cpu(self, t: torch.Tensor, peer: int, key: int) -> None:
         """A tensor over the gloo group, staged through host memory, with its
         header; returns at once. key: a per-step message number both ends
@@ -184,7 +169,8 @@ class PipelineP2P:
     def send_boundary(self, direction: str, hidden: torch.Tensor, extras: dict,
                       peer: int, mb: int) -> None:
         """The hidden state plus named extra tensors, which carry no gradient."""
-        assert len(extras) <= _SLOTS - 2, f"at most {_SLOTS - 2} extra tensors"
+        if len(extras) > _SLOTS - 2:
+            raise ValidationError(f"at most {_SLOTS - 2} extra tensors, got {len(extras)}")
         self.send(direction, hidden, peer, mb, n_extras=len(extras))
         if extras and (direction, peer, 1) not in self._announced:
             names = list(",".join(extras).encode())

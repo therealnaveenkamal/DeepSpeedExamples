@@ -7,7 +7,6 @@ import pytest
 
 from ray_deepspeed_pipeline.plan import (
     SCHEMA_VERSION,
-    CheckpointSpec,
     ExecutionPlan,
     FailureSpec,
     ScheduleSpec,
@@ -26,10 +25,8 @@ def make_plan(microbatches=4):
         schema_version=SCHEMA_VERSION,
         global_microbatches=microbatches,
         stages=stages,
-        connections=(StageConnection(source=0, dest=1, conversion="identity",
-                                     buffer_limit=2),),
+        connections=(StageConnection(source=0, dest=1, conversion="identity"),),
         schedule=ScheduleSpec(kind="1f1b", global_microbatches=microbatches),
-        checkpoint=CheckpointSpec(save_optimizer_state=True),
         failure=FailureSpec(poison_on_partial_apply=True),
     )
 

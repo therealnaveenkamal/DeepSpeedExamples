@@ -383,9 +383,6 @@ class ColocatedVisionEngine:
         state["scheduler"] = self.scheduler.state_dict() if self.scheduler else None
         return state
 
-    def save(self, path: str) -> None:
-        torch.save(self.full_state(), path)
-
     def load(self, path: str, optimizer: bool = True, scheduler: bool = True) -> None:
         """Restore a full_state() checkpoint; each rank takes its slice on its
         next step."""

@@ -27,6 +27,11 @@ class StagePartition:
     block_stop: int
 
 
+
+def vision_config(model):
+    """The model's vision encoder config (HF `config.vision_config`), or None."""
+    return getattr(getattr(model, "config", None), "vision_config", None)
+
 def find_block_list(model: nn.Module) -> tuple[str, nn.ModuleList]:
     """(name, module) of the longest ModuleList whose children share one
     class. Raises ValidationError if there is none, or a tie."""
@@ -55,7 +60,7 @@ def find_block_list(model: nn.Module) -> tuple[str, nn.ModuleList]:
 
 
 def _vision_encoder_path(model: nn.Module) -> str | None:
-    if getattr(getattr(model, "config", None), "vision_config", None) is None:
+    if vision_config(model) is None:
         return None
     from ray_deepspeed_pipeline.vision import find_vision_encoder
     try:
@@ -98,7 +103,7 @@ def vision_injection_depth(model: nn.Module) -> int:
     """Number of leading blocks that receive vision features straight from
     the vision encoder (Qwen3-VL's deepstack), which must share the first
     stage with it; 0 for other models."""
-    vision = getattr(getattr(model, "config", None), "vision_config", None)
+    vision = vision_config(model)
     return len(getattr(vision, "deepstack_visual_indexes", None) or ())
 
 
@@ -226,7 +231,7 @@ def partition_parameters(model: nn.Module, policy, stages: int,
         cuts = _balanced_cuts((pre, per_block, post), stages,
                               vision_injection_depth(model), stage_gpus or (1,) * stages)
     else:
-        vision = getattr(getattr(model, "config", None), "vision_config", None) is not None
+        vision = vision_config(model) is not None
         cuts = _cuts_for(policy, len(blocks), stages, vision) if stages > 1 else []
     bounds = [0] + cuts + [len(blocks)]
 

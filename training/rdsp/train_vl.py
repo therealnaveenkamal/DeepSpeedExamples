@@ -118,12 +118,12 @@ _EXPORTED_KEYS = ("input_ids", "attention_mask", "mm_token_type_ids")
 
 
 def exported_microbatches(directory: str, rows: int, pad_multiple: int = 0,
-                          per_microbatch: bool = False):
+                          pad_per_microbatch: bool = False):
     """(inputs, labels) microbatches of `rows` consecutive samples from an
     exported directory, step file by step file: the order and grouping
     Megatron's sequential sampler gives a global microbatch. pad_multiple:
     cut each step's padding to its longest row rounded up to this multiple
-    (a step's microbatches share one length). per_microbatch: cut each
+    (a step's microbatches share one length). pad_per_microbatch: cut each
     microbatch to its own longest row instead, as Megatron's collate does
     (the pipeline then sends every boundary with its shape)."""
     for path in sorted(glob.glob(os.path.join(directory, "step_*.pt"))):
@@ -131,16 +131,12 @@ def exported_microbatches(directory: str, rows: int, pad_multiple: int = 0,
         if len(samples) % rows:
             raise ValueError(f"{path}: {len(samples)} samples do not split into "
                              f"microbatches of {rows} rows")
-        length = samples[0]["input_ids"].shape[1]
-        if pad_multiple:
-            longest = max(int(s["attention_mask"].sum()) for s in samples)
-            length = min(length, -(-longest // pad_multiple) * pad_multiple)
+        exported = samples[0]["input_ids"].shape[1]
+        length = _padded_length(samples, pad_multiple, exported)
         for start in range(0, len(samples), rows):
             group = samples[start:start + rows]
-            if pad_multiple and per_microbatch:
-                longest = max(int(s["attention_mask"].sum()) for s in group)
-                length = min(samples[0]["input_ids"].shape[1],
-                             -(-longest // pad_multiple) * pad_multiple)
+            if pad_per_microbatch:
+                length = _padded_length(group, pad_multiple, exported)
             inputs = {k: torch.cat([s[k][:, :length] for s in group]) for k in _EXPORTED_KEYS}
             inputs["pixel_values"] = [s["pixel_values"] for s in group]
             inputs["image_grid_thw"] = [s["image_grid_thw"] for s in group]
@@ -159,11 +155,17 @@ def drop_padding_mask(inputs: dict) -> dict:
     return {k: v for k, v in inputs.items() if k != "attention_mask"}
 
 
-def token_loss_sum(logits, labels):
-    """Summed next-token loss over the caption tokens of some rows."""
-    return F.cross_entropy(logits[:, :-1].float().reshape(-1, logits.shape[-1]),
-                           labels[:, 1:].reshape(-1).to(logits.device), ignore_index=-100,
-                           reduction="sum")
+def _padded_length(samples, pad_multiple: int, exported: int) -> int:
+    """The samples' longest real row rounded up to pad_multiple, at most the
+    exported length; the exported length when pad_multiple is 0."""
+    if not pad_multiple:
+        return exported
+    longest = max(int(s["attention_mask"].sum()) for s in samples)
+    return min(exported, -(-longest // pad_multiple) * pad_multiple)
+
+
+# summed next-token loss over the caption tokens of some rows
+token_loss_sum = rdsp.next_token_loss_sum
 
 
 def token_loss_sum_liger(logits, labels):
@@ -357,7 +359,6 @@ def main(argv=None):
         partition = rdsp.ExplicitCuts(tuple(int(c) for c in args.cuts.split(",")))
 
     if args.profile:
-        import os
         os.environ["RDSP_PROFILE"] = "1"  # before ray.init: actors inherit it
     loss_fn = loss_function(args)
     if args.liger:
@@ -367,14 +368,13 @@ def main(argv=None):
         stages=args.stages, partition=partition, stage_overrides=tuple(args.stage),
         colocated_vision=(rdsp.ColocatedVision(recompute=args.vision_recompute,
                                                compile=args.vision_compile,
-                                               per_microbatch=args.vision_per_microbatch)
+                                               encode_per_microbatch=args.vision_per_microbatch)
                           if args.colocated_vision else None),
         prefetch=args.prefetch)
     engine, _, _, _ = rdsp.initialize(
         model=skeleton, config=ds_config(args), loss_fn=loss_fn, weights=weights,
         pipeline_config=pipeline_config)
-    cuts = [(s.block_start, s.block_stop) for s in engine._coordinator._plan.stages]
-    print(f"stages (blocks): {cuts}", flush=True)
+    print(f"stages (blocks): {engine.stage_blocks}", flush=True)
 
     if reference is not None:
         piped = float(engine.eval_batch(data_iter=iter(first)))

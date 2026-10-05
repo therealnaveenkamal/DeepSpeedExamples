@@ -49,11 +49,6 @@ PartitionConfig = (UniformTransformerBlocks | UniformSequential | BalancedTransf
 
 
 @dataclass(frozen=True)
-class CheckpointPolicy:
-    save_optimizer_state: bool = True
-
-
-@dataclass(frozen=True)
 class StageOverride:
     """Per-stage GPU count, parallelism and memory settings.
 
@@ -92,7 +87,7 @@ class ColocatedVision:
     and scheduler, with fp32 master weights and optimizer state split over
     all ranks. recompute: keep only each encoder block's input for backward.
     compile: torch.compile each encoder block (shapes dynamic).
-    per_microbatch: in training, encode each microbatch's images just ahead
+    encode_per_microbatch: in training, encode each microbatch's images just ahead
     of the pipeline's need and backpropagate them as soon as their gradients
     exist, instead of all at the start and end of the step: a rank keeps
     graphs for about 2 x stages microbatches' images instead of the step's,
@@ -101,7 +96,7 @@ class ColocatedVision:
 
     recompute: bool = False
     compile: bool = False
-    per_microbatch: bool = False
+    encode_per_microbatch: bool = False
 
 
 @dataclass(frozen=True)
@@ -110,7 +105,6 @@ class ConnectionOverride:
     dest: int
     # None: derived from the two stages' layouts; if given, must match it.
     conversion: str | None = None
-    buffer_limit: int = 2
 
 
 @dataclass(frozen=True)
@@ -119,7 +113,6 @@ class PipelineConfig:
     partition: PartitionConfig
     schedule: str = "1f1b"
     microbatches: int | None = None
-    checkpoint: CheckpointPolicy | None = None
     stage_overrides: tuple[StageOverride, ...] = ()
     connection_overrides: tuple[ConnectionOverride, ...] = ()
     colocated_vision: ColocatedVision | None = None

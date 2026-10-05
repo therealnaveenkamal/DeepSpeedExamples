@@ -256,7 +256,7 @@ def test_colocated_vision_matches_unsplit_model(ray_ctx, stub_engines, cuts, ove
     model, reference = qwen3_5_vl_pair(seed=8)
     expected = unsplit_losses(reference, make_batches(), steps=3)
     got = pipelined_losses(model, cuts, steps=3, overrides=overrides,
-                           colocated_vision=rdsp.ColocatedVision(per_microbatch=per_microbatch))
+                           colocated_vision=rdsp.ColocatedVision(encode_per_microbatch=per_microbatch))
     assert got == pytest.approx(expected, rel=1e-4)
 
 

@@ -141,37 +141,37 @@ def S(i, n, **kw):
 
 ROWS = [
     # replicate -> shard -> replicate: 1 GPU, 2-way DP, 1 GPU
-    Row("p8-static-boundary", (S(0, 1), S(1, 2), S(2, 1)), cpu_ok=True),
+    Row("static-boundary", (S(0, 1), S(1, 2), S(2, 1)), cpu_ok=True),
     # differing GPU counts and shard-to-shard boundaries (2 -> 4 -> 2)
-    Row("p8-resource-mesh", (S(0, 2), S(1, 4), S(2, 2)), cpu_ok=True),
+    Row("resource-mesh", (S(0, 2), S(1, 4), S(2, 2)), cpu_ok=True),
     # differing DP degrees AND ZeRO stages per stage
-    Row("p8-dp-zero", (S(0, 4, zero_stage=2), S(1, 2, zero_stage=1),
+    Row("dp-zero", (S(0, 4, zero_stage=2), S(1, 2, zero_stage=1),
                        S(2, 2, zero_stage=0)), cpu_ok=True),
     # optimizer state in host memory on the ZeRO stages, mixed with a plain one
-    Row("p8-optimizer-offload", (S(0, 2, zero_stage=2, offload_optimizer=True),
+    Row("optimizer-offload", (S(0, 2, zero_stage=2, offload_optimizer=True),
                                  S(1, 2, zero_stage=1, offload_optimizer=True), S(2, 1))),
     # stage-local AutoTP (tp=2 and tp=2 x dp=2) on a real HF architecture
-    Row("p8-autotp", (S(0, 1), S(1, 2, tp=2), S(2, 4, tp=2)), model="qwen3"),
+    Row("autotp", (S(0, 1), S(1, 2, tp=2), S(2, 4, tp=2)), model="qwen3"),
     # stage-local Ulysses sequence parallelism (sp=2, and sp=2 x dp=2)
-    Row("p8-sequence-parallel", (S(0, 2, sp=2), S(1, 4, sp=2), S(2, 1)),
+    Row("sequence-parallel", (S(0, 2, sp=2), S(1, 4, sp=2), S(2, 1)),
         model="qwen3"),
     # stage-local AutoEP (ep=4) with and without Parallel Folding (tp=2)
-    Row("p8-autoep-folding", (S(0, 1), S(1, 4, ep=4), S(2, 2, ep=2, tp=2, fold=True)),
+    Row("autoep-folding", (S(0, 1), S(1, 4, ep=4), S(2, 2, ep=2, tp=2, fold=True)),
         model="qwen3moe", moe_layers=(3, 4, 5, 6, 7)),
     # the same three intra-stage layouts on HFModelStage (the model's own forward)
-    Row("p8-hf-autotp", (S(0, 1), S(1, 2, tp=2), S(2, 4, tp=2)), model="qwen3", builder="hf"),
-    Row("p8-hf-sequence-parallel", (S(0, 2, sp=2), S(1, 4, sp=2), S(2, 1)),
+    Row("hf-autotp", (S(0, 1), S(1, 2, tp=2), S(2, 4, tp=2)), model="qwen3", builder="hf"),
+    Row("hf-sequence-parallel", (S(0, 2, sp=2), S(1, 4, sp=2), S(2, 1)),
         model="qwen3", builder="hf"),
-    Row("p8-hf-autoep-folding", (S(0, 1), S(1, 4, ep=4), S(2, 2, ep=2, tp=2, fold=True)),
+    Row("hf-autoep-folding", (S(0, 1), S(1, 4, ep=4), S(2, 2, ep=2, tp=2, fold=True)),
         model="qwen3moe", moe_layers=(3, 4, 5, 6, 7), builder="hf"),
     # the target composed topology, 32 GPUs on 4 nodes (one stage per node);
     # MoE layers only where the EP stage is (layers 4-5 = stage 2)
-    Row("p8-four-stage-mixed", (S(0, 8, sp=2, zero_stage=2), S(1, 8, tp=4, zero_stage=1),
+    Row("four-stage-mixed", (S(0, 8, sp=2, zero_stage=2), S(1, 8, tp=4, zero_stage=1),
                                 S(2, 8, ep=8, tp=2, fold=True), S(3, 8, tp=2)),
         model="qwen3moe", moe_layers=(4, 5)),
     # the same four stage KINDS composed at 8-GPU scale (fits one node, or two
     # 4-GPU nodes): composition evidence, not the 32-GPU row itself
-    Row("p8-four-stage-mixed-mini", (S(0, 2, sp=2, zero_stage=2), S(1, 2, tp=2, zero_stage=1),
+    Row("four-stage-mixed-mini", (S(0, 2, sp=2, zero_stage=2), S(1, 2, tp=2, zero_stage=1),
                                      S(2, 2, ep=2, tp=2, fold=True), S(3, 2, tp=2)),
         model="qwen3moe", moe_layers=(4, 5)),
 ]

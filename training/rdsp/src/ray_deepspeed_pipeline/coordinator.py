@@ -23,6 +23,7 @@ from ray_deepspeed_pipeline.errors import (
     PipelinePoisoned,
     RdspError,
     StepFailed,
+    ValidationError,
 )
 from ray_deepspeed_pipeline.plan import ExecutionPlan
 from ray_deepspeed_pipeline.protocols import Command, resolve
@@ -61,7 +62,7 @@ class PipelineCoordinator:
         """rebuild: recreates every stage's workers from scratch. load_checkpoint()
         needs it to recover from a dead worker."""
         if len(workers) != len(plan.stages):
-            raise StepFailed(f"{len(plan.stages)} stages need {len(plan.stages)} "
+            raise ValidationError(f"{len(plan.stages)} stages need {len(plan.stages)} "
                              f"stage clients, got {len(workers)}")
         self._plan = plan
         self._workers = workers
@@ -77,6 +78,11 @@ class PipelineCoordinator:
     @property
     def global_steps(self) -> int:
         return self._global_steps
+
+    @property
+    def plan(self):
+        """The ExecutionPlan this coordinator runs."""
+        return self._plan
 
     def train_batch(self, data_iter: Iterator) -> float:
         return self._run(data_iter, train=True)

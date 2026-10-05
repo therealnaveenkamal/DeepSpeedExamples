@@ -18,7 +18,7 @@ from ray_deepspeed_pipeline.errors import ValidationError
 def test_schema_fields_frozen():
     fields = [f.name for f in dataclasses.fields(PipelineConfig)]
     assert fields == ["stages", "partition", "schedule", "microbatches",
-                      "checkpoint", "stage_overrides", "connection_overrides",
+                      "stage_overrides", "connection_overrides",
                       "colocated_vision", "prefetch"]
     cfg = PipelineConfig(stages=2, partition=UniformTransformerBlocks())
     assert cfg.schedule == "1f1b" and cfg.microbatches is None
@@ -49,7 +49,8 @@ def test_explicit_cuts_normalizes_to_tuple():
 
 def test_connection_override_defaults():
     c = ConnectionOverride(source=0, dest=1)
-    assert c.conversion is None and c.buffer_limit == 2  # None: derived from layouts
+    assert c.conversion is None  # None: derived from layouts
+    assert [f.name for f in dataclasses.fields(c)] == ["source", "dest", "conversion"]
 
 
 def test_deepspeed_config_path_is_loaded(tmp_path, monkeypatch, tiny_model):

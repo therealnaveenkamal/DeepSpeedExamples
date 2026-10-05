@@ -36,6 +36,11 @@ class RayPipelineEngine:
     def global_steps(self) -> int:
         return int(self._coordinator.global_steps)
 
+    @property
+    def stage_blocks(self) -> list[tuple[int, int]]:
+        """Each stage's transformer blocks, [start, stop), in stage order."""
+        return [(s.block_start, s.block_stop) for s in self._coordinator.plan.stages]
+
     def _data_iter(self, data_iter):
         if data_iter is not None:
             if self._training_dataloader is not None:

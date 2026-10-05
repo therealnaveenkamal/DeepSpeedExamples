@@ -9,10 +9,13 @@ import json
 from ray_deepspeed_pipeline.boundary import Grid, conversion_name
 from ray_deepspeed_pipeline.config import ExplicitCuts, PipelineConfig
 from ray_deepspeed_pipeline.errors import ValidationError
-from ray_deepspeed_pipeline.partition import partition_parameters, vision_injection_depth
+from ray_deepspeed_pipeline.partition import (
+    partition_parameters,
+    vision_config,
+    vision_injection_depth,
+)
 from ray_deepspeed_pipeline.plan import (
     SCHEMA_VERSION,
-    CheckpointSpec,
     ExecutionPlan,
     FailureSpec,
     ScheduleSpec,
@@ -20,8 +23,6 @@ from ray_deepspeed_pipeline.plan import (
     StageSpec,
     VisionSpec,
 )
-
-_DEFAULT_BUFFER_LIMIT = 2
 
 
 def resolve_microbatches(pipeline_config: PipelineConfig, ds_config: dict | None) -> int:
@@ -158,7 +159,8 @@ def _colocated_vision(model, pipeline_config: PipelineConfig, ds_config: dict | 
     return VisionSpec(module=module, parameter_names=names,
                       recompute=pipeline_config.colocated_vision.recompute,
                       compile=pipeline_config.colocated_vision.compile,
-                      per_microbatch=pipeline_config.colocated_vision.per_microbatch)
+                      encode_per_microbatch=(
+                          pipeline_config.colocated_vision.encode_per_microbatch))
 
 
 def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> ExecutionPlan:
@@ -181,7 +183,7 @@ def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> Exe
         overrides[override.stage] = override
     first = overrides.get(0)
     if first is not None and first.sp > 1 and \
-            getattr(getattr(model, "config", None), "vision_config", None) is not None:
+            vision_config(model) is not None:
         raise ValidationError(
             "stage 0: sequence parallelism on the first stage of a vision model is "
             "unsupported; image positions depend on the whole sequence")
@@ -214,7 +216,7 @@ def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> Exe
             compile_vision=bool(override.compile_vision) if override else False,
         ))
 
-    conn_overrides = {}
+    # a ConnectionOverride only asserts the conversion the layouts imply
     for conn in pipeline_config.connection_overrides:
         if conn.dest != conn.source + 1 or not 0 <= conn.source < n - 1:
             raise ValidationError(
@@ -225,19 +227,15 @@ def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> Exe
             raise ValidationError(
                 f"connection {conn.source}->{conn.dest} declares conversion "
                 f"{conn.conversion!r} but the stage layouts require {derived!r}")
-        conn_overrides[conn.source] = conn
 
     connections = tuple(
         StageConnection(
             source=i, dest=i + 1,
             conversion=conversion_name(grids[i], grids[i + 1]),
-            buffer_limit=(conn_overrides[i].buffer_limit
-                          if i in conn_overrides else _DEFAULT_BUFFER_LIMIT),
         )
         for i in range(n - 1)
     )
 
-    checkpoint = pipeline_config.checkpoint
     return ExecutionPlan(
         schema_version=SCHEMA_VERSION,
         global_microbatches=microbatches,
@@ -245,8 +243,6 @@ def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> Exe
         connections=connections,
         schedule=ScheduleSpec(kind=pipeline_config.schedule,
                               global_microbatches=microbatches),
-        checkpoint=CheckpointSpec(
-            save_optimizer_state=checkpoint.save_optimizer_state if checkpoint else True),
         failure=FailureSpec(poison_on_partial_apply=True),
         microbatch_rows=rows,
         colocated_vision=vision,

@@ -87,6 +87,6 @@ def test_padding_trimmed_to_each_microbatchs_longest_row(tmp_path):
         rows.append(sample)
     save_step(str(tmp_path), 0, rows)
     got = list(train_vl.exported_microbatches(str(tmp_path), rows=2, pad_multiple=4,
-                                              per_microbatch=True))
+                                              pad_per_microbatch=True))
     assert [x["input_ids"].shape for x, _ in got] == [(2, 8), (2, 4)]
     assert [y.shape for _, y in got] == [(2, 8), (2, 4)]

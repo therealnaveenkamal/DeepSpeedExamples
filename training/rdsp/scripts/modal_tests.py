@@ -2,7 +2,7 @@
 
 From the repo root:
 
-    modal run scripts/modal_tests.py --gpus L4:2 --tests tests/integration/test_p7_checkpoint_gpu.py
+    modal run scripts/modal_tests.py --gpus L4:2 --tests tests/integration/test_checkpoint_gpu.py
     modal run scripts/modal_tests.py --gpus L4:4 \
         --tests "tests/integration/test_heterogeneous_pipeline.py -k dp-zero"
 
@@ -87,7 +87,7 @@ RUNNERS = {"L4:2": run_l4x2, "L4:4": run_l4x4, "L4:8": run_l4x8, "H100:8": run_h
 
 
 @app.local_entrypoint()
-def main(gpus: str = "L4:2", tests: str = "tests/integration/test_p7_checkpoint_gpu.py"):
+def main(gpus: str = "L4:2", tests: str = "tests/integration/test_checkpoint_gpu.py"):
     code, output = RUNNERS[gpus].remote(tests)
     print(output)
     print(f"\nexit code: {code}")

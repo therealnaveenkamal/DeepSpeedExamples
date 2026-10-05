@@ -269,8 +269,7 @@ def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
         first = plan.stages[0]
         layout = VisionLayout(first=Grid(dp=first.dp, sp=first.sp, tp=first.tp),
                               world=sum(spec.num_gpus for spec in plan.stages))
-        tower_ref = ray.put((build_vision_tower(model, vision.module), vision.recompute,
-                             vision.compile, vision.per_microbatch))
+        tower_ref = ray.put((build_vision_tower(model, vision.module), vision))
     try:
         for spec in plan.stages:
             grid = Grid(dp=spec.dp, sp=spec.sp, tp=spec.tp)

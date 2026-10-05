@@ -16,6 +16,8 @@ import json
 
 import torch
 
+from ray_deepspeed_pipeline.errors import CheckpointError, ValidationError
+
 # TP plan style -> AutoTP layer spec fields
 _TP_SPECS = {"colwise": {"partition_type": "column"},
              "rowwise": {"partition_type": "row"},
@@ -103,7 +105,7 @@ def _ulysses_mpu(stage_module, micro_batch_size: int, sp: int, backend: str):
 
     hf_config = getattr(stage_module, "_rdsp_hf_config", None)
     if hf_config is None:
-        raise ValueError("sequence parallelism needs an HF attention stage "
+        raise ValidationError("sequence parallelism needs an HF attention stage "
                          "(build_causal_lm_stage attaches the model config)")
     dscomm.init_distributed(dist_backend=backend, dist_init_required=False)
     sp_mpu = UlyssesSPAttentionHF.register_with_transformers(
@@ -273,8 +275,8 @@ class DeepSpeedStageAdapter:
                  engine_factory=None, input_grads: tuple[str, ...] = ()):
         if isinstance(ds_config, str):
             ds_config = json.loads(ds_config)
-        assert (loss_fn is not None) == is_last, \
-            "loss_fn belongs on the terminal stage and only there"
+        if (loss_fn is not None) != is_last:
+            raise ValidationError("loss_fn belongs on the terminal stage and only there")
         self.n_mb = n_microbatches
         self.is_first = is_first
         self.is_last = is_last
@@ -443,7 +445,7 @@ class DeepSpeedStageAdapter:
         """DeepSpeed checkpoint of this stage; a collective over the stage
         world. Writes no `latest` pointer: the manifest owns that."""
         if not self.drained():
-            raise RuntimeError("save requested with microbatches in flight")
+            raise CheckpointError("save requested with microbatches in flight")
         self.engine.save_checkpoint(save_dir, tag=tag, save_latest=False)
         return True
 
@@ -453,7 +455,7 @@ class DeepSpeedStageAdapter:
             load_dir, tag=tag, load_optimizer_states=load_optimizer_states,
             load_lr_scheduler_states=load_lr_scheduler_states)
         if path is None:
-            raise RuntimeError(f"DeepSpeed found no checkpoint at {load_dir}/{tag}")
+            raise CheckpointError(f"DeepSpeed found no checkpoint at {load_dir}/{tag}")
         self.reset()
         return True
 

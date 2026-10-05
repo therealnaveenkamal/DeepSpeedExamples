@@ -9,7 +9,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 
 
 @dataclass(frozen=True)
@@ -46,18 +46,12 @@ class StageConnection:
     dest: int
     # identity | replicate-to-shard | shard-to-replicate | shard-to-shard
     conversion: str
-    buffer_limit: int
 
 
 @dataclass(frozen=True)
 class ScheduleSpec:
     kind: str  # "1f1b"
     global_microbatches: int
-
-
-@dataclass(frozen=True)
-class CheckpointSpec:
-    save_optimizer_state: bool
 
 
 @dataclass(frozen=True)
@@ -74,12 +68,12 @@ class VisionSpec:
     parameter_names: tuple[str, ...]
     recompute: bool = False
     compile: bool = False
-    per_microbatch: bool = False
+    encode_per_microbatch: bool = False
 
 
 # fields that change how a step runs, not a stage's parameters or saved state
 _RUNTIME_ONLY = frozenset({"prefetch", "recompute", "compile", "compile_vision",
-                           "per_microbatch"})
+                           "encode_per_microbatch"})
 
 
 def _without(value, keys: frozenset):
@@ -97,7 +91,6 @@ class ExecutionPlan:
     stages: tuple[StageSpec, ...]
     connections: tuple[StageConnection, ...]
     schedule: ScheduleSpec
-    checkpoint: CheckpointSpec
     failure: FailureSpec
     # rows in one global microbatch (the data loader's entry size)
     microbatch_rows: int = 1

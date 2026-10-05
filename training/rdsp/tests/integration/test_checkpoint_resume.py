@@ -1,5 +1,5 @@
 """Global checkpoint round trip and whole-pipeline recovery on real Ray actors
-(CPU, gloo, torch stub engines). test_p7_checkpoint_gpu.py runs the same
+(CPU, gloo, torch stub engines). test_checkpoint_gpu.py runs the same
 protocol with real DeepSpeed engines.
 
 Test names double as acceptance selectors; keep them stable."""
