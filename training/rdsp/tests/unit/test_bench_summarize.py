@@ -28,6 +28,8 @@ def test_pairs_megatron_and_rdsp_logs(tmp_path, capsys):
     out = capsys.readouterr().out
     row = next(line for line in out.splitlines() if "TP2xPP2xDP2" in line)
     assert "10.00" in row and "8.00" in row and "-20%" in row
+    per_gpu = row.split()[-2:]  # tokens/s per GPU: 65000 tokens over 10 s / 8 s, 8 GPUs
+    assert per_gpu == ["812", "1016"]
     assert "TP4xPP2xDP1" not in out  # pairs without logs are left out
 
 
@@ -47,7 +49,7 @@ def test_published_logs_give_the_readme_numbers(capsys):
     for size in ("2b", "4b"):
         summarize.main([os.path.join(published, size)])
         rows += capsys.readouterr().out.splitlines()[1:]
-    got = [tuple(line.split()[-6:-4]) for line in rows]
+    got = [tuple(line.split()[-8:-6]) for line in rows]
     assert got == [("9.64", "8.30"), ("7.39", "5.30"), ("10.04", "8.69"), ("15.93", "13.29")]
     with open(os.path.join(HERE, "..", "..", "README.md")) as f:
         readme = f.read()
@@ -60,7 +62,7 @@ def test_published_h100_logs_give_the_benchmark_results_numbers(capsys):
     every step time the README and BENCHMARK_RESULTS.md report for H100."""
     summarize.main([os.path.join(HERE, "..", "..", "bench", "published", "h100")])
     rows = capsys.readouterr().out.splitlines()[1:]
-    got = [tuple(line.split()[-6:-4]) for line in rows]
+    got = [tuple(line.split()[-8:-6]) for line in rows]
     assert got == [("7.99", "7.89"), ("8.79", "6.49"), ("18.24", "12.30"), ("-", "5.62")]
     for name in ("README.md", os.path.join("docs", "BENCHMARK_RESULTS.md")):
         with open(os.path.join(HERE, "..", "..", name)) as f:
@@ -68,3 +70,19 @@ def test_published_h100_logs_give_the_benchmark_results_numbers(capsys):
         for megatron, rdsp in got:
             cell = "—" if megatron == "-" else f"{megatron} s"
             assert f"| {cell} | {rdsp} s |" in doc, (name, megatron, rdsp)
+
+
+def test_docs_report_tokens_per_gpu_from_the_logs(capsys):
+    """Every published row's tokens/s per GPU (both systems) appears in the
+    README and in BENCHMARK_RESULTS.md, as printed by summarize.py."""
+    published = os.path.join(HERE, "..", "..", "bench", "published")
+    values = set()
+    for size in ("2b", "4b", "h100"):
+        summarize.main([os.path.join(published, size)])
+        for line in capsys.readouterr().out.splitlines()[1:]:
+            values.update(v for v in line.split()[-2:] if v != "-")
+    for name in ("README.md", os.path.join("docs", "BENCHMARK_RESULTS.md")):
+        with open(os.path.join(HERE, "..", "..", name)) as f:
+            doc = f.read()
+        for v in sorted(values):
+            assert f"| {int(v):,} |" in doc, (name, v)

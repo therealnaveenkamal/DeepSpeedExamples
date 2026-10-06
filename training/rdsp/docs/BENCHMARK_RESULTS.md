@@ -4,14 +4,14 @@ rdsp against MegatronMIMO and Megatron-Bridge, training Qwen3.5-2B and 4B on COR
 
 ## Results: 8× RTX PRO 4500, PCIe
 
-Median over steps 6–50. Tokens/s counts real tokens only; both systems see the same tokens. Cost assumes $5.32/h for 8 GPUs, prorated to 5 for the MIMO layout.
+Median over steps 6–50. Tokens/s counts real tokens only; both systems see the same tokens. Per GPU divides by the layout's GPU count, so the 5-GPU MIMO layout and the 8-GPU layouts compare directly. Cost assumes $5.32/h for 8 GPUs, prorated to 5 for the MIMO layout.
 
-| Model | Layout | Megatron | rdsp | Step time | Megatron tok/s | rdsp tok/s | Megatron $/M tok | rdsp $/M tok |
-|---|---|---|---|---|---|---|---|---|
-| 2B | Vision 1 GPU + language TP2×DP2, vs MIMO | 9.64 s | 8.30 s | −14% | 6,780 | 7,837 | 0.136 | 0.118 |
-| 2B | TP2×PP2×DP2, vs Bridge | 7.39 s | 5.30 s | −28% | 8,711 | 12,187 | 0.170 | 0.121 |
-| 4B | TP2×PP2×DP2, vs Bridge | 10.04 s | 8.69 s | −13% | 6,459 | 7,460 | 0.229 | 0.198 |
-| 4B | TP4×PP2×DP1, vs Bridge | 15.93 s | 13.29 s | −17% | 4,073 | 4,901 | 0.363 | 0.302 |
+| Model | Layout | Megatron | rdsp | Step time | Megatron tok/s | rdsp tok/s | Megatron tok/s per GPU | rdsp tok/s per GPU | Megatron $/M tok | rdsp $/M tok |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 2B | Vision 1 GPU + language TP2×DP2, vs MIMO | 9.64 s | 8.30 s | −14% | 6,780 | 7,837 | 1,356 | 1,567 | 0.136 | 0.118 |
+| 2B | TP2×PP2×DP2, vs Bridge | 7.39 s | 5.30 s | −28% | 8,711 | 12,187 | 1,089 | 1,523 | 0.170 | 0.121 |
+| 4B | TP2×PP2×DP2, vs Bridge | 10.04 s | 8.69 s | −13% | 6,459 | 7,460 | 807 | 932 | 0.229 | 0.198 |
+| 4B | TP4×PP2×DP1, vs Bridge | 15.93 s | 13.29 s | −17% | 4,073 | 4,901 | 509 | 613 | 0.363 | 0.302 |
 
 Loss: every pair starts from the same step-0 loss. Over steps 1–49, rdsp's mean difference from Megatron is +0.0005 (2B MIMO layout), +0.003 (4B TP2×PP2×DP2) and −0.0024 (4B TP4×PP2×DP1). Steps 4–5 vary by up to 0.08 between repeated runs of either system, from GPU kernels that aren't bit-for-bit deterministic.
 
@@ -19,14 +19,16 @@ Loss: every pair starts from the same step-0 loss. Over steps 1–49, rdsp's mea
 
 Qwen3.5-4B on one AWS p5.48xlarge: 8× H100 SXM 80 GB, every pair of GPUs linked by NVLink through NVSwitch (`nvidia-smi topo -m`: NV18). Same software, data, settings and recipes as above. Megatron-Bridge's settings were diffed against the PCIe runs: the only difference was the step count. Median over steps 6–50; cost assumes $22.28/h for 8 GPUs (spot, us-east-2).
 
-| Layout | Megatron | rdsp | Step time | Megatron tok/s | rdsp tok/s | Megatron $/M tok | rdsp $/M tok |
-|---|---|---|---|---|---|---|---|
-| Vision 1 GPU + language TP2×DP2, vs MIMO | 7.99 s | 7.89 s | −1% | 8,171 | 8,239 | 0.473 | 0.469 |
-| TP2×PP2×DP2, vs Bridge | 8.79 s | 6.49 s | −26% | 7,372 | 9,901 | 0.840 | 0.625 |
-| TP4×PP2×DP1, vs Bridge | 18.24 s | 12.30 s | −33% | 3,522 | 5,274 | 1.757 | 1.174 |
-| Colocated vision + language TP2×PP2×DP2 (rdsp only) | — | 5.62 s | | | 11,580 | | 0.534 |
+| Layout | Megatron | rdsp | Step time | Megatron tok/s | rdsp tok/s | Megatron tok/s per GPU | rdsp tok/s per GPU | Megatron $/M tok | rdsp $/M tok |
+|---|---|---|---|---|---|---|---|---|---|
+| Vision 1 GPU + language TP2×DP2, vs MIMO | 7.99 s | 7.89 s | −1% | 8,171 | 8,239 | 1,634 | 1,648 | 0.473 | 0.469 |
+| TP2×PP2×DP2, vs Bridge | 8.79 s | 6.49 s | −26% | 7,372 | 9,901 | 921 | 1,238 | 0.840 | 0.625 |
+| TP4×PP2×DP1, vs Bridge | 18.24 s | 12.30 s | −33% | 3,522 | 5,274 | 440 | 659 | 1.757 | 1.174 |
+| Colocated vision + language TP2×PP2×DP2 (rdsp only) | — | 5.62 s | | | 11,580 | — | 1,447 | | 0.534 |
 
 Loss: every pair starts from the same step-0 loss; over steps 1–49 rdsp's mean difference from Megatron is +0.003, −0.003 and −0.008, and colocated's from Megatron-Bridge TP2×PP2×DP2 is −0.002. Logs: `bench/published/h100/`, with the GPU topology in `hardware.txt`.
+
+Per GPU, MIMO's 5-GPU layout is the most efficient here (1,634 and 1,648 tokens/s per GPU); colocated is the fastest per step and the second most efficient per GPU (1,447).
 
 **Read with care:**
 - **One round.** No repeats yet, so no spread. On PCIe, repeats landed within about 2%.

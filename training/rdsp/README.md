@@ -22,14 +22,14 @@ Median step time over steps 6–50. Lower is better.
 
 ### 8× RTX PRO 4500, PCIe
 
-| Model | Layout | GPUs | Megatron | rdsp | Step time |
-|---|---|---|---|---|---|
-| Qwen3.5-2B | Vision on 1 GPU + language TP2×DP2, vs MegatronMIMO | 5 | 9.64 s | 8.30 s | −14% |
-| Qwen3.5-2B | TP2×PP2×DP2, vs Megatron-Bridge | 8 | 7.39 s | 5.30 s | −28% |
-| Qwen3.5-4B | TP2×PP2×DP2, vs Megatron-Bridge | 8 | 10.04 s | 8.69 s | −13% |
-| Qwen3.5-4B | TP4×PP2×DP1, vs Megatron-Bridge | 8 | 15.93 s | 13.29 s | −17% |
+| Model | Layout | GPUs | Megatron | rdsp | Step time | Megatron tok/s per GPU | rdsp tok/s per GPU |
+|---|---|---|---|---|---|---|---|
+| Qwen3.5-2B | Vision on 1 GPU + language TP2×DP2, vs MegatronMIMO | 5 | 9.64 s | 8.30 s | −14% | 1,356 | 1,567 |
+| Qwen3.5-2B | TP2×PP2×DP2, vs Megatron-Bridge | 8 | 7.39 s | 5.30 s | −28% | 1,089 | 1,523 |
+| Qwen3.5-4B | TP2×PP2×DP2, vs Megatron-Bridge | 8 | 10.04 s | 8.69 s | −13% | 807 | 932 |
+| Qwen3.5-4B | TP4×PP2×DP1, vs Megatron-Bridge | 8 | 15.93 s | 13.29 s | −17% | 509 | 613 |
 
-Throughput at the same steps, in real (non-padding) tokens/s: 7,837 vs 6,780; 12,187 vs 8,711; 7,460 vs 6,459; 4,901 vs 4,073 (rdsp first). Qwen3.5-2B can't run TP4: it has 2 key/value heads.
+Tokens are real (non-padding) tokens; per GPU divides by the layout's GPU count, so the 5-GPU and 8-GPU layouts compare directly. Total throughput: 7,837 vs 6,780; 12,187 vs 8,711; 7,460 vs 6,459; 4,901 vs 4,073 tokens/s (rdsp first). Qwen3.5-2B can't run TP4: it has 2 key/value heads.
 
 **Hardware.** AWS g7.48xlarge: 8× NVIDIA RTX PRO 4500 Blackwell (32 GB) on PCIe, no NVLink, so every TP all-reduce and stage-to-stage transfer goes over PCIe. $5.32/h spot in us-east-1.
 
@@ -52,12 +52,14 @@ Throughput at the same steps, in real (non-padding) tokens/s: 7,837 vs 6,780; 12
 
 Qwen3.5-4B on an AWS p5.48xlarge (8× H100 SXM 80 GB, NVSwitch); same software, data, settings and recipes.
 
-| Layout | GPUs | Megatron | rdsp | Step time |
-|---|---|---|---|---|
-| Vision on 1 GPU + language TP2×DP2, vs MegatronMIMO | 5 | 7.99 s | 7.89 s | −1% |
-| TP2×PP2×DP2, vs Megatron-Bridge | 8 | 8.79 s | 6.49 s | −26% |
-| TP4×PP2×DP1, vs Megatron-Bridge | 8 | 18.24 s | 12.30 s | −33% |
-| Vision colocated on every GPU + language TP2×PP2×DP2 (rdsp only) | 8 | — | 5.62 s | |
+| Layout | GPUs | Megatron | rdsp | Step time | Megatron tok/s per GPU | rdsp tok/s per GPU |
+|---|---|---|---|---|---|---|
+| Vision on 1 GPU + language TP2×DP2, vs MegatronMIMO | 5 | 7.99 s | 7.89 s | −1% | 1,634 | 1,648 |
+| TP2×PP2×DP2, vs Megatron-Bridge | 8 | 8.79 s | 6.49 s | −26% | 921 | 1,238 |
+| TP4×PP2×DP1, vs Megatron-Bridge | 8 | 18.24 s | 12.30 s | −33% | 440 | 659 |
+| Vision colocated on every GPU + language TP2×PP2×DP2 (rdsp only) | 8 | — | 5.62 s | | — | 1,447 |
+
+Per GPU, MIMO's 5-GPU layout is the most efficient on H100 (about 1,640 tokens/s per GPU on both systems); colocated is the fastest per step but uses 8 GPUs.
 
 Caveats:
 - **One round**, so there's no measure of run-to-run spread yet.

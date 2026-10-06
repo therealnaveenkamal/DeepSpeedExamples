@@ -41,7 +41,8 @@ def main(argv=None) -> None:
     args = p.parse_args(argv)
     logs = Path(args.logs)
     print(f"{'layout':34} {'GPUs':>4} {'Megatron s':>10} {'rdsp s':>7} {'step':>6} "
-          f"{'Megatron tok/s':>14} {'rdsp tok/s':>10} {'rdsp $/M tok':>12}")
+          f"{'Megatron tok/s':>14} {'rdsp tok/s':>10} {'rdsp $/M tok':>12} "
+          f"{'Megatron tok/s/GPU':>18} {'rdsp tok/s/GPU':>14}")
     for layout, gpus, megatron, rdsp in PAIRS:
         if not (logs / f"{rdsp}.log").exists() or \
                 (megatron and not (logs / f"{megatron}.log").exists()):
@@ -56,13 +57,14 @@ def main(argv=None) -> None:
         r_tok = statistics.median(real[s] / r_ms[s] * 1e3 for s in timed)
         cost = args.price * gpus / 8 / 3600 / r_tok * 1e6
         if m_ms is None:
-            m_col, step, m_tok = "-", "-", "-"
+            m_col, step, m_tok, m_gpu = "-", "-", "-", "-"
         else:
             m_s = statistics.median(m_ms[s] for s in timed) / 1e3
             m_col, step = f"{m_s:.2f}", f"{r_s / m_s - 1:+.0%}"
-            m_tok = f"{statistics.median(real[s] / m_ms[s] * 1e3 for s in timed):.0f}"
+            tok = statistics.median(real[s] / m_ms[s] * 1e3 for s in timed)
+            m_tok, m_gpu = f"{tok:.0f}", f"{tok / gpus:.0f}"
         print(f"{layout:34} {gpus:>4} {m_col:>10} {r_s:>7.2f} {step:>6} "
-              f"{m_tok:>14} {r_tok:>10.0f} {cost:>12.3f}")
+              f"{m_tok:>14} {r_tok:>10.0f} {cost:>12.3f} {m_gpu:>18} {r_tok / gpus:>14.0f}")
 
 
 if __name__ == "__main__":
