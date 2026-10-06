@@ -2,7 +2,7 @@
 
 rdsp (`ray_deepspeed_pipeline`) splits a model into pipeline stages and gives each stage its own GPU count and parallel layout. Every stage is a group of Ray actors, one per GPU, each running a stock DeepSpeed engine. Stages pass activations and gradients over NCCL in a 1F1B schedule. You can split a Hugging Face vision-language model so the vision encoder gets its own stage and layout, and train it from the HF checkpoint without converting it.
 
-On 8 PCIe GPUs, rdsp takes 13–28% less time per training step (1.15–1.40× the throughput) than Megatron-Bridge and MegatronMIMO on Qwen3.5-2B and 4B, with the same layouts, data and settings.
+On 8 PCIe GPUs, rdsp takes 13–28% less time per training step (1.15–1.40× the throughput) than Megatron-Bridge and MegatronMIMO on Qwen3.5-2B and 4B, with the same layouts, data and settings. A first run on 8 NVLink H100s gives −1% to −33% for Qwen3.5-4B, and rdsp's colocated-vision layout is the fastest of all; that run has caveats, below.
 
 ## Terms
 
@@ -19,6 +19,8 @@ On 8 PCIe GPUs, rdsp takes 13–28% less time per training step (1.15–1.40× t
 ## Results
 
 Median step time over steps 6–50. Lower is better.
+
+### 8× RTX PRO 4500, PCIe
 
 | Model | Layout | GPUs | Megatron | rdsp | Step time |
 |---|---|---|---|---|---|
@@ -45,6 +47,24 @@ Throughput at the same steps, in real (non-padding) tokens/s: 7,837 vs 6,780; 12
 - Padding: rdsp pads each microbatch to its longest row. Megatron-Bridge pads rows to multiples of 128. MegatronMIMO pads to 2048; its dynamic padding gives 9.60 s instead of 9.64 s.
 - Loss averaging: the MegatronMIMO run trains on per-microbatch means (its only mode), so the rdsp run against it does the same. The Bridge runs train on the per-token mean.
 - Embeddings: in the pipeline layouts, Megatron ties the input embedding and output layer across stages. rdsp trains two copies.
+
+### 8× H100, NVLink (first run)
+
+Qwen3.5-4B on an AWS p5.48xlarge (8× H100 SXM 80 GB, NVSwitch); same software, data, settings and recipes.
+
+| Layout | GPUs | Megatron | rdsp | Step time |
+|---|---|---|---|---|
+| Vision on 1 GPU + language TP2×DP2, vs MegatronMIMO | 5 | 7.99 s | 7.89 s | −1% |
+| TP2×PP2×DP2, vs Megatron-Bridge | 8 | 8.79 s | 6.49 s | −26% |
+| TP4×PP2×DP1, vs Megatron-Bridge | 8 | 18.24 s | 12.30 s | −33% |
+| Vision colocated on every GPU + language TP2×PP2×DP2 (rdsp only) | 8 | — | 5.62 s | |
+
+Caveats:
+- **One round**, so there's no measure of run-to-run spread yet.
+- **This instance's CPU (AMD EPYC 7R13) limits launch-heavy runs.** Profiling shows the CPU, not the GPUs, setting the pace of the MIMO layout, which is why that one ends in a near-tie. Megatron's TP4 runs slower here than on the PCIe GPUs, likely for the same reason, so the −33% is inflated.
+- **Colocated ran without compiling its encoder.**
+
+Both systems used NVLink. Details: [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md).
 
 Logs behind every number: `bench/published/`. How to rerun all of it: [docs/REPRODUCE.md](docs/REPRODUCE.md). What moved the numbers: [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md).
 
@@ -152,7 +172,7 @@ The GPU tests (parity against the unsplit model, checkpoint round trip, rank-kil
   - 1F1B only, no interleaved stages.
   - No global-norm gradient clipping: a nonzero `gradient_clipping` is rejected.
 - **Weights.** No parameters tied across stages.
-- **Colocated vision.** Matches the unsplit model, but isn't fast yet on 32 GB GPUs: Qwen3.5-4B TP2×PP2×DP2 takes 9.66 s per step against 8.69 s with the encoder on the first stage.
+- **Colocated vision.** Matches the unsplit model. On 32 GB GPUs it needs encoder recompute and is slower (Qwen3.5-4B: 9.66 s vs 8.69 s with the encoder on the first stage); on 80 GB H100s it is the fastest layout (5.62 s vs 6.49 s).
 - **Balanced cuts.**
   - The cost model ignores communication.
   - It counts MoE experts in full, not by the active fraction.
