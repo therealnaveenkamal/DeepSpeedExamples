@@ -148,6 +148,11 @@ def _colocated_vision(model, pipeline_config: PipelineConfig, ds_config: dict | 
         raise ValidationError(
             "a first cut at 0 makes a vision-only first stage, which colocated vision "
             "leaves empty; cut after at least one block")
+    ignored = [o.stage for o in pipeline_config.stage_overrides if o.compile_vision]
+    if ignored:
+        raise ValidationError(
+            f"stage {ignored[0]}: compile_vision compiles the encoder a stage holds, and "
+            f"colocated vision puts it on no stage; use ColocatedVision(compile=True)")
     conf = ds_config if isinstance(ds_config, dict) else {}
     if conf.get("fp16", {}).get("enabled", False):
         raise ValidationError("colocated vision supports bf16 or fp32, not fp16: the "

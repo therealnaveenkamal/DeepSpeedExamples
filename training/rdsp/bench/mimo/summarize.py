@@ -12,10 +12,11 @@ import re
 import statistics
 from pathlib import Path
 
-PAIRS = (  # (layout, GPUs, Megatron run, rdsp run)
+PAIRS = (  # (layout, GPUs, Megatron run or None for rdsp only, rdsp run)
     ("vision 1 GPU + language TP2xDP2", 5, "noncoloc-mimo", "noncoloc-rdsp"),
     ("TP2xPP2xDP2", 8, "shared-megatron", "shared-rdsp"),
     ("TP4xPP2xDP1", 8, "tp4pp2-megatron", "tp4pp2-rdsp"),
+    ("colocated vision + TP2xPP2xDP2", 8, None, "coloc-rdsp"),
 )
 _MEGATRON = re.compile(r"iteration\s+(\d+)/\s*\d+ .*?elapsed time per iteration \(ms\): ([\d.]+)")
 _RDSP = re.compile(r"^step (\d+) loss [\d.]+ (\d+) ms .* real (\d+) supervised \d+", re.M)
@@ -42,19 +43,26 @@ def main(argv=None) -> None:
     print(f"{'layout':34} {'GPUs':>4} {'Megatron s':>10} {'rdsp s':>7} {'step':>6} "
           f"{'Megatron tok/s':>14} {'rdsp tok/s':>10} {'rdsp $/M tok':>12}")
     for layout, gpus, megatron, rdsp in PAIRS:
-        if not (logs / f"{megatron}.log").exists() or not (logs / f"{rdsp}.log").exists():
+        if not (logs / f"{rdsp}.log").exists() or \
+                (megatron and not (logs / f"{megatron}.log").exists()):
             continue
-        (m_ms, _), (r_ms, real) = parse(logs / f"{megatron}.log"), parse(logs / f"{rdsp}.log")
-        timed = [s for s in sorted(r_ms) if s >= args.first and s in m_ms and s in real]
+        r_ms, real = parse(logs / f"{rdsp}.log")
+        m_ms = parse(logs / f"{megatron}.log")[0] if megatron else None
+        timed = [s for s in sorted(r_ms)
+                 if s >= args.first and s in real and (m_ms is None or s in m_ms)]
         if not timed:
             continue
-        m_s = statistics.median(m_ms[s] for s in timed) / 1e3
         r_s = statistics.median(r_ms[s] for s in timed) / 1e3
-        m_tok = statistics.median(real[s] / m_ms[s] * 1e3 for s in timed)
         r_tok = statistics.median(real[s] / r_ms[s] * 1e3 for s in timed)
         cost = args.price * gpus / 8 / 3600 / r_tok * 1e6
-        print(f"{layout:34} {gpus:>4} {m_s:>10.2f} {r_s:>7.2f} {(r_s / m_s - 1):>+6.0%} "
-              f"{m_tok:>14.0f} {r_tok:>10.0f} {cost:>12.3f}")
+        if m_ms is None:
+            m_col, step, m_tok = "-", "-", "-"
+        else:
+            m_s = statistics.median(m_ms[s] for s in timed) / 1e3
+            m_col, step = f"{m_s:.2f}", f"{r_s / m_s - 1:+.0%}"
+            m_tok = f"{statistics.median(real[s] / m_ms[s] * 1e3 for s in timed):.0f}"
+        print(f"{layout:34} {gpus:>4} {m_col:>10} {r_s:>7.2f} {step:>6} "
+              f"{m_tok:>14} {r_tok:>10.0f} {cost:>12.3f}")
 
 
 if __name__ == "__main__":

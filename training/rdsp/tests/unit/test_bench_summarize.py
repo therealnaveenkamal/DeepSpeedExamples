@@ -31,6 +31,14 @@ def test_pairs_megatron_and_rdsp_logs(tmp_path, capsys):
     assert "TP4xPP2xDP1" not in out  # pairs without logs are left out
 
 
+def test_rdsp_only_layout_gets_a_row_without_megatron(tmp_path, capsys):
+    """Colocated vision has no Megatron counterpart: its row shows rdsp alone."""
+    (tmp_path / "coloc-rdsp.log").write_text(_rdsp_log(5000))
+    summarize.main([str(tmp_path)])
+    row = next(line for line in capsys.readouterr().out.splitlines() if "colocated" in line)
+    assert "5.00" in row and row.count("-") >= 2
+
+
 def test_published_logs_give_the_readme_numbers(capsys):
     """bench/published holds the logs behind the README table; summarize.py
     on them prints every step time the README reports."""

@@ -19,33 +19,25 @@ This builds `~/venv` (torch 2.13, DeepSpeed at commit `53a2ac44`, transformers 5
 
 ## Runs
 
-Per model, convert the checkpoint (the Megatron side needs its own format) and export the training samples. rdsp replays the exact samples Megatron-Bridge's loader produces, in the same order.
+`bench/mimo/bench.sh` runs any set of layouts, each pair back to back with Megatron first, and prints the table:
+
+| Layout | Megatron side | rdsp recipe | GPUs |
+|---|---|---|---|
+| `noncoloc` | MegatronMIMO: vision on 1 GPU, language TP2×DP2 | `qwen35-<size>-vision1-tp2dp2.sh` | 5 |
+| `tp2` | Megatron-Bridge TP2×PP2×DP2 | `qwen35-<size>-tp2pp2dp2.sh` | 8 |
+| `tp4` | Megatron-Bridge TP4×PP2×DP1 | `qwen35-<size>-tp4pp2dp1.sh` | 8 |
+| `coloc` | none (rdsp only): vision on every GPU, language TP2×PP2×DP2 | `qwen35-<size>-coloc-tp2pp2dp2.sh` | 8 |
 
 ```bash
-cd bench/mimo
-MODEL=Qwen3.5-2B bash runs.sh convert
-MODEL=Qwen3.5-2B bash runs.sh export
-MODEL=Qwen3.5-2B bash runs.sh noncoloc-mimo
-MODEL=Qwen3.5-2B bash runs.sh noncoloc-rdsp
-MODEL=Qwen3.5-2B bash runs.sh shared-megatron
-MODEL=Qwen3.5-2B bash runs.sh shared-rdsp
-python summarize.py ~/runs
+MODEL=Qwen3.5-2B bash bench/mimo/bench.sh noncoloc tp2
+MODEL=Qwen3.5-4B PRICE=5.32 bash bench/mimo/bench.sh all
+MODEL=Qwen3.5-4B ROUNDS=2 bash bench/mimo/bench.sh tp2 tp4      # repeat for noise
+DRY_RUN=1 MODEL=Qwen3.5-4B bash bench/mimo/bench.sh all         # print the plan only
 ```
 
-```bash
-export LOGS=~/runs-4b
-MODEL=Qwen3.5-4B bash runs.sh convert
-MODEL=Qwen3.5-4B bash runs.sh export
-MODEL=Qwen3.5-4B bash runs.sh shared-megatron
-MODEL=Qwen3.5-4B bash runs.sh shared-rdsp
-MODEL=Qwen3.5-4B bash runs.sh tp4pp2-megatron
-MODEL=Qwen3.5-4B bash runs.sh tp4pp2-rdsp
-python summarize.py ~/runs-4b
-```
+The first run per model converts the checkpoint (the Megatron side needs its own format) and exports the training samples; rdsp replays the exact samples Megatron-Bridge's loader produces, in the same order. Both are reused afterwards. A layout without a recipe for the model is skipped (Qwen3.5-2B has no TP4: 2 key/value heads).
 
-Each run is 50 steps. Logs go to `$LOGS/<case>.log` (default `~/runs`), and the case names are the same for both models, so give each model its own `LOGS`. `summarize.py` prints one row per pair: median step time over steps 6–50, real tokens/s, and rdsp's cost per million tokens.
-
-The rdsp side runs `recipes/*.sh` unchanged, with `DATA=exported:<samples>`. The Megatron side runs NVIDIA's own scripts unmodified, with the settings below passed as their command-line overrides.
+Each run is 50 steps (`STEPS`). Logs go to `~/bench/<model>/r<round>/<case>.log`, with `summary.txt` next to them: median step time over steps 6–50, real tokens/s, and rdsp's cost per million tokens at `PRICE` $/h for the node. Single cases still run through `bench/mimo/runs.sh <case>`.
 
 ## Expected results
 

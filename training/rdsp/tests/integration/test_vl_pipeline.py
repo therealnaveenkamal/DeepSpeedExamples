@@ -490,6 +490,21 @@ def test_colocated_vision_rejected_where_it_cannot_apply(make, cuts, match):
 
 
 @needs_qwen3_5
+def test_colocated_vision_rejects_a_stage_compile_vision_it_would_ignore():
+    """compile_vision compiles the encoder a stage holds; a colocated encoder is
+    on no stage, so the flag would do nothing. ColocatedVision(compile=) is the
+    switch that applies."""
+    from ray_deepspeed_pipeline.compiler import lower
+
+    model = transformers.Qwen3_5ForConditionalGeneration(tiny_qwen3_5_vl())
+    with pytest.raises(ValidationError, match=r"ColocatedVision\(compile=True\)"):
+        lower(model, rdsp.PipelineConfig(
+            stages=2, partition=rdsp.ExplicitCuts((3,)),
+            stage_overrides=(rdsp.StageOverride(stage=0, compile_vision=True),),
+            colocated_vision=rdsp.ColocatedVision()), DS)
+
+
+@needs_qwen3_5
 def test_block_list_is_the_decoders_even_when_the_encoder_is_as_deep():
     """Qwen3.5-2B: 24 vision blocks and 24 decoder layers. The pipeline's
     blocks are the decoder's; the vision encoder is never cut."""

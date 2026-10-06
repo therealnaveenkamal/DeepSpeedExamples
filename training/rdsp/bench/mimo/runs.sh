@@ -7,6 +7,7 @@
 #   MODEL=Qwen3.5-2B runs.sh noncoloc-mimo  | noncoloc-rdsp   # vision 1 GPU + language TP2xDP2
 #   MODEL=Qwen3.5-2B runs.sh shared-megatron | shared-rdsp    # TP2xPP2xDP2
 #   MODEL=Qwen3.5-4B runs.sh tp4pp2-megatron | tp4pp2-rdsp    # TP4xPP2xDP1
+#   MODEL=Qwen3.5-4B runs.sh coloc-rdsp      # rdsp only: colocated vision
 #   python summarize.py ~/runs                   # the results table
 #
 # Case names are the same for both models: set LOGS=~/runs-4b for the 4B runs.
@@ -37,6 +38,7 @@ container() {  # container <command...>
   sudo docker run --gpus all --rm --ipc=host --shm-size=64g --ulimit memlock=-1 \
     -v "$HOME/hf:/root/.cache/huggingface" -v "$WORK:/workspace" -v "$RDSP:/rdsp" \
     -e HF_HOME=/root/.cache/huggingface -e PYTHONUNBUFFERED=1 -w /opt/Megatron-Bridge \
+    ${NCCL_DEBUG:+-e NCCL_DEBUG=$NCCL_DEBUG} \
     "$IMAGE" bash -c "$*"
   sudo chown -R "$(id -u):$(id -g)" "$HOME/hf" "$WORK"   # the container writes as root
 }
@@ -53,7 +55,9 @@ STD_TRAIN="$STD_DATA train.micro_batch_size=1 train.train_iters=$STEPS \
   scheduler.start_weight_decay=0.0 scheduler.end_weight_decay=0.0 \
   ddp.grad_reduce_in_fp32=true ddp.use_distributed_optimizer=true ddp.average_in_collective=false \
   validation.eval_iters=0 logger.log_interval=1"
-# MIMO_EXTRA, e.g. "--pad-to-seq-length false" for its dynamic padding
+# Diagnosis only, never for published runs: MIMO_EXTRA (e.g. "--pad-to-seq-length
+# false"), MEGATRON_EXTRA (Bridge overrides, e.g. "logger.timing_log_level=2"),
+# RDSP_EXTRA (train_vl.py flags, e.g. "--profile"), NCCL_DEBUG=INFO.
 MIMO_TRAIN="--hf-model Qwen/$MODEL --dataset-name cord_v2 --seq-length 2048 \
   --global-batch-size 64 --train-iters $STEPS --dataloader-type single \
   --pretrained-checkpoint /workspace/$MODEL-mimo \
@@ -64,7 +68,7 @@ MIMO_TRAIN="--hf-model Qwen/$MODEL --dataset-name cord_v2 --seq-length 2048 \
 megatron() {  # megatron <log name> <tp> <pp>: the standard Bridge recipe
   container "python -m torch.distributed.run --nproc_per_node=8 scripts/training/run_recipe.py \
     --recipe $RECIPE --step_func qwen3_vl_step $STD_TRAIN \
-    model.tensor_model_parallel_size=$2 model.pipeline_model_parallel_size=$3" \
+    model.tensor_model_parallel_size=$2 model.pipeline_model_parallel_size=$3 ${MEGATRON_EXTRA:-}" \
     2>&1 | tee "$LOGS/$1.log"
 }
 
@@ -73,7 +77,7 @@ rdsp() {  # rdsp <log name> <recipe> [train_vl flags]
   [ -f "$recipe" ] || { echo "no recipe $recipe for $MODEL" >&2; exit 1; }
   (unset LD_LIBRARY_PATH && . "$HOME/venv/bin/activate" && . "$HOME/cuda_env.sh" && \
    DS_BUILD_OPS=0 HF_HOME=$HOME/hf PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-   DATA=exported:$WORK/cord_steps-$MODEL bash "$recipe" --steps "$STEPS" "$@") \
+   DATA=exported:$WORK/cord_steps-$MODEL bash "$recipe" --steps "$STEPS" "$@" ${RDSP_EXTRA:-}) \
     2>&1 | tee "$LOGS/$name.log"
 }
 
@@ -104,5 +108,7 @@ case "${1:-}" in
     megatron tp4pp2-megatron 4 2 ;;
   tp4pp2-rdsp)
     rdsp tp4pp2-rdsp "qwen35-$SIZE-tp4pp2dp1.sh" ;;
-  *) sed -n 2,12p "$0"; exit 1 ;;
+  coloc-rdsp)        # rdsp only: vision encoder on every GPU, language TP2 x PP2 x DP2
+    rdsp coloc-rdsp "qwen35-$SIZE-coloc-tp2pp2dp2.sh" ;;
+  *) sed -n 2,13p "$0"; exit 1 ;;
 esac
