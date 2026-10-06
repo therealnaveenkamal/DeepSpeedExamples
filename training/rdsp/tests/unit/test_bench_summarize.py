@@ -53,3 +53,17 @@ def test_published_logs_give_the_readme_numbers(capsys):
         readme = f.read()
     for megatron, rdsp in got:
         assert f"| {megatron} s | {rdsp} s |" in readme
+
+
+def test_published_h100_logs_give_the_benchmark_results_numbers(capsys):
+    """bench/published/h100 holds the 8x H100 logs; summarize.py on them prints
+    every step time BENCHMARK_RESULTS.md reports in its H100 section."""
+    summarize.main([os.path.join(HERE, "..", "..", "bench", "published", "h100")])
+    rows = capsys.readouterr().out.splitlines()[1:]
+    got = [tuple(line.split()[-6:-4]) for line in rows]
+    assert got == [("7.99", "7.89"), ("8.79", "6.49"), ("18.24", "12.30"), ("-", "5.62")]
+    with open(os.path.join(HERE, "..", "..", "docs", "BENCHMARK_RESULTS.md")) as f:
+        doc = f.read()
+    for megatron, rdsp in got:
+        cell = "—" if megatron == "-" else f"{megatron} s"
+        assert f"| {cell} | {rdsp} s |" in doc

@@ -1,8 +1,8 @@
 # Benchmark results
 
-rdsp against MegatronMIMO and Megatron-Bridge, training Qwen3.5-2B and 4B on CORD-v2. One AWS g7.48xlarge: 8× RTX PRO 4500 Blackwell, 32 GB, PCIe, no NVLink. Settings held equal, software versions and how to rerun: [REPRODUCE.md](REPRODUCE.md). Raw logs: `bench/published/{2b,4b}/`; `python bench/mimo/summarize.py bench/published/2b` prints the table rows, and `tests/unit/test_bench_summarize.py` checks them against the README.
+rdsp against MegatronMIMO and Megatron-Bridge, training Qwen3.5-2B and 4B on CORD-v2. Main results: one AWS g7.48xlarge, 8× RTX PRO 4500 Blackwell, 32 GB, PCIe, no NVLink. A first 4B run on 8× H100 with NVLink follows them. Settings held equal, software versions and how to rerun: [REPRODUCE.md](REPRODUCE.md). Raw logs: `bench/published/{2b,4b,h100}/`; `python bench/mimo/summarize.py bench/published/2b` prints the table rows, and `tests/unit/test_bench_summarize.py` checks them against the README.
 
-## Results
+## Results: 8× RTX PRO 4500, PCIe
 
 Median over steps 6–50. Tokens/s counts real tokens only; both systems see the same tokens. Cost assumes $5.32/h for 8 GPUs, prorated to 5 for the MIMO layout.
 
@@ -14,6 +14,27 @@ Median over steps 6–50. Tokens/s counts real tokens only; both systems see the
 | 4B | TP4×PP2×DP1, vs Bridge | 15.93 s | 13.29 s | −17% | 4,073 | 4,901 | 0.363 | 0.302 |
 
 Loss: every pair starts from the same step-0 loss. Over steps 1–49, rdsp's mean difference from Megatron is +0.0005 (2B MIMO layout), +0.003 (4B TP2×PP2×DP2) and −0.0024 (4B TP4×PP2×DP1). Steps 4–5 vary by up to 0.08 between repeated runs of either system, from GPU kernels that aren't bit-for-bit deterministic.
+
+## Results: 8× H100, NVLink (first run)
+
+Qwen3.5-4B on one AWS p5.48xlarge: 8× H100 SXM 80 GB, every pair of GPUs linked by NVLink through NVSwitch (`nvidia-smi topo -m`: NV18). Same software, data, settings and recipes as above. Megatron-Bridge's settings were diffed against the PCIe runs: the only difference was the step count. Median over steps 6–50; cost assumes $22.28/h for 8 GPUs (spot, us-east-2).
+
+| Layout | Megatron | rdsp | Step time | Megatron tok/s | rdsp tok/s | Megatron $/M tok | rdsp $/M tok |
+|---|---|---|---|---|---|---|---|
+| Vision 1 GPU + language TP2×DP2, vs MIMO | 7.99 s | 7.89 s | −1% | 8,171 | 8,239 | 0.473 | 0.469 |
+| TP2×PP2×DP2, vs Bridge | 8.79 s | 6.49 s | −26% | 7,372 | 9,901 | 0.840 | 0.625 |
+| TP4×PP2×DP1, vs Bridge | 18.24 s | 12.30 s | −33% | 3,522 | 5,274 | 1.757 | 1.174 |
+| Colocated vision + language TP2×PP2×DP2 (rdsp only) | — | 5.62 s | | | 11,580 | | 0.534 |
+
+Loss: every pair starts from the same step-0 loss; over steps 1–49 rdsp's mean difference from Megatron is +0.003, −0.003 and −0.008, and colocated's from Megatron-Bridge TP2×PP2×DP2 is −0.002. Logs: `bench/published/h100/`, with the GPU topology in `hardware.txt`.
+
+**Read with care:**
+- **One round.** No repeats yet, so no spread. On PCIe, repeats landed within about 2%.
+- **The host CPU limits launch-heavy runs.** This instance has an AMD EPYC 7R13. A torch-profiler step on rdsp's language GPUs in the MIMO layout shows the CPU busy for the whole step while GPU kernels run for only part of it: the layout is bound by kernel launches, not by the GPUs. That's why it ends in a near-tie. Megatron's TP4×PP2×DP1 (64 one-row microbatches per GPU, 26.7 TFLOP/s per GPU) is slower here than on the PCIe GPUs, most likely for the same reason. That's an inference, since its profiler trace was lost, and it inflates the −33%.
+- **rdsp's TP4 split is off on H100.** Stage 0 (vision encoder + 12 layers) is busy 12.1 s per step while stage 1 waits 3.2 s. The balanced estimate doesn't model how much less efficiently the encoder's small matrices run under TP4.
+- **Colocated ran without compiling the encoder.** The recipe's `compile_vision` doesn't apply to a colocated encoder (now rejected at start-up); `recipes/qwen35-4b-coloc-tp2pp2dp2.sh` compiles it, and is unmeasured.
+- **NVLink was used by both systems.** With `NCCL_DEBUG=INFO`, every NCCL connection on both sides is `P2P/CUMEM`, with no `SHM` or `NET` fallback.
+- **Defaults on both sides.** Megatron's TP communication overlap (`tp_comm_overlap`) is off in its stock recipe, as on PCIe; rdsp has no equivalent. A run with it on would be a separate, labelled number.
 
 ## rdsp settings per layout
 
