@@ -14,6 +14,9 @@ from pathlib import Path
 
 PAIRS = (  # (layout, GPUs, Megatron run or None for rdsp only, rdsp run)
     ("vision 1 GPU + language TP2xDP2", 5, "noncoloc-mimo", "noncoloc-rdsp"),
+    ("vision DP2 + language TP2xDP2", 6, "vision2-mimo", "vision2-rdsp"),
+    ("vision 1 GPU + language TP2xPP2", 5, "langpp2-mimo", "langpp2-rdsp"),
+    ("vision 1 GPU + language TP4", 5, "langtp4-mimo", "langtp4-rdsp"),
     ("TP2xPP2xDP2", 8, "shared-megatron", "shared-rdsp"),
     ("TP4xPP2xDP1", 8, "tp4pp2-megatron", "tp4pp2-rdsp"),
     ("colocated vision + TP2xPP2xDP2", 8, None, "coloc-rdsp"),

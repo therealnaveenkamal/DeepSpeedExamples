@@ -33,6 +33,18 @@ def test_pairs_megatron_and_rdsp_logs(tmp_path, capsys):
     assert "TP4xPP2xDP1" not in out  # pairs without logs are left out
 
 
+def test_every_mimo_layout_gets_its_row(tmp_path, capsys):
+    for case in ("vision2", "langpp2", "langtp4"):
+        (tmp_path / f"{case}-mimo.log").write_text(_megatron_log(10000.0))
+        (tmp_path / f"{case}-rdsp.log").write_text(_rdsp_log(8000))
+    summarize.main([str(tmp_path)])
+    out = capsys.readouterr().out
+    for layout in ("vision DP2 + language TP2xDP2", "vision 1 GPU + language TP2xPP2",
+                   "vision 1 GPU + language TP4"):
+        row = next(line for line in out.splitlines() if line.startswith(layout))
+        assert "-20%" in row, row
+
+
 def test_rdsp_only_layout_gets_a_row_without_megatron(tmp_path, capsys):
     """Colocated vision has no Megatron counterpart: its row shows rdsp alone."""
     (tmp_path / "coloc-rdsp.log").write_text(_rdsp_log(5000))

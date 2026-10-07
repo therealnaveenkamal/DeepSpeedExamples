@@ -29,9 +29,13 @@ class BalancedTransformerBlocks:
     vision_token_ratio: the vision encoder's cost per text token, which
     scales its parameter-count estimate. Measure it from a step's batch with
     partition.vision_token_ratio(): patches over the text tokens actually
-    computed, weighted for the encoder's attention over each image."""
+    computed, weighted for the encoder's attention over each image.
+
+    vision_stage: put the vision encoder alone on the first stage (as a
+    first cut at 0 does) and balance the decoder blocks over the others."""
 
     vision_token_ratio: float = 1.0
+    vision_stage: bool = False
 
 
 @dataclass(frozen=True)

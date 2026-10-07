@@ -5,13 +5,18 @@
 #   tp2        Megatron-Bridge vs rdsp: TP2xPP2xDP2
 #   tp4        Megatron-Bridge vs rdsp: TP4xPP2xDP1
 #   coloc      rdsp only: vision encoder on every GPU, language TP2xPP2xDP2
-#   all        all four
+#   all        the four above
+#   vision2    MegatronMIMO vs rdsp: vision DP2 on 2 GPUs, language TP2xDP2 (6 GPUs)
+#   langpp2    MegatronMIMO vs rdsp: vision on 1 GPU, language TP2xPP2 (5 GPUs)
+#   langtp4    MegatronMIMO vs rdsp: vision on 1 GPU, language TP4 (5 GPUs)
+#   mimo       noncoloc vision2 langpp2 langtp4
 #
 # Env: MODEL (Qwen3.5-4B), STEPS (50), ROUNDS (1), PRICE (node $/h for the cost
 # column, 5.32), LOGS (~/bench/$MODEL; round r writes $LOGS/r<r>), DRY_RUN=1
 # prints the plan. Converts the checkpoints and exports the samples first when
 # they are missing. Each pair runs back to back, Megatron first; a layout with
-# no rdsp recipe for MODEL is skipped. Run after bench/setup_node.sh.
+# no rdsp recipe for MODEL is skipped. NSYS_DELAY + NSYS_DURATION profile every
+# run with Nsight Systems (see runs.sh). Run after bench/setup_node.sh.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RDSP=$(cd "$HERE/../.." && pwd)
@@ -21,13 +26,14 @@ BASE=${LOGS:-$HOME/bench/$MODEL}
 WORK=$HOME/mimo
 SIZE=$(echo "${MODEL#Qwen3.5-}" | tr '[:upper:]' '[:lower:]')
 
-usage() { sed -n 2,14p "$0"; exit 1; }
+usage() { sed -n 2,19p "$0"; exit 1; }
 [ $# -gt 0 ] || usage
 layouts=()
 for arg in "$@"; do
   case $arg in
     all) layouts+=(noncoloc tp2 tp4 coloc) ;;
-    noncoloc|tp2|tp4|coloc) layouts+=("$arg") ;;
+    mimo) layouts+=(noncoloc vision2 langpp2 langtp4) ;;
+    noncoloc|tp2|tp4|coloc|vision2|langpp2|langtp4) layouts+=("$arg") ;;
     *) echo "unknown layout: $arg"; usage ;;
   esac
 done
@@ -38,6 +44,7 @@ cases_of() {  # cases_of <layout>: runs.sh cases, Megatron first
     tp2) echo shared-megatron shared-rdsp ;;
     tp4) echo tp4pp2-megatron tp4pp2-rdsp ;;
     coloc) echo coloc-rdsp ;;
+    vision2|langpp2|langtp4) echo "$1-mimo" "$1-rdsp" ;;
   esac
 }
 recipe_of() {
@@ -46,6 +53,9 @@ recipe_of() {
     tp2) echo "qwen35-$SIZE-tp2pp2dp2.sh" ;;
     tp4) echo "qwen35-$SIZE-tp4pp2dp1.sh" ;;
     coloc) echo "qwen35-$SIZE-coloc-tp2pp2dp2.sh" ;;
+    vision2) echo "qwen35-$SIZE-vision2-tp2dp2.sh" ;;
+    langpp2) echo "qwen35-$SIZE-vision1-tp2pp2.sh" ;;
+    langtp4) echo "qwen35-$SIZE-vision1-tp4.sh" ;;
   esac
 }
 

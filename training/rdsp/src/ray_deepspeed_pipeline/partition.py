@@ -226,10 +226,20 @@ def partition_parameters(model: nn.Module, policy, stages: int,
     blocks_name, blocks = find_block_list(model)
     if isinstance(policy, BalancedTransformerBlocks) and stages > 1:
         pre, per_block, post = _compute_costs(model, blocks_name, blocks, exclude)
-        # what precedes the blocks, embeddings aside, is the vision encoder
-        pre *= policy.vision_token_ratio
-        cuts = _balanced_cuts((pre, per_block, post), stages,
-                              vision_injection_depth(model), stage_gpus or (1,) * stages)
+        gpus = stage_gpus or (1,) * stages
+        if policy.vision_stage:
+            if vision_config(model) is None or exclude is not None or \
+                    vision_injection_depth(model):
+                raise ValidationError(
+                    "vision_stage puts the vision encoder alone on the first stage: it needs "
+                    "a model with a vision encoder whose output enters only the input "
+                    "embeddings, not colocated vision")
+            cuts = [0] + _balanced_cuts((0, per_block, post), stages - 1, 0, gpus[1:])
+        else:
+            # what precedes the blocks, embeddings aside, is the vision encoder
+            pre *= policy.vision_token_ratio
+            cuts = _balanced_cuts((pre, per_block, post), stages,
+                                  vision_injection_depth(model), gpus)
     else:
         vision = vision_config(model) is not None
         cuts = _cuts_for(policy, len(blocks), stages, vision) if stages > 1 else []

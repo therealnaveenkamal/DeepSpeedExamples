@@ -490,6 +490,39 @@ def test_colocated_vision_rejected_where_it_cannot_apply(make, cuts, match):
 
 
 @needs_qwen3_5
+def test_balanced_vision_stage_puts_the_encoder_alone_first_and_balances_the_rest():
+    """BalancedTransformerBlocks(vision_stage=True): stage 0 holds the vision
+    encoder and no decoder block; the decoder blocks are split over the other
+    stages exactly as a balanced split of those stages alone would split them."""
+    from ray_deepspeed_pipeline.partition import (
+        _balanced_cuts,
+        _compute_costs,
+        find_block_list,
+        partition_parameters,
+    )
+
+    model = transformers.Qwen3_5ForConditionalGeneration(tiny_qwen3_5_vl())
+    parts = partition_parameters(model, rdsp.BalancedTransformerBlocks(vision_stage=True), 3)
+    assert (parts[0].block_start, parts[0].block_stop) == (0, 0)
+    assert any(n.startswith("model.visual.") for n in parts[0].parameter_names)
+    name, blocks = find_block_list(model)
+    _, per_block, post = _compute_costs(model, name, blocks)
+    expected = _balanced_cuts((0, per_block, post), 2, 0, (1, 1))
+    assert [p.block_start for p in parts[1:]] == [0, *expected]
+    assert parts[-1].block_stop == len(blocks)
+
+
+def test_balanced_vision_stage_needs_a_vision_encoder():
+    from ray_deepspeed_pipeline.partition import partition_parameters
+
+    model = transformers.Qwen3ForCausalLM(transformers.Qwen3Config(
+        vocab_size=VOCAB, hidden_size=64, intermediate_size=128, num_hidden_layers=4,
+        num_attention_heads=4, num_key_value_heads=2, head_dim=16))
+    with pytest.raises(ValidationError, match="vision encoder"):
+        partition_parameters(model, rdsp.BalancedTransformerBlocks(vision_stage=True), 2)
+
+
+@needs_qwen3_5
 def test_colocated_vision_rejects_a_stage_compile_vision_it_would_ignore():
     """compile_vision compiles the encoder a stage holds; a colocated encoder is
     on no stage, so the flag would do nothing. ColocatedVision(compile=) is the

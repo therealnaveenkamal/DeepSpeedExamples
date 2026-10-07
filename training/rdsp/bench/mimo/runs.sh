@@ -8,6 +8,8 @@
 #   MODEL=Qwen3.5-2B runs.sh shared-megatron | shared-rdsp    # TP2xPP2xDP2
 #   MODEL=Qwen3.5-4B runs.sh tp4pp2-megatron | tp4pp2-rdsp    # TP4xPP2xDP1
 #   MODEL=Qwen3.5-4B runs.sh coloc-rdsp      # rdsp only: colocated vision
+#   vision2-* (images DP2), langpp2-* (language TP2xPP2), langtp4-* (language TP4):
+#   more non-colocated MIMO layouts, each as <case>-mimo | <case>-rdsp
 #   python summarize.py ~/runs                   # the results table
 #
 # Case names are the same for both models: set LOGS=~/runs-4b for the 4B runs.
@@ -27,6 +29,7 @@ export STEPS=${STEPS:-50}
 WORK=$HOME/mimo                       # /workspace inside the container
 IMAGE=nvcr.io/nvidia/nemo:26.08
 LOGS=${LOGS:-$HOME/runs}; mkdir -p "$LOGS"
+if [ -n "${NSYS_DELAY:-}" ]; then mkdir -p "$WORK/nsys"; fi
 RDSP=$(cd "$(dirname "$0")/../.." && pwd)
 SIZE=$(echo "${MODEL#Qwen3.5-}" | tr '[:upper:]' '[:lower:]')    # 2b, 4b
 case $SIZE in
@@ -58,6 +61,8 @@ STD_TRAIN="$STD_DATA train.micro_batch_size=1 train.train_iters=$STEPS \
 # Diagnosis only, never for published runs: MIMO_EXTRA (e.g. "--pad-to-seq-length
 # false"), MEGATRON_EXTRA (Bridge overrides, e.g. "logger.timing_log_level=2"),
 # RDSP_EXTRA (train_vl.py flags, e.g. "--profile"), NCCL_DEBUG=INFO.
+# NSYS_DELAY + NSYS_DURATION (seconds): Nsight Systems on that window of the
+# run, every process, report in ~/mimo/nsys/<case>.nsys-rep.
 MIMO_TRAIN="--hf-model Qwen/$MODEL --dataset-name cord_v2 --seq-length 2048 \
   --global-batch-size 64 --train-iters $STEPS --dataloader-type single \
   --pretrained-checkpoint /workspace/$MODEL-mimo \
@@ -65,11 +70,23 @@ MIMO_TRAIN="--hf-model Qwen/$MODEL --dataset-name cord_v2 --seq-length 2048 \
   --start-weight-decay 0.0 --end-weight-decay 0.0 --clip-grad 0.0 --lr-warmup-iters 0 \
   --log-interval 1 --experiment-root /workspace/runs ${MIMO_EXTRA:-}"
 
+nsys_prefix() {  # nsys_prefix <report path>: a profiler prefix when NSYS_DELAY and NSYS_DURATION are set
+  [ -n "${NSYS_DELAY:-}" ] && [ -n "${NSYS_DURATION:-}" ] || return 0
+  echo "nsys profile -t cuda,nvtx -s none --cpuctxsw=none --delay $NSYS_DELAY" \
+       "--duration $NSYS_DURATION --force-overwrite true -o $1"
+}
+
 megatron() {  # megatron <log name> <tp> <pp>: the standard Bridge recipe
-  container "python -m torch.distributed.run --nproc_per_node=8 scripts/training/run_recipe.py \
+  container "$(nsys_prefix "/workspace/nsys/$1") python -m torch.distributed.run --nproc_per_node=8 scripts/training/run_recipe.py \
     --recipe $RECIPE --step_func qwen3_vl_step $STD_TRAIN \
     model.tensor_model_parallel_size=$2 model.pipeline_model_parallel_size=$3 ${MEGATRON_EXTRA:-}" \
     2>&1 | tee "$LOGS/$1.log"
+}
+
+mimo() {  # mimo <log name> <GPUs> <global microbatch> <language layout> <images layout>
+  container "$(nsys_prefix "/workspace/nsys/$1") python -m torch.distributed.run --nproc_per_node=$2 \
+    examples/megatron_mimo/qwen35_vl/finetune_qwen35_vl.py $MIMO_TRAIN --micro-batch-size $3 \
+    --run-name $1 --component language=$4 --component images=$5" 2>&1 | tee "$LOGS/$1.log"
 }
 
 rdsp() {  # rdsp <log name> <recipe> [train_vl flags]
@@ -77,7 +94,8 @@ rdsp() {  # rdsp <log name> <recipe> [train_vl flags]
   [ -f "$recipe" ] || { echo "no recipe $recipe for $MODEL" >&2; exit 1; }
   (unset LD_LIBRARY_PATH && . "$HOME/venv/bin/activate" && . "$HOME/cuda_env.sh" && \
    DS_BUILD_OPS=0 HF_HOME=$HOME/hf PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-   DATA=exported:$WORK/cord_steps-$MODEL bash "$recipe" --steps "$STEPS" "$@" ${RDSP_EXTRA:-}) \
+   DATA=exported:$WORK/cord_steps-$MODEL $(nsys_prefix "$WORK/nsys/$name") \
+   bash "$recipe" --steps "$STEPS" "$@" ${RDSP_EXTRA:-}) \
     2>&1 | tee "$LOGS/$name.log"
 }
 
@@ -93,13 +111,23 @@ case "${1:-}" in
     container "python /rdsp/bench/mimo/export_bridge_batches.py --out /workspace/cord_steps-$MODEL \
       --steps $STEPS --recipe $RECIPE $STD_DATA dataset.pad_to_max_length=true" \
       2>&1 | tee "$LOGS/export.log" ;;
+  # MegatronMIMO's microbatch is global over language DP: 1 row per language rank
   noncoloc-mimo)     # language TP2 x DP2 on ranks 0-3, images on rank 4
-    container "python -m torch.distributed.run --nproc_per_node=5 \
-      examples/megatron_mimo/qwen35_vl/finetune_qwen35_vl.py $MIMO_TRAIN --micro-batch-size 2 \
-      --run-name noncoloc --component language=tp=2,pp=1,dp=2,rank_offset=0 \
-      --component images=tp=1,pp=1,dp=1,rank_offset=4" 2>&1 | tee "$LOGS/noncoloc-mimo.log" ;;
+    mimo noncoloc-mimo 5 2 tp=2,pp=1,dp=2,rank_offset=0 tp=1,pp=1,dp=1,rank_offset=4 ;;
   noncoloc-rdsp)
     rdsp noncoloc-rdsp "qwen35-$SIZE-vision1-tp2dp2.sh" ;;
+  vision2-mimo)      # language TP2 x DP2 on ranks 0-3, images DP2 on ranks 4-5
+    mimo vision2-mimo 6 2 tp=2,pp=1,dp=2,rank_offset=0 tp=1,pp=1,dp=2,rank_offset=4 ;;
+  vision2-rdsp)
+    rdsp vision2-rdsp "qwen35-$SIZE-vision2-tp2dp2.sh" ;;
+  langpp2-mimo)      # language TP2 x PP2 on ranks 0-3, images on rank 4
+    mimo langpp2-mimo 5 1 tp=2,pp=2,dp=1,rank_offset=0 tp=1,pp=1,dp=1,rank_offset=4 ;;
+  langpp2-rdsp)
+    rdsp langpp2-rdsp "qwen35-$SIZE-vision1-tp2pp2.sh" ;;
+  langtp4-mimo)      # language TP4 on ranks 0-3, images on rank 4
+    mimo langtp4-mimo 5 1 tp=4,pp=1,dp=1,rank_offset=0 tp=1,pp=1,dp=1,rank_offset=4 ;;
+  langtp4-rdsp)
+    rdsp langtp4-rdsp "qwen35-$SIZE-vision1-tp4.sh" ;;
   shared-megatron)
     megatron shared-megatron 2 2 ;;
   shared-rdsp)
@@ -110,5 +138,5 @@ case "${1:-}" in
     rdsp tp4pp2-rdsp "qwen35-$SIZE-tp4pp2dp1.sh" ;;
   coloc-rdsp)        # rdsp only: vision encoder on every GPU, language TP2 x PP2 x DP2
     rdsp coloc-rdsp "qwen35-$SIZE-coloc-tp2pp2dp2.sh" ;;
-  *) sed -n 2,13p "$0"; exit 1 ;;
+  *) sed -n 2,15p "$0"; exit 1 ;;
 esac

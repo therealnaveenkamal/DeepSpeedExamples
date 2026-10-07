@@ -203,6 +203,18 @@ LOSSES = {
 }
 
 
+def partition_policy(cuts: str, ratio):
+    """--cuts as a partition policy. ratio() measures the vision encoder's cost
+    per text token from the first step; only 'balanced' needs it."""
+    if cuts == "balanced":
+        return rdsp.BalancedTransformerBlocks(vision_token_ratio=ratio())
+    if cuts == "0,balanced":  # encoder alone on stage 0, decoder balanced over the rest
+        return rdsp.BalancedTransformerBlocks(vision_stage=True)
+    if cuts == "even":
+        return rdsp.UniformTransformerBlocks()
+    return rdsp.ExplicitCuts(tuple(int(c) for c in cuts.split(",")))
+
+
 def loss_function(args):
     """The stage loss for --loss / --liger / --sharded-loss."""
     if args.sharded_loss:
@@ -263,7 +275,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--model", default="Qwen/Qwen3-VL-2B-Instruct")
     p.add_argument("--stages", type=int, default=2)
-    p.add_argument("--cuts", default="balanced", help="'balanced', 'even', or e.g. 9,18")
+    p.add_argument("--cuts", default="balanced",
+                   help="'balanced', '0,balanced' (vision encoder alone on stage 0), "
+                        "'even', or e.g. 9,18")
     p.add_argument("--stage", type=parse_stage, action="append", default=[],
                    help="per-stage layout, as in train.py")
     p.add_argument("--microbatches", type=int, default=8)
@@ -357,15 +371,8 @@ def main(argv=None):
     with accelerate.init_empty_weights():
         skeleton = transformers.AutoModelForImageTextToText.from_config(config,
                                                                          dtype=torch.bfloat16)
-    if args.cuts == "balanced":
-        # the encoder's cost per text token, measured from the first step
-        from ray_deepspeed_pipeline.partition import vision_token_ratio
-        partition = rdsp.BalancedTransformerBlocks(
-            vision_token_ratio=vision_token_ratio(config, first))
-    elif args.cuts == "even":
-        partition = rdsp.UniformTransformerBlocks()
-    else:
-        partition = rdsp.ExplicitCuts(tuple(int(c) for c in args.cuts.split(",")))
+    from ray_deepspeed_pipeline.partition import vision_token_ratio
+    partition = partition_policy(args.cuts, ratio=lambda: vision_token_ratio(config, first))
 
     if args.profile:
         os.environ["RDSP_PROFILE"] = "1"  # before ray.init: actors inherit it
