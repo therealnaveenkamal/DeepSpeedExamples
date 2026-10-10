@@ -93,6 +93,37 @@ def _shard_vocabulary(stage_module, hf_config, tp: int) -> None:
                 gather_logits=not getattr(stage_module, "_rdsp_logit_shards", False))
 
 
+def _split_linear_attention(stage_module, tp: int) -> None:
+    """Split each gated delta-net layer by heads (linear_attention_parallel.py)
+    and drop the TP-plan entries for its projections, which are split already
+    and must not be split again by AutoTP. TP index and group as in
+    _shard_vocabulary."""
+    import re
+
+    import torch.distributed as dist
+
+    from ray_deepspeed_pipeline.linear_attention_parallel import shard_linear_attention
+
+    def tp_group():
+        from deepspeed.utils import groups
+        return groups.get_tensor_model_parallel_group()
+
+    split = shard_linear_attention(stage_module, rank=dist.get_rank() % tp, world=tp,
+                                   group=tp_group)
+    plan = getattr(stage_module, "_tp_plan", None)
+    if not split or not plan:
+        return
+    prefixes = tuple(name + "." if name else "" for name in split)
+    names = [name for name, _ in stage_module.named_modules()]
+
+    def taken(pattern):
+        regex = re.compile(".*" + pattern.replace(".", r"\.").replace("*", r"[^.]+") + "$")
+        hits = [n for n in names if regex.match(n)]
+        return bool(hits) and all(n.startswith(prefixes) for n in hits)
+
+    stage_module._tp_plan = {k: v for k, v in plan.items() if not taken(k)}
+
+
 def _ulysses_mpu(stage_module, micro_batch_size: int, sp: int, backend: str):
     """The mpu DeepSpeed needs for Ulysses sequence parallelism over the
     stage's HF attention layers. Every SP rank reports model-parallel rank 0:
@@ -169,6 +200,7 @@ def _deepspeed_engine_factory(stage_module, ds_config: dict):
     tp_conf = conf.get("tensor_parallel", {})
     tp = int(tp_conf.get("autotp_size", 1) or 1)
     if tp > 1 and "partition_config" not in tp_conf and "preset_model" not in tp_conf:
+        _split_linear_attention(stage_module, tp)
         rules = _tp_partition_config(stage_module)
         if rules is not None:
             tp_conf["partition_config"] = rules

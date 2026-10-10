@@ -80,6 +80,10 @@ The boundary carries the hidden state plus the tensors the model passes to each 
 
 TP uses the model's AutoTP plan. For configs without one, rdsp generates a plan for the standard `q/k/v/o_proj` and `gate/up/down_proj` names, the vision blocks' `attn.qkv`/`attn.proj`/`mlp.linear_fc1/fc2`, and Qwen3.5's linear-attention projections.
 
+Two pieces sit outside AutoTP and split the way Megatron does:
+- **Vocabulary** (`vocab_parallel.py`): each TP rank keeps 1/tp of the embedding's and the output head's rows.
+- **Qwen3.5 linear attention** (`linear_attention_parallel.py`): each TP rank keeps 1/tp of the key heads and of the value heads that read them, with their projections, conv filter, `A_log` and `dt_bias`. The heads' recurrences are independent, so the only communication is a sum of `out_proj`'s output, a sum of the input gradient, and a sum of the shared gated norm's weight gradient. AutoTP's own rule for these projections (`colwise_gather_output`) would split the projections but leave every rank holding every head's conv filter and running every head's recurrence. A layer whose heads don't divide by TP stays whole.
+
 ## Vision encoder placement
 
 | Placement | How | Encoder runs on |
