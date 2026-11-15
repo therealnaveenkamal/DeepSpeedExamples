@@ -1,6 +1,6 @@
 #!/bin/bash
 # ray_cluster3.sh <up|down>, on node 1: ray_cluster.sh over three nodes, head on node 1, workers on
-# node 2 (~/env2.sh) and the third box (~/env3.sh, ops/h100/launch3.sh), every raylet started with
+# node 2 (~/env2.sh) and the third box (~/env3.sh, which exports PRIV3), every raylet started with
 # efa_env.sh. A driver on any of them joins with RAY_ADDRESS=auto; rdsp's stages fill the driver's
 # node first.
 set -euo pipefail

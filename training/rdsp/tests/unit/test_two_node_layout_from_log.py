@@ -9,12 +9,16 @@ sys.path.insert(0, os.path.join(HERE, "..", "..", "bench", "two_node_35b", "scri
 
 import layout_from_log as lfl  # noqa: E402
 
-LOG = """\
-stages (blocks): ((0, 5), (5, 10), (10, 15), (15, 20), (20, 25), (25, 30), (30, 35), (35, 40))
-measured: MeasuredStages(cuts=(5, 10, 15, 20, 25, 30, 35), seconds=(9.0, 2.5, 2.5, 2.5, 2.5, 2.5, 2.5, 5.0), peak_gib=(40.0,), bytes_per_param=(4.0,), limit_gib=74.6)
-step 1 loss 1.0
-stages (blocks): ((0, 1), (1, 8), (8, 15), (15, 22), (22, 29), (29, 36), (36, 39), (39, 40))
-"""
+LOG = (
+    "stages (blocks): ((0, 5), (5, 10), (10, 15), (15, 20), "
+    "(20, 25), (25, 30), (30, 35), (35, 40))\n"
+    "measured: MeasuredStages(cuts=(5, 10, 15, 20, 25, 30, 35), "
+    "seconds=(9.0, 2.5, 2.5, 2.5, 2.5, 2.5, 2.5, 5.0), peak_gib=(40.0,), "
+    "bytes_per_param=(4.0,), limit_gib=74.6)\n"
+    "step 1 loss 1.0\n"
+    "stages (blocks): ((0, 1), (1, 8), (8, 15), (15, 22), "
+    "(22, 29), (29, 36), (36, 39), (39, 40))\n"
+)
 
 
 def test_reads_the_last_pipeline_and_the_calibration():

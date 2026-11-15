@@ -6,7 +6,7 @@
 # node 2 gets only the command. Node 2 runs it from ~/rdsp too, its output in ~/both-<time>.log
 # there. Exits with node 1's code, or 1 if node 1 passed and node 2 failed.
 # Fail fast: once either node's command ends, the other gets GRACE seconds (default 120) to end
-# too, then its containers and torchrun are killed (a crash on one node used to leave the other
+# too, then its containers and torchrun are killed (otherwise a crash on one node leaves the other
 # waiting in NCCL or the rendezvous until the run's own timeout).
 # both.sh --cleanup: kill every container and torchrun on both nodes.
 set -uo pipefail

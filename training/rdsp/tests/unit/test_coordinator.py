@@ -273,3 +273,17 @@ def test_a_stage_spanning_nodes_keeps_tensor_parallel_groups_on_one_node():
     # TP4 groups are ranks 0-3, 4-7, ...: each on one node
     assert all(len({even[order[r]] for r in range(g, g + 4)}) == 1 for g in range(0, 16, 4))
     assert bundles_in_rank_order(even, ["b", "a"], 1)[:8] == [1, 3, 5, 7, 9, 11, 13, 15]
+
+
+def test_a_stage_whose_ranks_do_not_share_the_checkpoint_directory_refuses_to_save():
+    # a stage spanning nodes on node-local storage: rank 0 would fingerprint only its own
+    # node's files, and the other node's ranks could not load what rank 0's node wrote
+    from ray_deepspeed_pipeline.errors import CheckpointError
+    from ray_deepspeed_pipeline.stage_group import StageGroupClient
+
+    client = StageGroupClient([object(), object()], stage=3)
+    shared = [{"rank": 0, "files": {"a": "1"}, "shares_dir": True}, {"rank": 1, "shares_dir": True}]
+    assert client._stage_record(shared)["files"] == {"a": "1"}
+    apart = [shared[0], {"rank": 1, "shares_dir": False}]
+    with pytest.raises(CheckpointError, match="stage 3.*rank 1.*shared"):
+        client._stage_record(apart)

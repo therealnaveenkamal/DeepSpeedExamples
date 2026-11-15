@@ -5,6 +5,7 @@ binding so the class's own forward runs again, and leaves every other patch alon
 import os
 import sys
 
+import pytest
 import torch
 from torch import nn
 
@@ -48,3 +49,17 @@ def test_flag_defaults_to_liger():
     args = train_vl.build_parser().parse_args([])
     assert args.moe_experts == "liger"
     assert train_vl.build_parser().parse_args(["--moe-experts", "hf"]).moe_experts == "hf"
+
+
+def test_hf_experts_without_liger_is_refused():
+    # without --liger nothing installs Liger's expert kernel: "hf" would silently do nothing
+    parse = train_vl.build_parser().parse_args
+    assert "--liger" in train_vl.experts_problem(parse(["--moe-experts", "hf"]))
+    assert train_vl.experts_problem(parse(["--moe-experts", "hf", "--liger"])) is None
+    assert train_vl.experts_problem(parse([])) is None
+
+
+def test_main_exits_on_hf_experts_without_liger(capsys):
+    with pytest.raises(SystemExit):
+        train_vl.main(["--moe-experts", "hf"])
+    assert "--moe-experts hf" in capsys.readouterr().err

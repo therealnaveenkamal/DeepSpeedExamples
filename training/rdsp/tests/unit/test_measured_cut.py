@@ -13,14 +13,9 @@ from ray_deepspeed_pipeline.config import (
     MeasuredStages,
     StageOverride,
 )
-from ray_deepspeed_pipeline.engine import measured_stages
 from ray_deepspeed_pipeline.errors import ValidationError
-from ray_deepspeed_pipeline.partition import (
-    _measured_cuts,
-    _measured_extras,
-    partition_parameters,
-    static_bytes_per_param,
-)
+from ray_deepspeed_pipeline.measurement import measured_stages, static_bytes_per_param
+from ray_deepspeed_pipeline.partition import measured_cuts, measured_extras, partition_parameters
 
 BLOCK = 100  # parameters per block
 
@@ -32,19 +27,19 @@ def measured(cuts, seconds, peak=(10.0, 10.0), bpp=(1.0, 1.0), limit=80.0):
 
 
 def costs(n=32, post=300):
-    return (0, [BLOCK] * n, post)
+    return [BLOCK] * n, post
 
 
 def test_the_first_stage_s_unexplained_time_becomes_its_fixed_cost():
     # 16 | 16 blocks, the last stage's head 3 blocks' worth: 19 units take 19 s,
     # so the first stage's 25 s is 16 blocks and 9 blocks' worth of extra
-    extras = _measured_extras(costs(), (1, 1), measured((16,), (25.0, 19.0)))
+    extras = measured_extras(*costs(), (1, 1), measured((16,), (25.0, 19.0)))
     assert extras == pytest.approx([9 * BLOCK, 3 * BLOCK])
 
 
 def test_blocks_move_off_the_slow_stage():
     # 16 + 9 against 16 + 3: 6 blocks too many on the first stage, so 3 move
-    assert _measured_cuts(costs(), (1, 1), 0, measured((16,), (25.0, 19.0))) == [13]
+    assert measured_cuts(*costs(), (1, 1), 0, measured((16,), (25.0, 19.0))) == [13]
 
 
 def test_times_that_match_the_estimate_give_the_estimate_s_cut():
@@ -52,8 +47,8 @@ def test_times_that_match_the_estimate_give_the_estimate_s_cut():
 
     # 16 blocks in 16 s, 16 blocks and the head (3 blocks' worth) in 19 s
     assert (
-        _measured_cuts(costs(), (1, 1), 0, measured((16,), (16.0, 19.0)))
-        == _balanced_cuts(costs(), 2, 0, (1, 1))
+        measured_cuts(*costs(), (1, 1), 0, measured((16,), (16.0, 19.0)))
+        == _balanced_cuts((0, *costs()), 2, 0, (1, 1))
         == [18]
     )
 
@@ -68,24 +63,24 @@ def test_middle_stages_set_the_rate():
         bytes_per_param=(1, 1, 1),
         limit_gib=80,
     )
-    assert _measured_extras(costs(24, post=0), (1, 1, 1), m) == pytest.approx(
+    assert measured_extras(*costs(24, post=0), (1, 1, 1), m) == pytest.approx(
         [4 * BLOCK, 0, 2 * BLOCK]
     )
-    assert _measured_cuts(costs(24, post=0), (1, 1, 1), 0, m) == [6, 16]
+    assert measured_cuts(*costs(24, post=0), (1, 1, 1), 0, m) == [6, 16]
 
 
 def test_memory_caps_what_a_stage_gains():
     # each block is 1 GiB on the last stage, which has 2 GiB to spare: it takes
     # two blocks, not three
     m = measured((16,), (25.0, 19.0), peak=(70.0, 74.0), bpp=(1.0, 2**30 / BLOCK), limit=76.0)
-    assert _measured_cuts(costs(), (1, 1), 0, m) == [14]
+    assert measured_cuts(*costs(), (1, 1), 0, m) == [14]
     full = measured((16,), (25.0, 19.0), peak=(70.0, 76.0), bpp=(1.0, 2**30 / BLOCK), limit=76.0)
-    assert _measured_cuts(costs(), (1, 1), 0, full) == [16]
+    assert measured_cuts(*costs(), (1, 1), 0, full) == [16]
 
 
 def test_a_stage_already_over_the_limit_may_still_lose_blocks():
     m = measured((16,), (19.0, 25.0), peak=(70.0, 79.0), bpp=(1.0, 1.0), limit=76.0)
-    assert _measured_cuts(costs(), (1, 1), 0, m)[0] > 16
+    assert measured_cuts(*costs(), (1, 1), 0, m)[0] > 16
 
 
 def test_through_partition_parameters():
@@ -267,3 +262,24 @@ def test_a_vision_stage_needs_measurements_with_its_cut():
     )
     with pytest.raises(ValidationError, match="cut at 0"):
         partition_parameters(model, BalancedTransformerBlocks(vision_stage=True, measured=m), 3)
+
+
+def test_a_failed_step_is_what_measure_stages_raises_even_if_profiling_cannot_be_switched_off():
+    from ray_deepspeed_pipeline.engine import RayPipelineEngine
+    from ray_deepspeed_pipeline.errors import StepFailed
+
+    class Coordinator:  # a rank died mid-step: its actor no longer answers
+        def set_profile(self, on):
+            if not on:
+                raise RuntimeError("actor died")
+
+        def train_batch(self, data_iter):
+            raise StepFailed("stage 1 rank 0 was lost")
+
+    with pytest.raises(StepFailed):
+        RayPipelineEngine(Coordinator()).measure_stages(iter([]))
+
+
+def test_stage_times_must_be_positive():
+    with pytest.raises(ValidationError, match="positive"):
+        measured((16,), (0.0, 19.0))

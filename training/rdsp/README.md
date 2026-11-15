@@ -44,7 +44,7 @@ Tokens are real (non-padding) tokens; per GPU divides by the layout's GPU count,
 
 **Not equal.**
 - Pipeline split: Megatron splits decoder layers evenly. rdsp picks the cut from the model and the first batch (`--cuts balanced`).
-- Padding: rdsp pads each microbatch to its longest row. Megatron-Bridge pads rows to multiples of 128. MegatronMIMO pads to 2048; its dynamic padding gives 9.60 s instead of 9.64 s.
+- Padding: rdsp pads each microbatch to its longest row. Megatron-Bridge pads every row to 2048 whenever it pipelines, so those rows are not equal work (see [REPRODUCE](docs/REPRODUCE.md)). MegatronMIMO pads to 2048; its dynamic padding gives 9.60 s instead of 9.64 s.
 - Loss averaging: the MegatronMIMO run trains on per-microbatch means (its only mode), so the rdsp run against it does the same. The Bridge runs train on the per-token mean.
 - Embeddings: in the pipeline layouts, Megatron ties the input embedding and output layer across stages. rdsp trains two copies.
 
@@ -149,7 +149,7 @@ TP inside a stage uses the model's AutoTP plan. Configs without one get a plan f
 ## Tests
 
 ```bash
-pytest -q          # CPU: full runtime on Ray with a stub engine (~430 tests); GPU tests skip
+pytest -q          # CPU: full runtime on Ray with a stub engine (~500 tests); GPU tests skip
 ruff check .
 ```
 
@@ -168,8 +168,8 @@ The GPU tests (parity against the unsplit model, checkpoint round trip, rank-kil
 ## Limitations
 
 - **Validation.**
-  - Benchmarked on one 8-GPU node.
-  - The multi-node path is tested on Ray but not on real hardware.
+  - Benchmarked on one 8-GPU node and on two 8× H100 nodes ([REPRODUCE](docs/REPRODUCE.md)).
+  - Two nodes is the most it has run on.
 - **Schedule.**
   - 1F1B only, no interleaved stages.
   - No global-norm gradient clipping: a nonzero `gradient_clipping` is rejected.
@@ -179,4 +179,4 @@ The GPU tests (parity against the unsplit model, checkpoint round trip, rank-kil
   - The cost model ignores communication.
   - It counts MoE experts in full, not by the active fraction.
   - `ExplicitCuts` overrides it.
-- **Checkpoints.** Node-local: they survive actor loss, not node loss.
+- **Checkpoints.** Node-local: they survive actor loss, not node loss. A stage that spans nodes needs shared storage.

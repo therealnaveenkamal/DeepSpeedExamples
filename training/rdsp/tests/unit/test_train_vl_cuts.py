@@ -87,3 +87,11 @@ def test_calibration_measures_at_learning_rate_zero_and_shuts_down():
     assert engine.shut
     assert [y for _, y in engine.read] == list(range(8))  # 3 steps and one read ahead
     assert all("attention_mask" not in x for x, _ in engine.read)
+
+
+@pytest.mark.parametrize("flags", [["--calibration-steps", "1"], ["--optimizer-group-numel", "-5"]])
+def test_out_of_range_numbers_are_refused_when_parsed(flags, capsys):
+    # one calibration step leaves none to measure (the first is not counted)
+    with pytest.raises(SystemExit):
+        train_vl.build_parser().parse_args(flags)
+    assert flags[0] in capsys.readouterr().err

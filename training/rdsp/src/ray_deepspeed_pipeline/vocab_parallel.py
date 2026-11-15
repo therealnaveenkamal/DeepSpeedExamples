@@ -23,7 +23,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class _SumOverRanks(torch.autograd.Function):
+class SumOverRanks(torch.autograd.Function):
     """Sum over the group forward; backward passes the gradient on as is
     (every rank's output feeds the same downstream computation)."""
 
@@ -38,7 +38,7 @@ class _SumOverRanks(torch.autograd.Function):
         return grad, None
 
 
-class _SumGradOverRanks(torch.autograd.Function):
+class SumGradOverRanks(torch.autograd.Function):
     """Identity forward; backward sums the gradient over the group: each
     rank's head shard sees only its vocabulary rows' share of the input
     gradient."""
@@ -159,7 +159,7 @@ class VocabShardedEmbedding(nn.Module):
         outside = (ids < self.start) | (ids >= self.stop)
         out = F.embedding((ids - self.start).masked_fill(outside, 0), self.weight)
         out = out.masked_fill(outside.unsqueeze(-1), 0)
-        return _SumOverRanks.apply(out, self._group())
+        return SumOverRanks.apply(out, self._group())
 
 
 class VocabShardedHead(nn.Module):
@@ -176,7 +176,7 @@ class VocabShardedHead(nn.Module):
 
     def forward(self, x):
         group = self._group()
-        x = _SumGradOverRanks.apply(x, group)
+        x = SumGradOverRanks.apply(x, group)
         logits = F.linear(x, self.weight)
         if self.gather:
             return _GatherLastDim.apply(logits, group)

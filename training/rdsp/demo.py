@@ -97,17 +97,14 @@ def main():
     model = ToyLM()
     ids = torch.randint(0, VOCAB, (N_MB * ROWS, SEQ))
     labels = torch.randint(0, VOCAB, (N_MB * ROWS, SEQ))
-    mbs = (
-        lambda: iter(
+
+    def mbs():
+        return iter(
             [
-                (
-                    ids[k * ROWS : (k + 1) * ROWS],  # noqa: E731
-                    labels[k * ROWS : (k + 1) * ROWS],
-                )
+                (ids[k * ROWS : (k + 1) * ROWS], labels[k * ROWS : (k + 1) * ROWS])
                 for k in range(N_MB)
             ]
         )
-    )
 
     # 1. lower the public config to the one internal ExecutionPlan
     cfg = rdsp.PipelineConfig(

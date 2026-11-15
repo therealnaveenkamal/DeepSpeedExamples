@@ -18,7 +18,7 @@ from ray_deepspeed_pipeline.boundary import (
     representatives,
     slice_inputs,
 )
-from ray_deepspeed_pipeline.errors import ValidationError
+from ray_deepspeed_pipeline.errors import CheckpointError, ValidationError
 from ray_deepspeed_pipeline.losses import TokenMeanLoss
 from ray_deepspeed_pipeline.partition import compile_blocks, recompute_blocks, select_stage_builder
 from ray_deepspeed_pipeline.protocols import Command
@@ -183,6 +183,12 @@ class StageGroupClient:
         connect_p2p(clients, epoch)
 
     def _stage_record(self, rank_records):
+        apart = [r["rank"] for r in rank_records if not r.get("shares_dir", True)]
+        if apart:
+            raise CheckpointError(
+                f"stage {self.stage}: rank {apart[0]} does not see rank 0's files in the "
+                f"checkpoint directory; a stage that spans nodes needs a path on shared storage"
+            )
         files = next(r["files"] for r in rank_records if r["rank"] == 0)
         return {
             "index": self.stage,
@@ -302,22 +308,23 @@ def fill_nodes_in_order(stage_gpus: list[int], nodes: list[tuple[str, int]]) -> 
     return out
 
 
-def bundles_in_rank_order(bundles_to_node: dict, node_order: list, group: int) -> list[int]:
+def bundles_in_rank_order(bundles_to_node: dict, node_order: list, group_size: int) -> list[int]:
     """Placement-group bundle for each rank of a stage that spans nodes: the
     bundles grouped by node (in node_order), so consecutive ranks share a
     node. A stage's ranks are tensor-parallel fastest, so a tensor-parallel
-    (x sequence-parallel) group of `group` consecutive ranks then stays on one
-    node, provided each node holds a multiple of `group` of the stage's GPUs."""
+    (x sequence-parallel) group of group_size consecutive ranks then stays on
+    one node, provided each node holds a multiple of group_size of the stage's
+    GPUs."""
     where = {node: i for i, node in enumerate(node_order)}
     order = sorted(bundles_to_node, key=lambda b: (where.get(bundles_to_node[b], len(where)), b))
     per_node = {}
     for b in order:
         per_node[bundles_to_node[b]] = per_node.get(bundles_to_node[b], 0) + 1
-    split = [n for n in per_node.values() if n % group]
-    if split:
+    if any(n % group_size for n in per_node.values()):
         raise ValidationError(
             f"a stage spanning nodes got {sorted(per_node.values())} GPUs per node; each node "
-            f"must hold a multiple of tp x sp = {group} so no tensor-parallel group crosses nodes"
+            f"must hold a multiple of tp x sp = {group_size} so no tensor-parallel group "
+            f"crosses nodes; use a stage width that splits evenly over the nodes"
         )
     return order
 
@@ -357,9 +364,9 @@ def create_stage_clients(
     tensor-parallel groups stay inside a node. prefer_nodes: per-stage node
     ids to reuse on a rebuild, so node-local shards stay reachable after an
     actor (not node) failure. Without them, on several nodes, stages fill the
-    driver's node first, then the next (fill_nodes_in_order). weights: HF checkpoint dir each stage loads its
-    meta-device parameters from. On any failure every started stage is shut
-    down.
+    driver's node first, then the next (fill_nodes_in_order). weights: HF
+    checkpoint dir each stage loads its meta-device parameters from. On any
+    failure every started stage is shut down.
     """
     import ray
     from ray.util.placement_group import placement_group
@@ -438,7 +445,7 @@ def create_stage_clients(
                     table = ray.util.placement_group_table(pg)["bundles_to_node_id"]
                     try:
                         bundle_of_rank = bundles_in_rank_order(
-                            table, [n for n, _ in _nodes_in_fill_order()], spec.tp * spec.sp
+                            table, [node for node, _ in nodes], spec.tp * spec.sp
                         )
                     except ValidationError:
                         ray.util.remove_placement_group(pg)

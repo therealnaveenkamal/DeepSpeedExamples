@@ -7,6 +7,11 @@ from dataclasses import dataclass
 
 from ray_deepspeed_pipeline.errors import ValidationError
 
+# rdsp's own keys in a DeepSpeed config: the stage adapter takes them out
+# before DeepSpeed reads it
+MASTER_WEIGHTS_KEY = "rdsp_master_weights"
+OPTIMIZER_GROUP_NUMEL_KEY = "rdsp_optimizer_group_numel"
+
 
 @dataclass(frozen=True)
 class UniformTransformerBlocks:
@@ -25,7 +30,7 @@ class MeasuredStages:
     seconds: each stage's forward and backward time per step (its slowest
     rank). peak_gib: each stage's peak allocated memory (its fullest rank).
     bytes_per_param: each stage's weights, gradients and optimizer state per
-    GPU per parameter of the stage (partition.static_bytes_per_param).
+    GPU per parameter of the stage (measurement.static_bytes_per_param).
     limit_gib: the most memory a stage may be cut to need."""
 
     cuts: tuple[int, ...]
@@ -43,6 +48,16 @@ class MeasuredStages:
                 "MeasuredStages: one cut fewer than stages, and one time, "
                 "peak and bytes per parameter per stage"
             )
+        if not all(seconds > 0 for seconds in self.seconds):
+            raise ValidationError(
+                f"MeasuredStages: every stage's time must be positive, got "
+                f"{self.seconds}; measure again over more steps"
+            )
+
+    def block_ranges(self, n_blocks: int) -> list[tuple[int, int]]:
+        """Each stage's [start, stop) blocks under the measured cuts."""
+        bounds = [0, *self.cuts, n_blocks]
+        return list(zip(bounds, bounds[1:]))
 
 
 @dataclass(frozen=True)
@@ -105,7 +120,8 @@ class StageOverride:
     compile_vision: only the blocks of the vision encoder on this stage.
     recompute_blocks: recompute only the first N of the stage's blocks (and
     the blocks of the vision encoder the stage holds) instead of all of them;
-    excludes recompute."""
+    excludes recompute. Under a measured cut N moves with the blocks the stage
+    gains or loses, so the blocks that keep their activations stay as many."""
 
     stage: int
     num_gpus: int = 1

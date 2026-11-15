@@ -17,6 +17,7 @@ import os
 
 import torch
 
+from ray_deepspeed_pipeline.config import MASTER_WEIGHTS_KEY, OPTIMIZER_GROUP_NUMEL_KEY
 from ray_deepspeed_pipeline.errors import CheckpointError, ValidationError
 
 # TP plan style -> AutoTP layer spec fields
@@ -185,30 +186,24 @@ def _with_immediate_grad_update(conf: dict) -> dict:
     return conf
 
 
-DIRECT_GRAD_ADD_ENV = "RDSP_DIRECT_GRAD_ADD"
-
-
 def _free_bf16_grads_after_accumulating(optimizer) -> None:
     """Under immediate_grad_update, free each parameter's bf16 gradient once
     it is in the fp32 buffer. DeepSpeed only zeroes it, so a bf16 copy of
     every gradient stays allocated: 2 bytes per parameter that Megatron
     (which accumulates straight into fp32) does not spend. The math is the
-    same: each microbatch's gradient is added into fp32 once."""
+    same: each microbatch's gradient is added into fp32 once.
+
+    The add runs here, straight from bf16 into the fp32 buffer: DeepSpeed's
+    own converts the gradient into a temporary fp32 copy first, two GPU
+    kernels per parameter per microbatch where one gives the same bits.
+    Folded expert gradients, which DeepSpeed corrects before its add, stay on
+    DeepSpeed's path."""
     if not getattr(optimizer, "immediate_grad_update", False):
         return
     accumulate = optimizer.accumulate_hp_grads_and_remove_lp
-    # Add the bf16 gradient straight into the fp32 buffer. DeepSpeed's
-    # `hp_grad.add_(lp.grad.to(fp32))` converts into a temporary fp32 copy first: two GPU
-    # kernels per parameter per microbatch where one gives the same bits (H100: 0.107 ms
-    # against 0.184 ms for 25M elements; 5-9% of a 9B step, 2026-11-11). Not with folded
-    # expert gradients, which DeepSpeed corrects before its add. RDSP_DIRECT_GRAD_ADD=0
-    # goes back to DeepSpeed's own add.
-    direct = (
-        os.environ.get(DIRECT_GRAD_ADD_ENV) != "0"
-        and getattr(optimizer, "autoep_folding_tp_group", None) is None
-        and hasattr(optimizer, "fp32_groups_gradients")
+    direct = getattr(optimizer, "autoep_folding_tp_group", None) is None and hasattr(
+        optimizer, "fp32_groups_gradients"
     )
-    print(f"rdsp: direct gradient add {'on' if direct else 'off'}", flush=True)
 
     def accumulate_and_free(lp, group_idx, param_idx):
         if direct and lp.grad is not None:
@@ -224,10 +219,7 @@ def _free_bf16_grads_after_accumulating(optimizer) -> None:
     optimizer.accumulate_hp_grads_and_remove_lp = accumulate_and_free
 
 
-GROUP_NUMEL_KEY = "rdsp_optimizer_group_numel"
-
-
-def _optimizer_param_groups(stage_module, max_numel: int):
+def optimizer_param_groups(stage_module, max_numel: int):
     """The stage's parameters as consecutive optimizer groups of at most
     max_numel elements (a larger parameter is a group of its own). DeepSpeed's
     ZeRO-1/2 optimizer steps one group at a time and holds a flat bf16 and an
@@ -235,7 +227,8 @@ def _optimizer_param_groups(stage_module, max_numel: int):
     6-8 bytes per parameter of the whole stage at once, with small groups a
     fraction of it. The math is the same: Adam updates every element on its
     own. A generator: DeepSpeed lists it after its tensor-parallel split, so
-    the groups hold the split parameters."""
+    the groups hold the split parameters. Not used on a stage with expert
+    parallelism, where DeepSpeed builds the groups itself."""
     group, numel = [], 0
     for p in stage_module.parameters():
         if group and numel + p.numel() > max_numel:
@@ -259,9 +252,6 @@ def _autoep_preset(hf_config) -> str | None:
     return preset_name_for_hf_model_type(model_type) or model_type
 
 
-MASTER_KEY = "rdsp_master_weights"
-
-
 def _remainder_optimizer(conf: dict):
     """For {"rdsp_master_weights": "remainder"}: RemainderAdamW, built from the
     config's AdamW settings, as the client optimizer DeepSpeed wraps. DeepSpeed
@@ -272,7 +262,7 @@ def _remainder_optimizer(conf: dict):
     With expert parallelism the parameters come in DeepSpeed's MoE groups (the
     expert weights apart, reduced and split over their own data-parallel
     group), which DeepSpeed builds only for optimizers it makes itself."""
-    if conf.pop(MASTER_KEY, None) != "remainder":
+    if conf.pop(MASTER_WEIGHTS_KEY, None) != "remainder":
         return None
     from ray_deepspeed_pipeline.remainder_adamw import RemainderAdamW
 
@@ -325,7 +315,7 @@ def _deepspeed_engine_factory(stage_module, ds_config: dict):
 
     conf = _with_immediate_grad_update(json.loads(json.dumps(ds_config)))  # deep copy
     conf["gradient_accumulation_steps"] = 1  # the coordinator accumulates (module doc)
-    group_numel = int(conf.pop(GROUP_NUMEL_KEY, 0) or 0)  # rdsp's key, not DeepSpeed's
+    group_numel = int(conf.pop(OPTIMIZER_GROUP_NUMEL_KEY, 0) or 0)
     remainder_optimizer = _remainder_optimizer(conf)
     # DeepSpeed derives train_batch_size from the per-rank micro batch and its
     # own data-parallel world, which excludes TP
@@ -365,7 +355,7 @@ def _deepspeed_engine_factory(stage_module, ds_config: dict):
         # initialize(), and DeepSpeed collects them (and MoE groups) itself
     else:
         kwargs["model_parameters"] = (
-            _optimizer_param_groups(stage_module, group_numel)
+            optimizer_param_groups(stage_module, group_numel)
             if group_numel > 0
             else stage_module.parameters()
         )
@@ -712,8 +702,6 @@ class DeepSpeedStageAdapter:
             torch.cuda.set_rng_state(state["cuda"])
 
     def save_rng(self, path: str) -> None:
-        import os
-
         os.makedirs(os.path.dirname(path), exist_ok=True)
         torch.save(self._get_rng(), path)
 

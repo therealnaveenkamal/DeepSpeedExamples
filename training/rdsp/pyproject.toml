@@ -18,7 +18,8 @@ dependencies = [
 # deepspeed is only importable on Linux+CUDA; the stage actors import it
 # lazily, never at package import time.
 gpu = ["deepspeed"]
-dev = ["pytest", "ruff"]
+# transformers: the tests of train.py and train_vl.py import those scripts
+dev = ["pytest", "ruff", "transformers"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ray_deepspeed_pipeline"]
@@ -28,7 +29,8 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-extend-exclude = ["bench/results", "docs"]
+# Markdown is excluded: the samples in it are laid out by hand
+extend-exclude = ["bench/results", "docs", "*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]

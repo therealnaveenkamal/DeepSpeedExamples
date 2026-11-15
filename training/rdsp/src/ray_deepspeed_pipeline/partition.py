@@ -217,7 +217,9 @@ def _balanced_cuts(
     slowest, _ = solve(max, float("inf"))
     if slowest == float("inf"):
         raise ValidationError(
-            f"no cut of {n} blocks into {stages} stages fits every stage's memory"
+            f"no cut of {n} blocks into {stages} stages fits every "
+            f"stage's memory; give the stages more GPUs, recompute "
+            f"their blocks, or use more stages"
         )
     _, back = solve(lambda acc, c: acc + c * c, slowest)
     cuts, i = [], n
@@ -227,18 +229,20 @@ def _balanced_cuts(
     return cuts[::-1]
 
 
-def _measured_extras(costs: tuple, stage_gpus: tuple[int, ...], measured) -> list[float]:
+def measured_extras(
+    per_block: list, post: float, stage_gpus: tuple[int, ...], measured
+) -> list[float]:
     """Each stage's measured time beyond its blocks', in the blocks' cost
-    units (parameters): BalancedTransformerBlocks.measured."""
-    _, per_block, post = costs
+    units (parameters): BalancedTransformerBlocks.measured. post: the cost of
+    what follows the last block (head and loss)."""
     n = len(measured.seconds)
-    bounds = [0, *measured.cuts, len(per_block)]
-    if any(a >= b for a, b in zip(bounds, bounds[1:])) or n != len(stage_gpus):
+    ranges = measured.block_ranges(len(per_block))
+    if any(start >= stop for start, stop in ranges) or n != len(stage_gpus):
         raise ValidationError(
-            f"measured cuts {measured.cuts} do not fit {len(per_block)} "
-            f"blocks on {len(stage_gpus)} stages"
+            f"measured cuts {measured.cuts} do not fit {len(per_block)} blocks on "
+            f"{len(stage_gpus)} stages; measure with this model and this number of stages"
         )
-    blocks = [sum(per_block[a:b]) for a, b in zip(bounds, bounds[1:])]
+    blocks = [sum(per_block[start:stop]) for start, stop in ranges]
     middle = range(1, n - 1)
     if middle:  # stages holding blocks only
         rate = sum(measured.seconds[s] for s in middle) / sum(
@@ -249,18 +253,18 @@ def _measured_extras(costs: tuple, stage_gpus: tuple[int, ...], measured) -> lis
     return [max(0.0, measured.seconds[s] * stage_gpus[s] / rate - blocks[s]) for s in range(n)]
 
 
-def _measured_cuts(
-    costs: tuple, stage_gpus: tuple[int, ...], min_first: int, measured
+def measured_cuts(
+    per_block: list, post: float, stage_gpus: tuple[int, ...], min_first: int, measured
 ) -> list[int]:
     """The balanced cut with measured fixed costs per stage, and memory: a
-    stage gaining blocks gains their weights, gradients and optimizer state."""
-    extra = _measured_extras(costs, stage_gpus, measured)  # checks the measured cuts
-    _, per_block, _ = costs
+    stage gaining blocks gains their weights, gradients and optimizer state.
+    The activations of gained blocks are not counted: the reserve in
+    MeasuredStages.limit_gib has to cover them."""
+    extra = measured_extras(per_block, post, stage_gpus, measured)  # checks the measured cuts
     total = [0]
     for c in per_block:
         total.append(total[-1] + c)
-    bounds = [0, *measured.cuts, len(per_block)]
-    held = [total[b] - total[a] for a, b in zip(bounds, bounds[1:])]
+    held = [total[stop] - total[start] for start, stop in measured.block_ranges(len(per_block))]
 
     def fits(s, j, i):
         gained = total[i] - total[j] - held[s]
@@ -293,28 +297,6 @@ def _decoder_stages(measured):
     )
 
 
-def static_bytes_per_param(ds_config: dict, tp: int, dp: int) -> float:
-    """Weights, gradients and optimizer state per GPU per parameter of a stage
-    of tp x dp GPUs under its DeepSpeed config: bf16 weights; bf16 gradients,
-    or an fp32 accumulation buffer; master weights, fp32 or 2 bytes (bf16, or
-    rdsp's remainder); AdamW's two moments, fp32 or bf16. ZeRO 1 and 2 split
-    the optimizer state over dp, ZeRO 2 the gradients too; under offload the
-    optimizer state is in host memory. TP splits all of it."""
-    bf16 = ds_config.get("bf16") or {}
-    zero = ds_config.get("zero_optimization") or {}
-    stage = int(zero.get("stage", 0) or 0)
-    grads = 4.0 if (ds_config.get("data_types") or {}).get("grad_accum_dtype") == "fp32" else 2.0
-    remainder = ds_config.get("rdsp_master_weights") == "remainder"
-    master = 2.0 if remainder or bf16.get("bf16_master_weights_and_grads") else 4.0
-    moments = 4.0 if bf16.get("bf16_optimizer_states") and not remainder else 8.0
-    optimizer = 0.0 if zero.get("offload_optimizer") else master + moments
-    if stage >= 1:
-        optimizer /= dp
-    if stage >= 2:
-        grads /= dp
-    return (2.0 + grads + optimizer) / tp
-
-
 def _under(name: str, module: str | None) -> bool:
     return module is not None and name.startswith(module + ".")
 
@@ -345,14 +327,14 @@ def partition_parameters(
                     "embeddings, not colocated vision"
                 )
             if policy.measured is not None:
-                cuts = [0] + _measured_cuts(
-                    (0, per_block, post), gpus[1:], 0, _decoder_stages(policy.measured)
+                cuts = [0] + measured_cuts(
+                    per_block, post, gpus[1:], 0, _decoder_stages(policy.measured)
                 )
             else:
                 cuts = [0] + _balanced_cuts((0, per_block, post), stages - 1, 0, gpus[1:])
         elif policy.measured is not None:
-            cuts = _measured_cuts(
-                (pre, per_block, post), gpus, vision_injection_depth(model), policy.measured
+            cuts = measured_cuts(
+                per_block, post, gpus, vision_injection_depth(model), policy.measured
             )
         else:
             # what precedes the blocks, embeddings aside, is the vision encoder

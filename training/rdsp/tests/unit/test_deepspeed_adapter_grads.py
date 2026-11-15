@@ -85,25 +85,25 @@ class FakeDeepSpeedBF16Optimizer(FakeBF16Optimizer):
         self.fp32_groups_has_gradients[group_idx][param_idx] = True
 
 
-def accumulate_microbatches(opt, grads):
+def accumulate_microbatches(opt, grads, wrap=True):
+    """Each gradient through the optimizer's hook; wrap=False leaves the hook as DeepSpeed's."""
     w = torch.nn.Parameter(torch.zeros(2, 3, dtype=torch.bfloat16))
-    _free_bf16_grads_after_accumulating(opt)
+    if wrap:
+        _free_bf16_grads_after_accumulating(opt)
     for g in grads:
         w.grad = g.clone()
         opt.accumulate_hp_grads_and_remove_lp(w, 0, 0)
-        assert w.grad is None
+        assert w.grad is None or not wrap
     return w
 
 
-def test_direct_add_gives_deepspeeds_bits_without_its_conversion(monkeypatch):
+def test_direct_add_gives_deepspeeds_bits_without_its_conversion():
     torch.manual_seed(0)
     grads = [torch.randn(2, 3).to(torch.bfloat16) * 10**k for k in (-3, 0, 2, -1)]
-    monkeypatch.setenv("RDSP_DIRECT_GRAD_ADD", "0")  # DeepSpeed's own add, for the reference
     reference = FakeDeepSpeedBF16Optimizer(6)
-    accumulate_microbatches(reference, grads)
+    accumulate_microbatches(reference, grads, wrap=False)
     assert reference.deepspeed_calls == 4
 
-    monkeypatch.delenv("RDSP_DIRECT_GRAD_ADD")  # the default
     direct = FakeDeepSpeedBF16Optimizer(6)
     w = accumulate_microbatches(direct, grads)
     assert direct.deepspeed_calls == 0  # the add ran here, as one operation
@@ -113,9 +113,8 @@ def test_direct_add_gives_deepspeeds_bits_without_its_conversion(monkeypatch):
     assert w._hp_grad is direct.fp32_groups_gradients[0][0]
 
 
-def test_direct_add_leaves_expert_folding_to_deepspeed(monkeypatch):
+def test_direct_add_leaves_expert_folding_to_deepspeed():
     # DeepSpeed corrects folded expert gradients before its add: that path stays DeepSpeed's
-    monkeypatch.delenv("RDSP_DIRECT_GRAD_ADD", raising=False)
     opt = FakeDeepSpeedBF16Optimizer(6)
     opt.autoep_folding_tp_group = object()
     accumulate_microbatches(opt, [torch.ones(2, 3, dtype=torch.bfloat16)])
