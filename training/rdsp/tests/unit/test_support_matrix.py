@@ -29,14 +29,16 @@ def test_composed_row_requires_every_prerequisite():
     for row in HETEROGENEOUS_ROWS:
         assert all(req in by_id for req in row.requires), row.row_id
         if row.supported:
-            assert all(by_id[req].supported for req in row.requires), \
+            assert all(by_id[req].supported for req in row.requires), (
                 f"{row.row_id} cannot be supported before {row.requires}"
+            )
     assert set(by_id["four-stage-mixed"].requires) == set(by_id) - {"four-stage-mixed"}
 
 
 def test_rows_carry_no_project_history():
     """Row ids and evidence name what was validated, not when or in which phase."""
     import re
+
     for row in ROWS:
         text = " ".join(str(v) for v in vars(row).values())
         assert not re.search(r"\bp\d+-|20\d\d-\d\d-\d\d|§|rerun after", text), row.row_id

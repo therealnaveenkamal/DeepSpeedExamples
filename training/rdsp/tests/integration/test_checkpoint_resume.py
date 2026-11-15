@@ -20,10 +20,13 @@ from ray_deepspeed_pipeline.stage_group import create_stage_clients
 
 ray = pytest.importorskip("ray")
 
-DS = {"train_batch_size": N_MB * ROWS, "gradient_accumulation_steps": N_MB,
-      "train_micro_batch_size_per_gpu": ROWS,
-      "optimizer": {"type": "AdamW", "params": {"lr": 0.05}},
-      "scheduler": {"type": "StepLR", "params": {"gamma": 0.5}}}
+DS = {
+    "train_batch_size": N_MB * ROWS,
+    "gradient_accumulation_steps": N_MB,
+    "train_micro_batch_size_per_gpu": ROWS,
+    "optimizer": {"type": "AdamW", "params": {"lr": 0.05}},
+    "scheduler": {"type": "StepLR", "params": {"gamma": 0.5}},
+}
 
 
 class DropBlock(nn.Module):
@@ -64,10 +67,18 @@ def ray_ctx(tmp_path_factory):
     os.environ["RDSP_TEST_FAIL_BACKWARD_PATH"] = fail_backward
     # every stage actor holds one logical CPU while alive; tests keep up to
     # three 2-stage pipelines (plus rebuilds) alive at once
-    ray.init(num_cpus=16, include_dashboard=False, log_to_driver=False,
-             runtime_env={"env_vars": {"PYTHONPATH": f"{here}:{unit}",
-                                       "RDSP_TEST_FAIL_APPLY": flag,
-                                       "RDSP_TEST_FAIL_BACKWARD": fail_backward}})
+    ray.init(
+        num_cpus=16,
+        include_dashboard=False,
+        log_to_driver=False,
+        runtime_env={
+            "env_vars": {
+                "PYTHONPATH": f"{here}:{unit}",
+                "RDSP_TEST_FAIL_APPLY": flag,
+                "RDSP_TEST_FAIL_BACKWARD": fail_backward,
+            }
+        },
+    )
     yield flag
     ray.shutdown()
 
@@ -82,11 +93,12 @@ def stub_runtime(ray_ctx, monkeypatch):
         plan = lower(model, pipeline_config, ds_config)
 
         def build():
-            clients = create_stage_clients(model, plan, loss_fn,
-                                           engine_factory=stub_engine_factory,
-                                           use_gpu=False)
+            clients = create_stage_clients(
+                model, plan, loss_fn, engine_factory=stub_engine_factory, use_gpu=False
+            )
             made.append(clients)
             return clients
+
         return PipelineCoordinator(plan, build(), rebuild=build)
 
     monkeypatch.setattr(api, "_coordinator_factory", factory)
@@ -107,19 +119,22 @@ def dataset(n_steps=6, seed=3):
 def make_engine(seed, training_data=None):
     torch.manual_seed(seed)
     engine, _, _, _ = rdsp.initialize(
-        model=DropToyLM(), config=DS, training_data=training_data,
-        pipeline_config=rdsp.PipelineConfig(
-            stages=2, partition=rdsp.UniformTransformerBlocks()),
-        loss_fn=loss_fn)
+        model=DropToyLM(),
+        config=DS,
+        training_data=training_data,
+        pipeline_config=rdsp.PipelineConfig(stages=2, partition=rdsp.UniformTransformerBlocks()),
+        loss_fn=loss_fn,
+    )
     return engine
 
 
 def fixed_microbatches(step, data):
-    rows = data[step * N_MB * ROWS:(step + 1) * N_MB * ROWS]
+    rows = data[step * N_MB * ROWS : (step + 1) * N_MB * ROWS]
     ids = torch.stack([r[0] for r in rows])
     labels = torch.stack([r[1] for r in rows])
-    return iter([(ids[k * ROWS:(k + 1) * ROWS], labels[k * ROWS:(k + 1) * ROWS])
-                 for k in range(N_MB)])
+    return iter(
+        [(ids[k * ROWS : (k + 1) * ROWS], labels[k * ROWS : (k + 1) * ROWS]) for k in range(N_MB)]
+    )
 
 
 def contains_ray_type(obj) -> bool:
@@ -152,8 +167,7 @@ def test_optimizer_scheduler_rng_data_position_round_trip(stub_runtime, tmp_path
 
     # control: the comparison is sensitive to optimizer/scheduler state
     c = make_engine(seed=1, training_data=data)
-    c.load_checkpoint(str(tmp_path), load_optimizer_states=False,
-                      load_lr_scheduler_states=False)
+    c.load_checkpoint(str(tmp_path), load_optimizer_states=False, load_lr_scheduler_states=False)
     assert [float(c.train_batch()) for _ in range(2)] != expected
 
 

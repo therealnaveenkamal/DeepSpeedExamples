@@ -1,6 +1,6 @@
 # Parallelism inside one pipeline stage with DeepSpeed: a source-checked cookbook
 
-Date: 2026-09-22. DeepSpeed checkout: `/Users/nav/Desktop/hustle/Deepspeed_Ray_PP/DeepSpeed` at rev
+Date: 2026-09-22. DeepSpeed checkout: `../DeepSpeed` at rev
 `53a2ac44` (read only, not modified). Transformers 5.16.1 and torch 2.13.0 from the workspace `.venv`
 (`SP/` below = `.venv/lib/python3.12/site-packages/`). All DeepSpeed paths are relative to the checkout.
 

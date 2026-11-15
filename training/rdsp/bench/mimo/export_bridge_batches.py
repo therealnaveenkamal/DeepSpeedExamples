@@ -61,8 +61,9 @@ def _bridge_config(recipe_name: str, overrides: list):
 
     cfg = apply_cli_overrides(load_recipe(recipe_name), overrides)
     if getattr(cfg.dataset, "dataloader_type", "single") != "single":
-        raise SystemExit("set dataset.dataloader_type=single: other samplers reorder per "
-                         "data-parallel rank")
+        raise SystemExit(
+            "set dataset.dataloader_type=single: other samplers reorder per data-parallel rank"
+        )
     return cfg
 
 
@@ -86,8 +87,15 @@ def main(argv=None):
     cfg = _bridge_config(args.recipe, overrides)
     gbs = int(cfg.train.global_batch_size)
     dataset = _bridge_dataset(cfg, args.steps * gbs)
-    stats = {"steps": args.steps, "global_batch": gbs, "seq_length": int(cfg.dataset.seq_length),
-             "supervised_tokens": 0, "real_tokens": 0, "vision_tokens": 0, "full_rows": 0}
+    stats = {
+        "steps": args.steps,
+        "global_batch": gbs,
+        "seq_length": int(cfg.dataset.seq_length),
+        "supervised_tokens": 0,
+        "real_tokens": 0,
+        "vision_tokens": 0,
+        "full_rows": 0,
+    }
     for step in range(args.steps):
         samples = []
         for i in range(step * gbs, (step + 1) * gbs):

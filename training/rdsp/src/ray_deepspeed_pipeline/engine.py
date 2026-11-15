@@ -1,9 +1,12 @@
 """RayPipelineEngine: the blocking driver-side facade over the coordinator."""
 
+import contextlib
+
 import torch
 
 from ray_deepspeed_pipeline.data import CountingIterator, data_position, resume_loader_iter
 from ray_deepspeed_pipeline.errors import UnsupportedEngineMethod, ValidationError
+from ray_deepspeed_pipeline.measurement import measured_stages
 from ray_deepspeed_pipeline.protocols import resolve
 
 _UNSUPPORTED_MSG = (
@@ -47,12 +50,14 @@ class RayPipelineEngine:
                 raise ValidationError(
                     "this engine owns the dataloader built from training_data; "
                     "a call-specific data_iter is only accepted when "
-                    "training_data=None was passed to initialize()")
+                    "training_data=None was passed to initialize()"
+                )
             return data_iter
         if self._training_dataloader is None:
             raise ValidationError(
                 "no data source: initialize() received training_data=None, so "
-                "train_batch/eval_batch require an explicit data_iter argument")
+                "train_batch/eval_batch require an explicit data_iter argument"
+            )
         if self._owned_iter is None:
             self._owned_iter = CountingIterator(iter(self._training_dataloader))
         return self._owned_iter
@@ -74,8 +79,7 @@ class RayPipelineEngine:
         source = self._data_iter(data_iter)
         return _public_loss(resolve(self._coordinator.eval_batch(source)))
 
-    def save_checkpoint(self, save_dir, tag=None, client_state=None,
-                        save_latest=True) -> bool:
+    def save_checkpoint(self, save_dir, tag=None, client_state=None, save_latest=True) -> bool:
         """Save every stage plus global step and the owned loader's position.
 
         Returns True once the manifest is committed; a failed save raises
@@ -84,26 +88,77 @@ class RayPipelineEngine:
         if self._training_dataloader is not None:
             consumed = self._owned_iter.consumed if self._owned_iter else 0
             position = data_position(self._training_dataloader, consumed)
-        return bool(resolve(self._coordinator.save_checkpoint(
-            save_dir, tag, client_state=client_state, data_position=position,
-            save_latest=save_latest)))
+        return bool(
+            resolve(
+                self._coordinator.save_checkpoint(
+                    save_dir,
+                    tag,
+                    client_state=client_state,
+                    data_position=position,
+                    save_latest=save_latest,
+                )
+            )
+        )
 
-    def load_checkpoint(self, load_dir, tag=None, load_optimizer_states=True,
-                        load_lr_scheduler_states=True):
+    def load_checkpoint(
+        self, load_dir, tag=None, load_optimizer_states=True, load_lr_scheduler_states=True
+    ):
         """Restore the whole pipeline; returns (load_path, client_state) like
         DeepSpeed. Clears a poisoned pipeline."""
-        result = resolve(self._coordinator.load_checkpoint(
-            load_dir, tag, load_optimizer_states=load_optimizer_states,
-            load_lr_scheduler_states=load_lr_scheduler_states))
+        result = resolve(
+            self._coordinator.load_checkpoint(
+                load_dir,
+                tag,
+                load_optimizer_states=load_optimizer_states,
+                load_lr_scheduler_states=load_lr_scheduler_states,
+            )
+        )
         position = result.get("data_position") or {"owner": "caller"}
         if position.get("owner") == "engine":
             if self._training_dataloader is None:
                 raise ValidationError(
                     "checkpoint records an engine-owned data position but this "
-                    "engine was initialized with training_data=None")
+                    "engine was initialized with training_data=None"
+                )
             self._owned_iter = resume_loader_iter(
-                self._training_dataloader, position["entries_consumed"])
+                self._training_dataloader, position["entries_consumed"]
+            )
         return result["path"], result["client_state"]
+
+    def measure_stages(
+        self, data_iter=None, steps: int = 3, skip: int = 1, reserve_gib: float = 5.0
+    ):
+        """Run `steps` training steps with every stage's phase timer on and
+        return what they measured (config.MeasuredStages), from the steps
+        after the first `skip` (allocation, compilation): each stage's
+        forward and backward time per step on its slowest rank, its peak
+        memory on its fullest rank, and its weights, gradients and optimizer
+        state per parameter. The memory limit is the smallest GPU's, less
+        reserve_gib for what the allocator's peak does not count (CUDA
+        context, NCCL buffers, fragmentation). The steps update the weights
+        as any step does (a learning rate of 0 leaves them)."""
+        if steps <= skip:
+            raise ValidationError(
+                f"measure_stages: {steps} steps leave none after "
+                f"skipping {skip}; pass steps greater than skip"
+            )
+        self._coordinator.set_profile(True)
+        try:
+            for _ in range(steps):
+                self.train_batch(data_iter)
+            records = self._coordinator.profile_records()
+        except BaseException:
+            # a lost rank cannot switch its timer off: keep the step's own error
+            with contextlib.suppress(Exception):
+                self._coordinator.set_profile(False)
+            raise
+        self._coordinator.set_profile(False)
+        return measured_stages(self._coordinator.plan, records, skip, reserve_gib)
+
+    def shutdown(self) -> None:
+        """Stop every stage's workers and release their GPUs; the engine is
+        unusable afterwards."""
+        self._coordinator.shutdown()
 
     # Local-engine methods that have no meaning for a partitioned model.
 

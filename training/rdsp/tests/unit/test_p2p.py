@@ -31,8 +31,10 @@ def _run_pair(sender, receiver, varying=False):
         except Exception as e:  # surfaced in the main thread
             errors.append(e)
 
-    threads = [threading.Thread(target=rank, args=(0, sender)),
-               threading.Thread(target=rank, args=(1, receiver))]
+    threads = [
+        threading.Thread(target=rank, args=(0, sender)),
+        threading.Thread(target=rank, args=(1, receiver)),
+    ]
     for t in threads:
         t.start()
     for t in threads:
@@ -43,8 +45,13 @@ def _run_pair(sender, receiver, varying=False):
 
 def test_hidden_state_and_named_extras_cross_every_microbatch():
     hidden = [torch.randn(2, 5, 8) for _ in range(3)]
-    extras = [{"position_embeddings.0": torch.randn(2, 5, 4),
-               "position_embeddings.1": torch.randn(2, 5, 4)} for _ in range(3)]
+    extras = [
+        {
+            "position_embeddings.0": torch.randn(2, 5, 4),
+            "position_embeddings.1": torch.randn(2, 5, 4),
+        }
+        for _ in range(3)
+    ]
 
     def send(p2p):
         for mb in range(3):
@@ -60,8 +67,10 @@ def test_hidden_state_and_named_extras_cross_every_microbatch():
 
 def test_boundary_without_extras():
     hidden = torch.randn(2, 3, 4)
-    got = _run_pair(lambda p2p: p2p.send_boundary("fwd", hidden, {}, 1, 0),
-                    lambda p2p: p2p.recv_boundary("fwd", 0, 0))
+    got = _run_pair(
+        lambda p2p: p2p.send_boundary("fwd", hidden, {}, 1, 0),
+        lambda p2p: p2p.recv_boundary("fwd", 0, 0),
+    )
     assert torch.equal(got[0], hidden) and got[1] == {}
 
 
@@ -88,8 +97,9 @@ def test_microbatches_of_different_lengths_cross_in_one_step():
         for mb in range(3):
             p2p.send_boundary("fwd", hidden[mb], extras[mb], 1, mb)
 
-    got = _run_pair(send, lambda p2p: [p2p.recv_boundary("fwd", 0, mb) for mb in range(3)],
-                    varying=True)
+    got = _run_pair(
+        send, lambda p2p: [p2p.recv_boundary("fwd", 0, mb) for mb in range(3)], varying=True
+    )
     for mb, (h, e) in enumerate(got):
         assert torch.equal(h, hidden[mb])
         assert torch.equal(e["position_embeddings.0"], extras[mb]["position_embeddings.0"])
@@ -106,5 +116,4 @@ def test_boundary_limits_are_validation_errors():
         _encode(torch.zeros([1] * 8))
     p2p = PipelineP2P.__new__(PipelineP2P)
     with pytest.raises(ValidationError, match="extra tensors"):
-        p2p.send_boundary("fwd", torch.zeros(1), {str(i): torch.zeros(1) for i in range(63)},
-                          1, 0)
+        p2p.send_boundary("fwd", torch.zeros(1), {str(i): torch.zeros(1) for i in range(63)}, 1, 0)

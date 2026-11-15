@@ -35,7 +35,8 @@ def find_vision_encoder(model: nn.Module) -> str:
             return name
     raise ValidationError(
         f"{type(model).__name__} has no vision encoder (a module named one of "
-        f"{_ENCODER_NAMES}); colocated vision needs one")
+        f"{_ENCODER_NAMES}); colocated vision needs one"
+    )
 
 
 class VisionTower(nn.Module):
@@ -54,8 +55,11 @@ class VisionTower(nn.Module):
         """The encoder's block lists' blocks (recompute wraps them)."""
         blocks = []
         for module in self.module.modules():
-            if (isinstance(module, nn.ModuleList) and len(module) >= 2
-                    and len({type(b) for b in module}) == 1):
+            if (
+                isinstance(module, nn.ModuleList)
+                and len(module) >= 2
+                and len({type(b) for b in module}) == 1
+            ):
                 blocks.extend(module)
         return blocks
 
@@ -84,10 +88,12 @@ class PrecomputedVision(nn.Module):
 
     def forward(self, pixel_values, grid_thw=None, **kwargs):
         from transformers.modeling_outputs import BaseModelOutputWithPooling
+
         return BaseModelOutputWithPooling(pooler_output=pixel_values)
 
 
 # --- routing -------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class VisionLayout:
@@ -141,8 +147,9 @@ def route_images(inputs: list, layout: VisionLayout, rank: int) -> dict:
     for mb, entry in enumerate(inputs):
         pixels, grids = entry.get("pixel_values"), entry.get("image_grid_thw")
         if not isinstance(pixels, list) or not isinstance(grids, list):
-            raise StepFailed("colocated vision needs pixel_values and image_grid_thw "
-                             "given per row (lists)")
+            raise StepFailed(
+                "colocated vision needs pixel_values and image_grid_thw given per row (lists)"
+            )
         rows = len(pixels)
         images += [(mb * rows + row, mb, row) for row in range(rows) if grids[row].numel()]
     first = layout.first
@@ -159,8 +166,15 @@ def route_images(inputs: list, layout: VisionLayout, rank: int) -> dict:
         if owner[image] == rank:
             own_mb[image] = mb
             dests = cell_ranks(row)
-            own.append((image, inputs[mb]["pixel_values"][row], inputs[mb]["image_grid_thw"][row],
-                        dests, dests[0]))
+            own.append(
+                (
+                    image,
+                    inputs[mb]["pixel_values"][row],
+                    inputs[mb]["image_grid_thw"][row],
+                    dests,
+                    dests[0],
+                )
+            )
         if rank in cell_ranks(row):
             need.append((mb, image, owner[image]))
     return {"own": own, "need": need, "own_mb": own_mb}
@@ -208,6 +222,7 @@ def _optimizer(params, ds_config: dict):
     scheduler = None
     if "scheduler" in ds_config:
         from deepspeed.runtime import lr_schedules
+
         sched = ds_config["scheduler"]
         scheduler = getattr(lr_schedules, sched["type"])(optimizer, **sched.get("params", {}))
     return optimizer, scheduler
@@ -259,14 +274,14 @@ class ColocatedVisionEngine:
         offset = 0
         for p, t in zip(self._params, tensors):
             if t is not None:
-                flat[offset:offset + p.numel()] = t.reshape(-1)
+                flat[offset : offset + p.numel()] = t.reshape(-1)
             offset += p.numel()
         return flat
 
     def _mine(self, full: torch.Tensor) -> torch.Tensor:
         size = self._shard_size()
         padded = torch.zeros(size * self._world, dtype=full.dtype, device=self.device)
-        padded[:full.numel()] = full.to(self.device)
+        padded[: full.numel()] = full.to(self.device)
         return padded.narrow(0, self._rank * size, size).clone()
 
     def _build(self, group) -> None:
@@ -277,15 +292,19 @@ class ColocatedVisionEngine:
         self._group = group
         self._world, self._rank = (group.size(), group.rank()) if group is not None else (1, 0)
         loaded, self._loaded = self._loaded, None
-        full = loaded["master"] if loaded else self._flat([p.detach() for p in self._params],
-                                                          torch.float32)
+        full = (
+            loaded["master"]
+            if loaded
+            else self._flat([p.detach() for p in self._params], torch.float32)
+        )
         self.master = self._mine(full.float()).requires_grad_(True)
         self.optimizer, self.scheduler = _optimizer([self.master], self._config)
         if loaded and loaded.get("optimizer"):
             saved = loaded["optimizer"]
             self.optimizer.state[self.master] = {
                 k: self._mine(v) if torch.is_tensor(v) and v.numel() == self._numel else v
-                for k, v in saved["state"].items()}
+                for k, v in saved["state"].items()
+            }
             for group_, saved_group in zip(self.optimizer.param_groups, saved["param_groups"]):
                 group_.update({k: v for k, v in saved_group.items() if k != "params"})
         if loaded and loaded.get("scheduler") and self.scheduler is not None:
@@ -308,8 +327,12 @@ class ColocatedVisionEngine:
         grids = torch.cat([g for _, _, g in images]).to(self.device)
         merge = getattr(self.tower.module, "spatial_merge_size", 1) ** 2
         sizes = [int(g.prod(-1).sum()) // merge for _, _, g in images]
-        with torch.set_grad_enabled(train), torch.autocast(
-                self.device.type, dtype=self.autocast, enabled=self.autocast is not None):
+        with (
+            torch.set_grad_enabled(train),
+            torch.autocast(
+                self.device.type, dtype=self.autocast, enabled=self.autocast is not None
+            ),
+        ):
             features = self.tower(pixels, grids)
         out = dict(zip((i for i, _, _ in images), features.split(sizes)))
         if train:
@@ -320,8 +343,10 @@ class ColocatedVisionEngine:
         if not grads:
             return
         images = sorted(grads)
-        torch.autograd.backward([self._outputs[i] for i in images],
-                                [grads[i].to(self._outputs[i].dtype) for i in images])
+        torch.autograd.backward(
+            [self._outputs[i] for i in images],
+            [grads[i].to(self._outputs[i].dtype) for i in images],
+        )
         for i in images:
             del self._outputs[i]
 
@@ -353,7 +378,7 @@ class ColocatedVisionEngine:
         offset = 0
         with torch.no_grad():
             for p in self._params:
-                p.copy_(full[offset:offset + p.numel()].view_as(p))
+                p.copy_(full[offset : offset + p.numel()].view_as(p))
                 offset += p.numel()
 
     def reset(self) -> None:
@@ -369,17 +394,26 @@ class ColocatedVisionEngine:
     def full_state(self) -> dict:
         """The whole state, gathered from every rank's slice; collective:
         every rank calls it."""
-        state = {"module": self.tower.module.state_dict(), "master": None,
-                 "optimizer": None, "scheduler": None}
+        state = {
+            "module": self.tower.module.state_dict(),
+            "master": None,
+            "optimizer": None,
+            "scheduler": None,
+        }
         if self.master is None:
             return state
-        state["master"] = self._gather(self.master.detach())[:self._numel]
+        state["master"] = self._gather(self.master.detach())[: self._numel]
         saved = self.optimizer.state_dict()
         tensors = self.optimizer.state.get(self.master, {})
         state["optimizer"] = {
-            "state": {k: self._gather(v)[:self._numel] if torch.is_tensor(v)
-                      and v.numel() == self.master.numel() else v for k, v in tensors.items()},
-            "param_groups": saved["param_groups"]}
+            "state": {
+                k: self._gather(v)[: self._numel]
+                if torch.is_tensor(v) and v.numel() == self.master.numel()
+                else v
+                for k, v in tensors.items()
+            },
+            "param_groups": saved["param_groups"],
+        }
         state["scheduler"] = self.scheduler.state_dict() if self.scheduler else None
         return state
 
@@ -391,10 +425,10 @@ class ColocatedVisionEngine:
         group = self._group
         self.master = self.optimizer = self.scheduler = None
         self._loaded = {
-            "master": state["master"] if state["master"] is not None
-            else self._flat_full(),
+            "master": state["master"] if state["master"] is not None else self._flat_full(),
             "optimizer": state["optimizer"] if optimizer else None,
-            "scheduler": state["scheduler"] if scheduler else None}
+            "scheduler": state["scheduler"] if scheduler else None,
+        }
         if group is not None:  # already split once: split again the same way
             self._build(group)
         self.reset()

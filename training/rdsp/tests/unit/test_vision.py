@@ -12,12 +12,16 @@ def step_inputs(has_image):
     """Per microbatch, per row: one 4-patch image or none."""
     out = []
     for row_flags in has_image:
-        out.append({
-            "input_ids": torch.zeros(len(row_flags), 3, dtype=torch.long),
-            "pixel_values": [torch.ones(4 if f else 0, 2) for f in row_flags],
-            "image_grid_thw": [torch.tensor([[1, 2, 2]]) if f
-                               else torch.zeros(0, 3, dtype=torch.long) for f in row_flags],
-        })
+        out.append(
+            {
+                "input_ids": torch.zeros(len(row_flags), 3, dtype=torch.long),
+                "pixel_values": [torch.ones(4 if f else 0, 2) for f in row_flags],
+                "image_grid_thw": [
+                    torch.tensor([[1, 2, 2]]) if f else torch.zeros(0, 3, dtype=torch.long)
+                    for f in row_flags
+                ],
+            }
+        )
     return out
 
 
@@ -57,8 +61,16 @@ def tiny_vision():
     if not hasattr(transformers, "Qwen3_5VisionModel"):
         pytest.skip("transformers without Qwen3.5")
     cfg = transformers.Qwen3_5VisionConfig(
-        depth=2, hidden_size=32, intermediate_size=64, num_heads=2, out_hidden_size=16,
-        patch_size=4, spatial_merge_size=2, temporal_patch_size=1, num_position_embeddings=16)
+        depth=2,
+        hidden_size=32,
+        intermediate_size=64,
+        num_heads=2,
+        out_hidden_size=16,
+        patch_size=4,
+        spatial_merge_size=2,
+        temporal_patch_size=1,
+        num_position_embeddings=16,
+    )
     cfg._attn_implementation = "sdpa"
     torch.manual_seed(0)
     return transformers.Qwen3_5VisionModel(cfg).float()
@@ -73,9 +85,11 @@ def test_engine_features_and_gradients_match_the_encoder():
 
     encoder = tiny_vision()
     reference = copy.deepcopy(encoder)
-    engine = ColocatedVisionEngine(VisionTower(encoder, "visual"),
-                                   {"optimizer": {"type": "SGD", "params": {"lr": 1.0}}},
-                                   torch.device("cpu"))
+    engine = ColocatedVisionEngine(
+        VisionTower(encoder, "visual"),
+        {"optimizer": {"type": "SGD", "params": {"lr": 1.0}}},
+        torch.device("cpu"),
+    )
     g = torch.Generator().manual_seed(1)
     grid = torch.tensor([[1, 4, 4]])
     images = [(i, torch.randn(16, 48, generator=g), grid) for i in (3, 7)]
@@ -91,8 +105,9 @@ def test_engine_features_and_gradients_match_the_encoder():
     engine.reduce_gradients(group=None, divide_by=2)
     engine.apply()  # SGD, lr 1, no momentum: each weight moves by its gradient
     full.backward(torch.cat([grads[3], grads[7]]) / 2)
-    for (name, p), q, b in zip(engine.tower.module.named_parameters(), reference.parameters(),
-                               before):
+    for (name, p), q, b in zip(
+        engine.tower.module.named_parameters(), reference.parameters(), before
+    ):
         assert torch.allclose(b - p.detach(), q.grad, atol=1e-6), name
 
 
@@ -102,9 +117,11 @@ def test_bf16_encoder_keeps_fp32_master_weights():
     from ray_deepspeed_pipeline.vision import VisionTower
 
     encoder = tiny_vision().to(torch.bfloat16)
-    engine = ColocatedVisionEngine(VisionTower(encoder, "visual"),
-                                   {"optimizer": {"type": "SGD", "params": {"lr": 1e-5}}},
-                                   torch.device("cpu"))
+    engine = ColocatedVisionEngine(
+        VisionTower(encoder, "visual"),
+        {"optimizer": {"type": "SGD", "params": {"lr": 1e-5}}},
+        torch.device("cpu"),
+    )
     first = next(engine.tower.module.parameters())
     start = first.detach().float().clone()
     for _ in range(400):
@@ -127,22 +144,28 @@ def _sharded_rank(rank, init_file, out_dir):
     # gradient (Adam would turn last-bit differences in near-zero gradients
     # between the two image groupings into full steps)
     config = {"optimizer": {"type": "SGD", "params": {"lr": 0.1, "momentum": 0.9}}}
-    engine = ColocatedVisionEngine(VisionTower(tiny_vision(), "visual"), config,
-                                   torch.device("cpu"))
+    engine = ColocatedVisionEngine(
+        VisionTower(tiny_vision(), "visual"), config, torch.device("cpu")
+    )
     g = torch.Generator().manual_seed(1)
     grid = torch.tensor([[1, 4, 4]])
     images = [(i, torch.randn(16, 48, generator=g), grid) for i in range(4)]
     grads = {i: torch.randn(4, 16, generator=g) for i in range(4)}
-    mine = images[rank * 2:rank * 2 + 2]  # each rank encodes two of the four images
+    mine = images[rank * 2 : rank * 2 + 2]  # each rank encodes two of the four images
     for _ in range(2):
         engine.forward(mine, train=True)
         engine.backward({i: grads[i] for i, _, _ in mine})
         engine.reduce_gradients(group=dist.group.WORLD, divide_by=2)
         engine.apply()
     state = engine.full_state()
-    torch.save({"params": [p.detach() for p in engine.tower.module.parameters()],
-                "shard": engine.master.numel(), "state": state if rank == 0 else None},
-               f"{out_dir}/r{rank}.pt")
+    torch.save(
+        {
+            "params": [p.detach() for p in engine.tower.module.parameters()],
+            "shard": engine.master.numel(),
+            "state": state if rank == 0 else None,
+        },
+        f"{out_dir}/r{rank}.pt",
+    )
     dist.destroy_process_group()
 
 
@@ -181,8 +204,9 @@ def test_sharded_optimizer_matches_one_unsharded_encoder(tmp_path):
     # resume from the full state: one more step matches one more unsharded step
     path = tmp_path / "vision.pt"
     torch.save(ranks[0]["state"], path)
-    resumed = ColocatedVisionEngine(VisionTower(tiny_vision(), "visual"), config,
-                                    torch.device("cpu"))
+    resumed = ColocatedVisionEngine(
+        VisionTower(tiny_vision(), "visual"), config, torch.device("cpu")
+    )
     resumed.load(str(path))
     for e in (one, resumed):
         e.forward(images, train=True)
@@ -203,8 +227,13 @@ def test_vision_schedule_encodes_ahead_and_backpropagates_once_gradients_exist()
     ops = [(k, m, f"{k}{m}") for m in range(6) for k in ("forward", "backward")]
     before, end = vision_schedule(ops, microbatches={0, 1, 3, 5}, n_stages=2)
     at = {ops[i][2]: v for i, v in before.items()}
-    assert at == {"forward0": ([], [0, 1]), "forward1": ([], [3]), "forward2": ([0], []),
-                  "forward3": ([1], [5]), "forward5": ([3], [])}
+    assert at == {
+        "forward0": ([], [0, 1]),
+        "forward1": ([], [3]),
+        "forward2": ([0], []),
+        "forward3": ([1], [5]),
+        "forward5": ([3], []),
+    }
     assert end == [5]
 
 
@@ -218,9 +247,11 @@ def test_engine_encodes_and_backpropagates_microbatch_by_microbatch():
 
     encoder = tiny_vision()
     reference = copy.deepcopy(encoder)
-    engine = ColocatedVisionEngine(VisionTower(encoder, "visual"),
-                                   {"optimizer": {"type": "SGD", "params": {"lr": 1.0}}},
-                                   torch.device("cpu"))
+    engine = ColocatedVisionEngine(
+        VisionTower(encoder, "visual"),
+        {"optimizer": {"type": "SGD", "params": {"lr": 1.0}}},
+        torch.device("cpu"),
+    )
     g = torch.Generator().manual_seed(2)
     grid = torch.tensor([[1, 4, 4]])
     images = [(i, torch.randn(16, 48, generator=g), grid) for i in range(4)]

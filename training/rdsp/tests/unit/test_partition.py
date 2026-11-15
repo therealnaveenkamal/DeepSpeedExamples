@@ -1,5 +1,7 @@
 """Deterministic contiguous partitioning and name-based rebinding."""
 
+import functools
+
 import pytest
 import torch
 import torch.nn as nn
@@ -105,23 +107,33 @@ def test_no_block_list_rejected():
 
 # --- stage builder selection ---------------------------------------------------
 
+
 def _tiny_qwen3():
     transformers = pytest.importorskip("transformers")
     torch.manual_seed(0)
     cfg = transformers.Qwen3Config(
-        vocab_size=20, hidden_size=16, intermediate_size=32, num_hidden_layers=4,
-        num_attention_heads=4, num_key_value_heads=2, head_dim=4,
-        max_position_embeddings=64, tie_word_embeddings=False)
+        vocab_size=20,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=4,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=4,
+        max_position_embeddings=64,
+        tie_word_embeddings=False,
+    )
     return transformers.Qwen3ForCausalLM(cfg).float()
 
 
 def test_plain_sequential_model_gets_the_generic_builder():
     from ray_deepspeed_pipeline.partition import build_stage_module, select_stage_builder
+
     assert select_stage_builder(ToyLM()) is build_stage_module
 
 
 def test_hf_causal_lm_gets_the_causal_lm_builder():
     from ray_deepspeed_pipeline.partition import build_causal_lm_stage, select_stage_builder
+
     assert select_stage_builder(_tiny_qwen3()) is build_causal_lm_stage
 
 
@@ -233,7 +245,6 @@ def test_balanced_cuts_give_the_heavy_head_stage_fewer_blocks():
     assert [(p.block_start, p.block_stop) for p in parts] == [(0, 3), (3, 5), (5, 6)]
 
 
-
 def test_balanced_cuts_spread_the_slack_evenly():
     """Eight ToyLM blocks on four stages: 3|3|1|1 and 3|2|2|1 both cap the
     slowest stage at 248, but the first leaves stage 2 nearly idle (72)."""
@@ -254,11 +265,83 @@ def test_vision_token_ratio_counts_real_tokens_and_the_encoders_attention():
 
     config = SimpleNamespace(vision_config=SimpleNamespace(hidden_size=8, intermediate_size=16))
     layer = 4 * 8 * 8 + 2 * 8 * 16  # 512 parameters per encoder layer
-    sample = [({"input_ids": torch.zeros(2, 10, dtype=torch.long),
-                "image_grid_thw": [torch.tensor([[1, 4, 4]]), torch.tensor([[1, 2, 4]])]}, None),
-              ({"input_ids": torch.zeros(2, 6, dtype=torch.long),
-                "image_grid_thw": [torch.tensor([[1, 4, 4]]), torch.zeros(0, 3, dtype=torch.long)]},
-               None)]
+    sample = [
+        (
+            {
+                "input_ids": torch.zeros(2, 10, dtype=torch.long),
+                "image_grid_thw": [torch.tensor([[1, 4, 4]]), torch.tensor([[1, 2, 4]])],
+            },
+            None,
+        ),
+        (
+            {
+                "input_ids": torch.zeros(2, 6, dtype=torch.long),
+                "image_grid_thw": [torch.tensor([[1, 4, 4]]), torch.zeros(0, 3, dtype=torch.long)],
+            },
+            None,
+        ),
+    ]
     images = [16, 8, 16]  # patches per image; the empty grid is a row without an image
     weighted = sum(p * (1 + 2 * p * 8 / layer) for p in images)
     assert vision_token_ratio(config, sample) == pytest.approx(weighted / (2 * 10 + 2 * 6))
+
+
+def test_recompute_first_blocks_only():
+    """recompute_blocks(stage, n): the first n of the stage's blocks keep
+    only their input, the rest keep everything; gradients unchanged."""
+    from ray_deepspeed_pipeline.partition import build_stage_module, recompute_blocks
+
+    torch.manual_seed(0)
+    model = ToyLM(n_blocks=6)
+    middle = partition_parameters(model, ExplicitCuts((1, 5)), 3)[1]  # blocks 1-4
+    stages = {n: build_stage_module(model, 1, 5, middle.parameter_names) for n in (0, 2, 4, None)}
+    for n, stage in stages.items():
+        if n != 0:
+            recompute_blocks(stage, n)
+    wrapped = [
+        sum(isinstance(b.forward, functools.partial) for b in s.local_blocks())
+        for s in stages.values()
+    ]
+    assert wrapped == [0, 2, 4, 4]
+    assert [isinstance(b.forward, functools.partial) for b in stages[2].local_blocks()] == [
+        True,
+        True,
+        False,
+        False,
+    ]
+
+    hidden = torch.randn(4, 16, 8)
+    kept = {}
+    for n, stage in stages.items():
+        kept[n], out = _saved_bytes(stage, hidden)
+        out.sum().backward()
+    assert kept[4] < kept[2] < kept[0] and kept[4] == kept[None]
+    for name, a in stages[0].named_parameters():
+        b = dict(stages[2].named_parameters())[name]
+        assert torch.allclose(a.grad, b.grad, atol=1e-6), name
+
+
+def test_recompute_first_blocks_takes_the_encoder_whole():
+    from ray_deepspeed_pipeline.partition import recompute_blocks
+
+    class Stage(nn.Module):  # an HF stage holding a vision encoder
+        def __init__(self):
+            super().__init__()
+            self.decoder = nn.ModuleList(nn.Linear(2, 2) for _ in range(3))
+            self.encoder = nn.ModuleList(nn.Linear(2, 2) for _ in range(2))
+
+        def local_blocks(self):
+            return list(self.decoder) + self.encoder_blocks()
+
+        def encoder_blocks(self):
+            return list(self.encoder)
+
+    stage = Stage()
+    recompute_blocks(stage, 1)
+    assert [isinstance(b.forward, functools.partial) for b in stage.local_blocks()] == [
+        True,
+        False,
+        False,
+        True,
+        True,
+    ]

@@ -57,15 +57,27 @@ def digest_tree(directory: str) -> dict[str, str]:
 
 def validate_tag(tag: str) -> str:
     """Return tag if it is a single path component; else raise CheckpointError."""
-    if (not isinstance(tag, str) or not tag or tag in (".", "..")
-            or os.sep in tag or (os.altsep and os.altsep in tag)):
+    if (
+        not isinstance(tag, str)
+        or not tag
+        or tag in (".", "..")
+        or os.sep in tag
+        or (os.altsep and os.altsep in tag)
+    ):
         raise CheckpointError(f"checkpoint tag must be a plain directory name, got {tag!r}")
     return tag
 
 
-def build_manifest(*, tag: str, global_step: int, plan_hash: str,
-                   plan_json: str, stage_records: list[dict],
-                   data_position, client_state) -> dict:
+def build_manifest(
+    *,
+    tag: str,
+    global_step: int,
+    plan_hash: str,
+    plan_json: str,
+    stage_records: list[dict],
+    data_position,
+    client_state,
+) -> dict:
     """Build the commit record. Raises CheckpointError if client_state is not JSON.
 
     stage_records: one per stage, {index, world_size, ranks, files: {relpath: sha256}}.
@@ -98,7 +110,8 @@ def check_complete(manifest: dict, plan_stages: list[int]) -> None:
         if finished != list(range(record["world_size"])):
             raise CheckpointError(
                 f"stage {record['index']}: expected ranks "
-                f"{list(range(record['world_size']))}, finished {finished}")
+                f"{list(range(record['world_size']))}, finished {finished}"
+            )
 
 
 def publish(root: str, manifest: dict, *, update_latest: bool = True) -> str:
@@ -136,8 +149,7 @@ def resolve_tag(root: str, tag: str | None) -> str:
         return validate_tag(f.read().strip())
 
 
-def read_and_verify(root: str, tag: str | None, *, plan_hash: str,
-                    plan_stages: list[int]) -> dict:
+def read_and_verify(root: str, tag: str | None, *, plan_hash: str, plan_stages: list[int]) -> dict:
     """Load a committed manifest, raising CheckpointError if it is incomplete,
     for another plan, or its driver-visible files are missing or changed."""
     tag = resolve_tag(root, tag)
@@ -145,7 +157,8 @@ def read_and_verify(root: str, tag: str | None, *, plan_hash: str,
     if not os.path.exists(path):
         raise CheckpointError(
             f"checkpoint {tag!r} has no manifest: it was never committed "
-            f"(an interrupted or failed save)")
+            f"(an interrupted or failed save)"
+        )
     with open(path) as f:
         manifest = json.load(f)
     if manifest.get("format") != MANIFEST_FORMAT:
@@ -155,7 +168,8 @@ def read_and_verify(root: str, tag: str | None, *, plan_hash: str,
             f"plan mismatch: checkpoint {tag!r} was written by plan "
             f"{manifest['plan_hash'][:12]}, this pipeline runs "
             f"{plan_hash[:12]}; stage-local shards are not convertible across "
-            f"plans")
+            f"plans"
+        )
     check_complete(manifest, plan_stages)
     for record in manifest["stages"]:
         directory = stage_dir(root, tag, record["index"])

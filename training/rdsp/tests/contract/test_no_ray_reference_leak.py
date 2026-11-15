@@ -13,10 +13,10 @@ def _is_ray_module(module: str) -> bool:
 
 
 def _assert_no_ray_types(obj, path="root", depth=0):
-    assert not _is_ray_module(type(obj).__module__), \
-        f"{path} leaks a ray type: {type(obj)}"
-    if depth >= 2 or isinstance(obj, (str, bytes, int, float, bool, type(None),
-                                      torch.Tensor, DataLoader)):
+    assert not _is_ray_module(type(obj).__module__), f"{path} leaks a ray type: {type(obj)}"
+    if depth >= 2 or isinstance(
+        obj, (str, bytes, int, float, bool, type(None), torch.Tensor, DataLoader)
+    ):
         return
     if isinstance(obj, (list, tuple, set)):
         for i, item in enumerate(obj):
@@ -26,11 +26,13 @@ def _assert_no_ray_types(obj, path="root", depth=0):
             _assert_no_ray_types(v, f"{path}[{k!r}]", depth + 1)
 
 
-def test_public_tree_has_no_ray_types(fake_coordinator, tiny_model, tiny_dataset,
-                                      pipeline_config):
+def test_public_tree_has_no_ray_types(fake_coordinator, tiny_model, tiny_dataset, pipeline_config):
     result = rdsp.initialize(
-        model=tiny_model, training_data=tiny_dataset,
-        pipeline_config=pipeline_config, loss_fn=simple_loss_fn)
+        model=tiny_model,
+        training_data=tiny_dataset,
+        pipeline_config=pipeline_config,
+        loss_fn=simple_loss_fn,
+    )
     _assert_no_ray_types(result)
 
     engine = result[0]
@@ -38,6 +40,5 @@ def test_public_tree_has_no_ray_types(fake_coordinator, tiny_model, tiny_dataset
     _assert_no_ray_types(engine.eval_batch(), "eval_batch()")
     _assert_no_ray_types(engine.global_steps, "global_steps")
     # public (non-underscore, non-raising) attribute surface
-    for name in ("train_batch", "eval_batch", "save_checkpoint",
-                 "load_checkpoint", "global_steps"):
+    for name in ("train_batch", "eval_batch", "save_checkpoint", "load_checkpoint", "global_steps"):
         _assert_no_ray_types(getattr(engine, name), f"engine.{name}")

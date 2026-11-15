@@ -33,11 +33,14 @@ from ray_deepspeed_pipeline.schedule import control_commands, generate_commands
 def _lengths_differ(inputs) -> bool:
     """Whether a step's microbatches differ in sequence length (each padded
     to its own longest row); stages then send every boundary with its shape."""
+
     def length(x):
         if isinstance(x, dict):
             x = x.get("input_ids", next((v for v in x.values() if torch.is_tensor(v)), None))
         return x.shape[1] if torch.is_tensor(x) and x.dim() >= 2 else None
+
     return len({length(x) for x in inputs}) > 1
+
 
 class StageWorkerClient(Protocol):
     """One stage's endpoint (the stage's whole actor group).
@@ -52,18 +55,24 @@ class StageWorkerClient(Protocol):
     shutdown() -> None, used by recovery.
     """
 
-    def submit(self, command: Command, *, inputs=None, labels=None,
-               control=None) -> Any: ...
+    def submit(self, command: Command, *, inputs=None, labels=None, control=None) -> Any: ...
 
 
 class PipelineCoordinator:
-    def __init__(self, plan: ExecutionPlan, workers: list[StageWorkerClient],
-                 *, rebuild: Callable[[], list[StageWorkerClient]] | None = None):
+    def __init__(
+        self,
+        plan: ExecutionPlan,
+        workers: list[StageWorkerClient],
+        *,
+        rebuild: Callable[[], list[StageWorkerClient]] | None = None,
+    ):
         """rebuild: recreates every stage's workers from scratch. load_checkpoint()
         needs it to recover from a dead worker."""
         if len(workers) != len(plan.stages):
-            raise ValidationError(f"{len(plan.stages)} stages need {len(plan.stages)} "
-                             f"stage clients, got {len(workers)}")
+            raise ValidationError(
+                f"{len(plan.stages)} stages need {len(plan.stages)} "
+                f"stage clients, got {len(workers)}"
+            )
         self._plan = plan
         self._workers = workers
         self._rebuild = rebuild
@@ -90,15 +99,22 @@ class PipelineCoordinator:
     def eval_batch(self, data_iter: Iterator) -> float:
         return self._run(data_iter, train=False)
 
-    def save_checkpoint(self, save_dir: str, tag: str | None = None, *,
-                        client_state=None, data_position=None,
-                        save_latest: bool = True) -> bool:
+    def save_checkpoint(
+        self,
+        save_dir: str,
+        tag: str | None = None,
+        *,
+        client_state=None,
+        data_position=None,
+        save_latest: bool = True,
+    ) -> bool:
         """Every rank of every stage saves; the manifest is published only after
         all of them succeed, so a failed save commits nothing."""
         if self._poisoned:
             raise PipelinePoisoned(
                 "refusing to checkpoint a poisoned pipeline: its stages may "
-                "hold weights from different optimizer steps")
+                "hold weights from different optimizer steps"
+            )
         tag = ckpt.validate_tag(tag if tag is not None else f"global_step{self._global_steps}")
         if os.path.exists(os.path.join(save_dir, tag, ckpt.MANIFEST_NAME)):
             raise CheckpointError(f"checkpoint {tag!r} is already committed; tags are immutable")
@@ -112,28 +128,41 @@ class PipelineCoordinator:
         except RdspError as e:
             raise CheckpointError(
                 f"save of {tag!r} failed; no manifest was published and the "
-                f"last committed checkpoint is unchanged: {e}") from e
+                f"last committed checkpoint is unchanged: {e}"
+            ) from e
 
         manifest = ckpt.build_manifest(
-            tag=tag, global_step=self._global_steps,
-            plan_hash=self._plan.plan_hash(), plan_json=self._plan.canonical_json(),
-            stage_records=records, data_position=data_position,
-            client_state=client_state if client_state is not None else {})
+            tag=tag,
+            global_step=self._global_steps,
+            plan_hash=self._plan.plan_hash(),
+            plan_json=self._plan.canonical_json(),
+            stage_records=records,
+            data_position=data_position,
+            client_state=client_state if client_state is not None else {},
+        )
         ckpt.check_complete(manifest, list(range(len(self._plan.stages))))
         ckpt.publish(save_dir, manifest, update_latest=save_latest)
         return True
 
-    def load_checkpoint(self, load_dir: str, tag: str | None = None, *,
-                        load_optimizer_states: bool = True,
-                        load_lr_scheduler_states: bool = True) -> dict:
+    def load_checkpoint(
+        self,
+        load_dir: str,
+        tag: str | None = None,
+        *,
+        load_optimizer_states: bool = True,
+        load_lr_scheduler_states: bool = True,
+    ) -> dict:
         """Restore the whole pipeline from a committed manifest.
 
         Dead workers trigger a full rebuild; live ones reload in place. The
         pipeline is un-poisoned only after every rank of every stage has loaded.
         """
         manifest = ckpt.read_and_verify(
-            load_dir, tag, plan_hash=self._plan.plan_hash(),
-            plan_stages=list(range(len(self._plan.stages))))
+            load_dir,
+            tag,
+            plan_hash=self._plan.plan_hash(),
+            plan_stages=list(range(len(self._plan.stages))),
+        )
         self._drop_read_ahead()
         tag = manifest["tag"]
 
@@ -144,44 +173,65 @@ class PipelineCoordinator:
             if self._rebuild is None:
                 raise CheckpointError(
                     "a stage worker is unreachable and this pipeline has no "
-                    "rebuild factory; cannot recover in place")
+                    "rebuild factory; cannot recover in place"
+                )
             self._shutdown_workers()
             self._workers = self._rebuild()
             self._p2p_dirty = False  # fresh workers come with fresh groups
         # Two phases: every stage verifies its shards on its own node first, so
         # a rejected checkpoint leaves every worker untouched.
         files = {r["index"]: r["files"] for r in manifest["stages"]}
-        self._load_phase(manifest, {"root": load_dir, "tag": tag, "verify": files},
-                         "verification")
+        self._load_phase(manifest, {"root": load_dir, "tag": tag, "verify": files}, "verification")
         self._poisoned = True  # until every stage has loaded
         self._generation += 1
-        self._load_phase(manifest, {
-            "root": load_dir, "tag": tag,
-            "load_optimizer_states": load_optimizer_states,
-            "load_lr_scheduler_states": load_lr_scheduler_states}, "load")
+        self._load_phase(
+            manifest,
+            {
+                "root": load_dir,
+                "tag": tag,
+                "load_optimizer_states": load_optimizer_states,
+                "load_lr_scheduler_states": load_lr_scheduler_states,
+            },
+            "load",
+        )
 
         self._global_steps = manifest["global_step"]
         self._poisoned = False
-        return {"tag": tag, "global_step": manifest["global_step"],
-                "client_state": manifest["client_state"],
-                "data_position": manifest["data_position"],
-                "path": os.path.join(load_dir, tag)}
+        return {
+            "tag": tag,
+            "global_step": manifest["global_step"],
+            "client_state": manifest["client_state"],
+            "data_position": manifest["data_position"],
+            "path": os.path.join(load_dir, tag),
+        }
 
     def _load_phase(self, manifest: dict, control: dict, what: str) -> None:
-        cmds = control_commands(self._plan, self._generation,
-                                manifest["global_step"], "load")
+        cmds = control_commands(self._plan, self._generation, manifest["global_step"], "load")
         try:
             handles = {s: self._submit(c, control=control) for s, c in cmds.items()}
             results = {s: self._resolve(h, cmds[s]) for s, h in handles.items()}
         except RdspError as e:
             raise CheckpointError(
                 f"checkpoint {what} of {manifest['tag']!r} failed; the pipeline "
-                f"stays poisoned until a load succeeds: {e}") from e
+                f"stays poisoned until a load succeeds: {e}"
+            ) from e
         for s, result in results.items():
             if isinstance(result, str):  # a stage's own rejection reason
                 raise CheckpointError(result)
             if result is False:
                 raise CheckpointError(f"stage {s} failed checkpoint {what}")
+
+    def set_profile(self, on: bool) -> None:
+        for w in self._workers:
+            w.set_profile(on)
+
+    def profile_records(self) -> list[list[dict]]:
+        """Per stage, each rank's phase records and GPU memory (set_profile)."""
+        return [w.profile_records() for w in self._workers]
+
+    def shutdown(self) -> None:
+        self._drop_read_ahead()
+        self._shutdown_workers()
 
     def _all_alive(self) -> bool:
         return all(getattr(w, "alive", lambda: True)() for w in self._workers)
@@ -197,14 +247,16 @@ class PipelineCoordinator:
             raise PipelinePoisoned(
                 "a previous generation partially applied optimizer updates; "
                 "train/eval calls are rejected until load_checkpoint() restores "
-                "the last committed global checkpoint")
+                "the last committed global checkpoint"
+            )
         prepared = None
         if train and self._ahead is not None:
             source, future = self._ahead
             if source is not data_iter:
                 raise StepFailed(
                     "prefetch read this step's data ahead from another iterator; pass "
-                    "the same iterator to every train_batch() call")
+                    "the same iterator to every train_batch() call"
+                )
             self._ahead = None
             entries, prepared = future.result()  # raises if the iterator ran out
         else:
@@ -214,8 +266,7 @@ class PipelineCoordinator:
         labels = [e[1] for e in entries]
 
         self._generation += 1
-        sequences = generate_commands(self._plan, self._generation,
-                                      self._global_steps, train=train)
+        sequences = generate_commands(self._plan, self._generation, self._global_steps, train=train)
         ahead = data_iter if train and self._plan.prefetch else None
         losses = self._run_step(sequences, inputs, labels, train, prepared, ahead)
         return self._finish(sequences, losses, train)
@@ -224,8 +275,10 @@ class PipelineCoordinator:
         """What stage s is sent with a step: the inputs (first stage, or
         every stage under colocated vision) and the labels (last stage)."""
         colocated = self._plan.colocated_vision is not None
-        return {"inputs": inputs if s == 0 or colocated else None,
-                "labels": labels if s == len(self._plan.stages) - 1 else None}
+        return {
+            "inputs": inputs if s == 0 or colocated else None,
+            "labels": labels if s == len(self._plan.stages) - 1 else None,
+        }
 
     def _drop_read_ahead(self) -> None:
         """Forget the step prefetch read ahead: after a load the caller
@@ -247,8 +300,7 @@ class PipelineCoordinator:
                 prepared[s] = prepare(**self._stage_payload(s, inputs, labels))
         return entries, prepared
 
-    def _run_step(self, sequences, inputs, labels, train: bool, prepared=None,
-                  ahead=None) -> list:
+    def _run_step(self, sequences, inputs, labels, train: bool, prepared=None, ahead=None) -> list:
         """Send each stage its whole op list as one command; stages exchange
         boundary tensors among themselves. Returns per-microbatch losses."""
         n_stages = len(self._plan.stages)
@@ -260,17 +312,25 @@ class PipelineCoordinator:
         varying = _lengths_differ(inputs)
         started = time.perf_counter()
         for s in range(n_stages):
-            ops = [(c.kind, c.microbatch, c.command_id)
-                   for c in sequences[s] if c.kind in kinds]
+            ops = [(c.kind, c.microbatch, c.command_id) for c in sequences[s] if c.kind in kinds]
             cmds[s] = Command(
                 command_id=f"g{self._generation}.t{self._global_steps}.s{s}.step",
-                generation=self._generation, global_step=self._global_steps, stage=s,
-                kind="step" if train else "eval_step", microbatch=None, predecessors=())
+                generation=self._generation,
+                global_step=self._global_steps,
+                stage=s,
+                kind="step" if train else "eval_step",
+                microbatch=None,
+                predecessors=(),
+            )
             try:
-                payload = ({"prepared": prepared[s]} if prepared and s in prepared
-                           else self._stage_payload(s, inputs, labels))
-                handles[s] = self._submit(cmds[s], control={"ops": ops, "varying": varying},
-                                          **payload)
+                payload = (
+                    {"prepared": prepared[s]}
+                    if prepared and s in prepared
+                    else self._stage_payload(s, inputs, labels)
+                )
+                handles[s] = self._submit(
+                    cmds[s], control={"ops": ops, "varying": varying}, **payload
+                )
             except StepFailed:
                 self._p2p_dirty = True
                 raise
@@ -296,16 +356,23 @@ class PipelineCoordinator:
                 if not result["ready"]:
                     raise self._not_ready(s)
         if os.environ.get("RDSP_PROFILE") == "1":
-            print(json.dumps({"rdsp_profile": {"driver": "step"},
-                              "dispatch": round((dispatched - started) * 1e3, 1),
-                              "wait": round((time.perf_counter() - dispatched) * 1e3, 1)}),
-                  flush=True)
+            print(
+                json.dumps(
+                    {
+                        "rdsp_profile": {"driver": "step"},
+                        "dispatch": round((dispatched - started) * 1e3, 1),
+                        "wait": round((time.perf_counter() - dispatched) * 1e3, 1),
+                    }
+                ),
+                flush=True,
+            )
         return results[terminal]["losses"]
 
     def _not_ready(self, stage: int) -> StepFailed:
         return StepFailed(
             f"stage {stage} not ready; generation {self._generation} "
-            f"aborted before any optimizer update (safe to retry)")
+            f"aborted before any optimizer update (safe to retry)"
+        )
 
     def _reconnect_p2p(self, strict: bool) -> None:
         self._p2p_epoch += 1
@@ -316,7 +383,8 @@ class PipelineCoordinator:
             if strict:
                 raise StepFailed(
                     f"could not rebuild stage-to-stage links after a failed step "
-                    f"(a worker may be gone; load_checkpoint() rebuilds): {e}") from e
+                    f"(a worker may be gone; load_checkpoint() rebuilds): {e}"
+                ) from e
 
     def _finish(self, sequences, losses, train: bool) -> float:
         n_stages = len(self._plan.stages)
@@ -325,8 +393,9 @@ class PipelineCoordinator:
             return mean_loss
 
         # once any apply is dispatched, stages may disagree on weights: poison on failure
-        apply_cmds = {s: next(c for c in sequences[s] if c.kind == "apply")
-                      for s in range(n_stages)}
+        apply_cmds = {
+            s: next(c for c in sequences[s] if c.kind == "apply") for s in range(n_stages)
+        }
         started = time.perf_counter()
         try:
             applied = {s: self._submit(apply_cmds[s]) for s in range(n_stages)}
@@ -337,12 +406,19 @@ class PipelineCoordinator:
             self._poisoned = True
             raise PipelinePoisoned(
                 f"partial optimizer apply in generation {self._generation}: {e}; "
-                f"restore from the last committed checkpoint") from e
+                f"restore from the last committed checkpoint"
+            ) from e
 
         if os.environ.get("RDSP_PROFILE") == "1":
-            print(json.dumps({"rdsp_profile": {"driver": "apply"},
-                              "apply": round((time.perf_counter() - started) * 1e3, 1)}),
-                  flush=True)
+            print(
+                json.dumps(
+                    {
+                        "rdsp_profile": {"driver": "apply"},
+                        "apply": round((time.perf_counter() - started) * 1e3, 1),
+                    }
+                ),
+                flush=True,
+            )
         self._global_steps += 1
         return mean_loss
 
@@ -354,8 +430,7 @@ class PipelineCoordinator:
         except Exception as e:
             if command.kind == "apply":
                 raise
-            raise StepFailed(
-                f"stage {command.stage} failed on {command.command_id}: {e}") from e
+            raise StepFailed(f"stage {command.stage} failed on {command.command_id}: {e}") from e
 
     def _resolve(self, handle, command: Command | None):
         """Resolve a worker result; worker/transport failures become StepFailed."""

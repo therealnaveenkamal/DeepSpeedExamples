@@ -64,9 +64,7 @@ class FakeStageWorker:
 
 def build(stages=2, microbatches=4, fail_on=None):
     plan = make_plan(stages, microbatches)
-    workers = [FakeStageWorker(s, s == stages - 1,
-                               (fail_on or {}).get(s))
-               for s in range(stages)]
+    workers = [FakeStageWorker(s, s == stages - 1, (fail_on or {}).get(s)) for s in range(stages)]
     return PipelineCoordinator(plan, workers), workers
 
 
@@ -103,8 +101,7 @@ def test_exhausted_iterator_fails_before_any_dispatch():
     with pytest.raises(StepFailed):
         coord.train_batch(iter([("x0", "y0")]))
     assert coord.global_steps == 0
-    assert all(w.commands == [] for w in workers), \
-        "no command may be issued when consumption fails"
+    assert all(w.commands == [] for w in workers), "no command may be issued when consumption fails"
 
 
 def test_forward_failure_aborts_without_poison_and_is_retryable():
@@ -174,21 +171,21 @@ def test_facade_integration_with_real_coordinator():
 
     def factory(*, model, pipeline_config, ds_config, loss_fn, weights=None):
         plan = lower(model, pipeline_config, ds_config)
-        workers = [FakeStageWorker(s, s == len(plan.stages) - 1)
-                   for s in range(len(plan.stages))]
+        workers = [FakeStageWorker(s, s == len(plan.stages) - 1) for s in range(len(plan.stages))]
         return PipelineCoordinator(plan, workers)
 
     original = api._coordinator_factory
     api._coordinator_factory = factory
     try:
         engine, _, _, _ = rdsp.initialize(
-            model=model, config={"train_batch_size": 8},
+            model=model,
+            config={"train_batch_size": 8},
             pipeline_config=rdsp.PipelineConfig(
-                stages=2, partition=rdsp.UniformTransformerBlocks(),
-                microbatches=4),
-            loss_fn=lambda outputs, labels: 0.0)
-        loss = engine.train_batch(data_iter=iter([(f"x{k}", f"y{k}")
-                                                  for k in range(4)]))
+                stages=2, partition=rdsp.UniformTransformerBlocks(), microbatches=4
+            ),
+            loss_fn=lambda outputs, labels: 0.0,
+        )
+        loss = engine.train_batch(data_iter=iter([(f"x{k}", f"y{k}") for k in range(4)]))
         assert isinstance(loss, torch.Tensor) and loss.shape == ()
         assert engine.global_steps == 1
     finally:
@@ -197,6 +194,7 @@ def test_facade_integration_with_real_coordinator():
 
 def build_prefetching(microbatches=2):
     import dataclasses
+
     plan = dataclasses.replace(make_plan(2, microbatches), prefetch=True)
     workers = [FakeStageWorker(s, s == 1) for s in range(2)]
     return PipelineCoordinator(plan, workers), workers
@@ -245,3 +243,47 @@ def test_engine_reports_each_stages_blocks():
     coord, _ = build(stages=2)
     blocks = RayPipelineEngine(coord).stage_blocks
     assert len(blocks) == 2 and blocks[0][0] == 0 and blocks[0][1] == blocks[1][0]
+
+
+def test_stages_fill_nodes_in_order():
+    from ray_deepspeed_pipeline.stage_group import fill_nodes_in_order
+
+    nodes = [("a", 8), ("b", 8)]
+    assert fill_nodes_in_order([2] * 8, nodes) == ["a"] * 4 + ["b"] * 4
+    assert fill_nodes_in_order([4, 4, 4, 4], nodes) == ["a", "a", "b", "b"]
+    # a stage never straddles: 3 + 3 fill a, the next 3 goes to b
+    assert fill_nodes_in_order([3, 3, 3, 3], nodes) == ["a", "a", "b", "b"]
+    assert fill_nodes_in_order([8, 8], nodes) == ["a", "b"]
+    assert fill_nodes_in_order([8, 8, 1], nodes) is None
+    assert fill_nodes_in_order([1], []) is None
+
+
+def test_a_stage_spanning_nodes_keeps_tensor_parallel_groups_on_one_node():
+    from ray_deepspeed_pipeline.errors import ValidationError
+    from ray_deepspeed_pipeline.stage_group import bundles_in_rank_order
+
+    # 9 | 7 GPUs per node: a TP4 group would cross nodes
+    table = {b: ("a" if b < 9 else "b") for b in range(16)}
+    with pytest.raises(ValidationError, match="multiple of tp x sp = 4"):
+        bundles_in_rank_order(table, ["a", "b"], 4)
+    even = {b: ("a" if b in (0, 2, 4, 6, 8, 10, 12, 14) else "b") for b in range(16)}
+    order = bundles_in_rank_order(even, ["a", "b"], 4)
+    assert [even[b] for b in order] == ["a"] * 8 + ["b"] * 8
+    assert sorted(order) == list(range(16))
+    # TP4 groups are ranks 0-3, 4-7, ...: each on one node
+    assert all(len({even[order[r]] for r in range(g, g + 4)}) == 1 for g in range(0, 16, 4))
+    assert bundles_in_rank_order(even, ["b", "a"], 1)[:8] == [1, 3, 5, 7, 9, 11, 13, 15]
+
+
+def test_a_stage_whose_ranks_do_not_share_the_checkpoint_directory_refuses_to_save():
+    # a stage spanning nodes on node-local storage: rank 0 would fingerprint only its own
+    # node's files, and the other node's ranks could not load what rank 0's node wrote
+    from ray_deepspeed_pipeline.errors import CheckpointError
+    from ray_deepspeed_pipeline.stage_group import StageGroupClient
+
+    client = StageGroupClient([object(), object()], stage=3)
+    shared = [{"rank": 0, "files": {"a": "1"}, "shares_dir": True}, {"rank": 1, "shares_dir": True}]
+    assert client._stage_record(shared)["files"] == {"a": "1"}
+    apart = [shared[0], {"rank": 1, "shares_dir": False}]
+    with pytest.raises(CheckpointError, match="stage 3.*rank 1.*shared"):
+        client._stage_record(apart)

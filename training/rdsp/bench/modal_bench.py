@@ -45,8 +45,12 @@ from modal_smoke import image
 app = modal.App("rdsp-vs-megatron", image=image)
 cache = modal.Volume.from_name("rdsp-bench-cache", create_if_missing=True)
 hf_cache = modal.Volume.from_name("rdsp-hf-cache", create_if_missing=True)
-KW = dict(timeout=4 * 3600, cpu=16, memory=65536,
-          volumes={"/cache": cache, "/root/.cache/huggingface": hf_cache})
+KW = dict(
+    timeout=4 * 3600,
+    cpu=16,
+    memory=65536,
+    volumes={"/cache": cache, "/root/.cache/huggingface": hf_cache},
+)
 BENCH = "/root/rdsp/bench"
 HF = "/cache/qwen3-0.6b-untied"
 RESULTS = Path(__file__).resolve().parent / "results"
@@ -55,8 +59,10 @@ WARMUP, STEPS = 10, 40
 
 # --- helpers that run inside the containers -----------------------------------
 
+
 def _sh(cmd):
     import subprocess
+
     return subprocess.run(cmd, shell=True, capture_output=True, text=True)
 
 
@@ -70,6 +76,7 @@ def _require_h100():
 
 def _install_rdsp():
     import subprocess
+
     subprocess.run(["pip", "install", "-e", "/root/rdsp"], check=True, capture_output=True)
 
 
@@ -85,24 +92,33 @@ def _tail(r, n=3000):
 def _megatron_hf(nproc, data, steps, out, **flags):
     """megatron_hf_loop.py on `nproc` GPUs; `flags` become --key 'value'."""
     extra = " ".join(f"--{k} '{v}'" for k, v in flags.items())
-    return _sh(f"cd {BENCH} && CUDA_DEVICE_MAX_CONNECTIONS=1 torchrun --standalone "
-               f"--nproc_per_node {nproc} megatron_hf_loop.py --hf {HF} --data {data} "
-               f"--steps {steps} --out {out} {extra}")
+    return _sh(
+        f"cd {BENCH} && CUDA_DEVICE_MAX_CONNECTIONS=1 torchrun --standalone "
+        f"--nproc_per_node {nproc} megatron_hf_loop.py --hf {HF} --data {data} "
+        f"--steps {steps} --out {out} {extra}"
+    )
 
 
 def _rdsp(pp, m, data, steps, out, **flags):
     """rdsp_bench.py with fused kernels, no warmup cut (callers drop warmup
     steps when summarizing)."""
     extra = " ".join(f"--{k} '{v}'" for k, v in flags.items())
-    return _sh(f"cd {BENCH} && python rdsp_bench.py --hf {HF} --pp {pp} --m {m} --seq 512 "
-               f"--steps {steps} --warmup 0 --data {data} --out {out} --fused 1 {extra}")
+    return _sh(
+        f"cd {BENCH} && python rdsp_bench.py --hf {HF} --pp {pp} --m {m} --seq 512 "
+        f"--steps {steps} --warmup 0 --data {data} --out {out} --fused 1 {extra}"
+    )
 
 
 def _megatron_checks(logs):
     """The per-rank layer lists and main_grad dtype that megatron_hf_loop.py
     prints: evidence of the layer split and gradient precision each run used."""
-    return sorted({line.strip() for line in logs.splitlines()
-                   if "main_grad dtype" in line or ": layers [" in line})
+    return sorted(
+        {
+            line.strip()
+            for line in logs.splitlines()
+            if "main_grad dtype" in line or ": layers [" in line
+        }
+    )
 
 
 def _pick(path, keys):
@@ -111,18 +127,25 @@ def _pick(path, keys):
 
 # --- the grid: one cell per pretrain_gpt.py / rdsp_bench.py run ---------------
 
+
 def _env_report():
     def run(cmd):
         return _sh(cmd).stdout.strip()
-    return {"gpus": run("nvidia-smi --query-gpu=name,driver_version --format=csv,noheader"),
-            "topo": run("nvidia-smi topo -m"),
-            "versions": run("python -c \"import torch,deepspeed,ray,transformer_engine as te,"
-                            "megatron.core as mc;print(torch.__version__,deepspeed.__version__,"
-                            "ray.__version__,te.__version__,mc.__version__)\"")}
+
+    return {
+        "gpus": run("nvidia-smi --query-gpu=name,driver_version --format=csv,noheader"),
+        "topo": run("nvidia-smi topo -m"),
+        "versions": run(
+            'python -c "import torch,deepspeed,ray,transformer_engine as te,'
+            "megatron.core as mc;print(torch.__version__,deepspeed.__version__,"
+            'ray.__version__,te.__version__,mc.__version__)"'
+        ),
+    }
 
 
 def _nvml_peak(stop, peaks):
     import pynvml
+
     pynvml.nvmlInit()
     hs = [pynvml.nvmlDeviceGetHandleByIndex(i) for i in range(pynvml.nvmlDeviceGetCount())]
     while not stop.is_set():
@@ -133,35 +156,47 @@ def _nvml_peak(stop, peaks):
 
 def _megatron_cell(c):
     import re
+
     iters = WARMUP + STEPS
-    r = _sh(f"cd {BENCH} && PP={c['pp']} M={c['m']} SEQ={c['seq']} ITERS={iters} "
-            f"VARIANT={c.get('variant', 'plain')} BALANCED={int(bool(c.get('balanced')))} "
-            f"LAYOUT='{c.get('layout', '')}' "
-            f"MEGATRON=/opt/Megatron-LM bash megatron_pretrain.sh")
+    r = _sh(
+        f"cd {BENCH} && PP={c['pp']} M={c['m']} SEQ={c['seq']} ITERS={iters} "
+        f"VARIANT={c.get('variant', 'plain')} BALANCED={int(bool(c.get('balanced')))} "
+        f"LAYOUT='{c.get('layout', '')}' "
+        f"MEGATRON=/opt/Megatron-LM bash megatron_pretrain.sh"
+    )
     out = r.stdout + r.stderr
-    times = [float(x) / 1000
-             for x in re.findall(r"elapsed time per iteration \(ms\): ([\d.]+)", out)]
+    times = [
+        float(x) / 1000 for x in re.findall(r"elapsed time per iteration \(ms\): ([\d.]+)", out)
+    ]
     losses = [float(x) for x in re.findall(r"lm loss: ([\d.E+-]+)", out)]
     # keep the lines that explain a failure (rank tracebacks), not just the
     # launcher's generic epilogue
-    errs = [line for line in out.splitlines()
-            if re.search(r"Error|error|Assert|assert|Traceback|out of memory", line)]
-    return (r.returncode, {"step_s": times[WARMUP:], "loss": losses},
-            "\n".join(errs[:60]) + "\n...\n" + out[-1500:])
+    errs = [
+        line
+        for line in out.splitlines()
+        if re.search(r"Error|error|Assert|assert|Traceback|out of memory", line)
+    ]
+    return (
+        r.returncode,
+        {"step_s": times[WARMUP:], "loss": losses},
+        "\n".join(errs[:60]) + "\n...\n" + out[-1500:],
+    )
 
 
 def _rdsp_cell(c):
     b = 4 if c["seq"] == 512 else 1
     out_path = f"/tmp/rdsp_{os.getpid()}_{random.randrange(10**9)}.json"
-    r = _sh(f"cd {BENCH} && python rdsp_bench.py --hf {HF} "
-            f"--pp {c['pp']} --m {c['m']} --seq {c['seq']} "
-            f"--steps {c.get('warmup', WARMUP) + c.get('steps', STEPS)} "
-            f"--warmup {c.get('warmup', WARMUP)} "
-            f"--data /cache/batches_s{c['seq']}_b{b}_m{c['m']}.pt "
-            f"--out {out_path} "
-            f"--cuts '{c.get('cuts', '')}' --last_stage_gpus {c.get('last_stage_gpus', 1)} "
-            f"--fused {int(bool(c.get('fused')))} "
-            f"--timed {int(bool(c.get('timed')))} --timeline {int(bool(c.get('timeline')))}")
+    r = _sh(
+        f"cd {BENCH} && python rdsp_bench.py --hf {HF} "
+        f"--pp {c['pp']} --m {c['m']} --seq {c['seq']} "
+        f"--steps {c.get('warmup', WARMUP) + c.get('steps', STEPS)} "
+        f"--warmup {c.get('warmup', WARMUP)} "
+        f"--data /cache/batches_s{c['seq']}_b{b}_m{c['m']}.pt "
+        f"--out {out_path} "
+        f"--cuts '{c.get('cuts', '')}' --last_stage_gpus {c.get('last_stage_gpus', 1)} "
+        f"--fused {int(bool(c.get('fused')))} "
+        f"--timed {int(bool(c.get('timed')))} --timeline {int(bool(c.get('timeline')))}"
+    )
     res = _load(out_path) if r.returncode == 0 and os.path.exists(out_path) else {}
     return r.returncode, res, _tail(r)
 
@@ -170,6 +205,7 @@ def _summarize_profile(c, res):
     """Compact profile summary computed in the container; the raw Ray
     timeline and per-stage CUDA timings go to the cache volume."""
     from collections import defaultdict
+
     prof = res.pop("profile", None)
     if not prof:
         return None
@@ -206,11 +242,19 @@ def _summarize_profile(c, res):
         key = (e.get("pid"), e.get("name"), e.get("cat"))
         by[key][0] += 1
         by[key][1] += e.get("dur", 0) / 1000
-    rows = sorted(((v[1] / n, v[0] / n, str(k[0]), str(k[1]), str(k[2]))
-                   for k, v in by.items()), reverse=True)
+    rows = sorted(
+        ((v[1] / n, v[0] / n, str(k[0]), str(k[1]), str(k[2])) for k, v in by.items()), reverse=True
+    )
     out["timeline_top"] = [
-        {"ms_per_step": round(ms, 2), "count_per_step": round(cnt, 1), "pid": pid,
-         "name": name, "cat": cat} for ms, cnt, pid, name, cat in rows[:40]]
+        {
+            "ms_per_step": round(ms, 2),
+            "count_per_step": round(cnt, 1),
+            "pid": pid,
+            "name": name,
+            "cat": cat,
+        }
+        for ms, cnt, pid, name, cat in rows[:40]
+    ]
     out["stage_pids"] = {str(k): v for k, v in stage_pid.items()}
     cache.commit()
     return out
@@ -220,10 +264,12 @@ def run_cells(cells):
     """Run grid cells in this container, in random order (unless profiling),
     sampling NVML peak memory alongside each."""
     import threading
+
     _install_rdsp()
     env = _env_report()
-    assert "H200" not in env["gpus"] and "H100" in env["gpus"], \
+    assert "H200" not in env["gpus"] and "H100" in env["gpus"], (
         f"not an H100 machine: {env['gpus']}"
+    )
     if not any(c.get("timeline") for c in cells):
         random.shuffle(cells)
     results = []
@@ -237,10 +283,18 @@ def run_cells(cells):
         prof_summary = _summarize_profile(c, res) if res else None
         stop.set()
         th.join()
-        results.append({"cell": c, "rc": rc, "wall_s": time.time() - t0,
-                        "nvml_peak_bytes": peaks, "result": res,
-                        "profile_summary": prof_summary,
-                        "tail": tail if rc else "", "env": env})
+        results.append(
+            {
+                "cell": c,
+                "rc": rc,
+                "wall_s": time.time() - t0,
+                "nvml_peak_bytes": peaks,
+                "result": res,
+                "profile_summary": prof_summary,
+                "tail": tail if rc else "",
+                "env": env,
+            }
+        )
         steps = res.get("step_s") or []
         med = f"{sorted(steps)[len(steps) // 2]:.3f}s" if steps else "n/a"
         print(f"{c} rc={rc} median_step={med}", flush=True)
@@ -289,17 +343,19 @@ def prepare_text():
     import subprocess
 
     import torch
+
     if os.path.exists(TEXT):
         return "cached"
     subprocess.run(["pip", "install", "-q", "datasets"], check=True)
     import datasets
     import transformers
+
     tok = transformers.AutoTokenizer.from_pretrained(HF)
     need = LOSS_STEPS * 8 * 4 * 513
     ds = datasets.load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1", split="train")
     ids, i = [], 0
     while len(ids) < need:
-        chunk = "".join(ds[i:i + 2000]["text"])
+        chunk = "".join(ds[i : i + 2000]["text"])
         ids.extend(tok(chunk)["input_ids"])
         i += 2000
     t = torch.tensor(ids[:need], dtype=torch.int64).view(LOSS_STEPS, 8, 4, 513)
@@ -311,6 +367,7 @@ def prepare_text():
 @app.function(**KW)
 def prepare_text16():
     import torch
+
     if not os.path.exists(TEXT16):
         x = torch.load(TEXT)
         torch.save(x.reshape(x.shape[0] // 2, 16, *x.shape[2:]).clone(), TEXT16)
@@ -320,24 +377,31 @@ def prepare_text16():
 
 def _ensure_b16_m16():
     import torch
+
     if not os.path.exists(TEXT_B16_M16):
         x = torch.load(TEXT).reshape(-1, 513)
-        torch.save(x[:37 * 256].reshape(37, 16, 16, 513).clone(), TEXT_B16_M16)
+        torch.save(x[: 37 * 256].reshape(37, 16, 16, 513).clone(), TEXT_B16_M16)
 
 
-def _loss_compare(pp, text=TEXT, steps=LOSS_STEPS, layout="", systems=("megatron", "rdsp"),
-                  grad_bf16=0):
+def _loss_compare(
+    pp, text=TEXT, steps=LOSS_STEPS, layout="", systems=("megatron", "rdsp"), grad_bf16=0
+):
     """HF reference loss on step 0, then Megatron-Core and rdsp from the same
     pretrained weights on the same batches, fusions on for both."""
     import subprocess
 
     import torch
+
     gpus = _require_h100()
     _install_rdsp()
     m = torch.load(text).shape[1]
     out = {"pp": pp, "m": m, "text": text, "layout": layout, "gpu": gpus.split("\n")[0]}
     # 1. reference: the plain HF model's loss on step 0's batch (no training)
-    ref = subprocess.run(["python", "-c", f"""
+    ref = subprocess.run(
+        [
+            "python",
+            "-c",
+            f"""
 import torch, torch.nn.functional as F, transformers, json
 m = transformers.AutoModelForCausalLM.from_pretrained(
     '{HF}', dtype=torch.bfloat16, attn_implementation='sdpa').cuda().eval()
@@ -346,20 +410,36 @@ with torch.no_grad():
     ls = [F.cross_entropy(m(X[0, k][:, :-1].cuda()).logits.float().flatten(0, 1),
                           X[0, k][:, 1:].cuda().flatten()).item() for k in range(X.shape[1])]
 print(json.dumps(sum(ls) / len(ls)))
-"""], capture_output=True, text=True)
+""",
+        ],
+        capture_output=True,
+        text=True,
+    )
     out["grad_bf16"] = grad_bf16
-    out["hf_step0_loss"] = (json.loads(ref.stdout.strip().splitlines()[-1])
-                            if ref.returncode == 0 else ref.stderr[-2000:])
+    out["hf_step0_loss"] = (
+        json.loads(ref.stdout.strip().splitlines()[-1])
+        if ref.returncode == 0
+        else ref.stderr[-2000:]
+    )
     # 2. Megatron-Core from the same HF weights, its standard fusions on
     r = _megatron_hf(pp, text, steps, "/tmp/meg_loss.json", layout=layout, grad_bf16=grad_bf16)
     logs = r.stdout + r.stderr
-    out["megatron_layers"] = [line for line in logs.splitlines()
-                              if ": layers [" in line or "main_grad dtype" in line]
-    out["megatron"] = (_load("/tmp/meg_loss.json") if r.returncode == 0
-                       else {"error": "\n".join(line for line in logs.splitlines()
-                                                if "rank0" in line or "Error" in line
-                                                or "assert" in line)[-4000:]
-                             + "\n...\n" + logs[-2000:]})
+    out["megatron_layers"] = [
+        line for line in logs.splitlines() if ": layers [" in line or "main_grad dtype" in line
+    ]
+    out["megatron"] = (
+        _load("/tmp/meg_loss.json")
+        if r.returncode == 0
+        else {
+            "error": "\n".join(
+                line
+                for line in logs.splitlines()
+                if "rank0" in line or "Error" in line or "assert" in line
+            )[-4000:]
+            + "\n...\n"
+            + logs[-2000:]
+        }
+    )
     if "rdsp" not in systems:
         out["rdsp"] = {"error": "skipped"}
         return out
@@ -376,11 +456,19 @@ def _same_box(pp, layout="", steps=60):
     ONE container on pinned H100s, same weights/data/kernels/steps."""
     _require_h100()
     _install_rdsp()
-    q = ("nvidia-smi --query-gpu=index,name,pci.bus_id,clocks.max.sm,power.limit,"
-         "temperature.gpu --format=csv,noheader")
-    out = {"pp": pp, "m": 16, "steps": steps, "layout": layout, "gpus": _sh(q).stdout,
-           "topo": _sh("nvidia-smi topo -m").stdout,
-           "order": ["megatron_fp32", "megatron_bf16", "rdsp"]}
+    q = (
+        "nvidia-smi --query-gpu=index,name,pci.bus_id,clocks.max.sm,power.limit,"
+        "temperature.gpu --format=csv,noheader"
+    )
+    out = {
+        "pp": pp,
+        "m": 16,
+        "steps": steps,
+        "layout": layout,
+        "gpus": _sh(q).stdout,
+        "topo": _sh("nvidia-smi topo -m").stdout,
+        "order": ["megatron_fp32", "megatron_bf16", "rdsp"],
+    }
     for name, bf16 in (("megatron_fp32", 0), ("megatron_bf16", 1)):
         r = _megatron_hf(pp, TEXT16, steps, f"/tmp/{name}.json", layout=layout, grad_bf16=bf16)
         out[name] = _load(f"/tmp/{name}.json") if r.returncode == 0 else {"error": _tail(r)}
@@ -402,23 +490,43 @@ def gpubound_x1():
     import shutil
 
     import torch
+
     gpus = _require_h100()
     if not os.path.exists(TEXT_B16):
         x = torch.load(TEXT)  # [300, 8, 4, 513] -> consecutive rows regrouped
         torch.save(x.reshape(-1, x.shape[-1]).reshape(150, 4, 16, x.shape[-1]).clone(), TEXT_B16)
     _install_rdsp()
-    out = {"gpu": gpus.strip(), "b": 16, "m": 4, "seq": 512, "steps": 60,
-           "order": ["megatron_native_ce", "megatron_te_ce", "rdsp"]}
+    out = {
+        "gpu": gpus.strip(),
+        "b": 16,
+        "m": 4,
+        "seq": 512,
+        "steps": 60,
+        "order": ["megatron_native_ce", "megatron_te_ce", "rdsp"],
+    }
     for name, ce in (("megatron_native_ce", "native"), ("megatron_te_ce", "te")):
-        r = _megatron_hf(1, TEXT_B16, 60, f"/tmp/{name}.json", grad_bf16=1, ce_impl=ce,
-                         prof_out=f"/tmp/{name}_prof.json")
-        out[name] = (dict(_load(f"/tmp/{name}_prof.json"), **_load(f"/tmp/{name}.json"))
-                     if r.returncode == 0 else {"error": _tail(r)})
+        r = _megatron_hf(
+            1,
+            TEXT_B16,
+            60,
+            f"/tmp/{name}.json",
+            grad_bf16=1,
+            ce_impl=ce,
+            prof_out=f"/tmp/{name}_prof.json",
+        )
+        out[name] = (
+            dict(_load(f"/tmp/{name}_prof.json"), **_load(f"/tmp/{name}.json"))
+            if r.returncode == 0
+            else {"error": _tail(r)}
+        )
     shutil.rmtree("/tmp/rdsp_bench", ignore_errors=True)
     r = _rdsp(1, 4, TEXT_B16, 60, "/tmp/rdsp.json", b=16, prof=1)
     files = glob.glob("/tmp/rdsp_bench/prof_*.json")
-    out["rdsp"] = (dict(_load(files[0]), **_pick("/tmp/rdsp.json", ("step_s", "loss", "b", "m")))
-                   if r.returncode == 0 and files else {"error": _tail(r)})
+    out["rdsp"] = (
+        dict(_load(files[0]), **_pick("/tmp/rdsp.json", ("step_s", "loss", "b", "m")))
+        if r.returncode == 0 and files
+        else {"error": _tail(r)}
+    )
     return out
 
 
@@ -428,16 +536,27 @@ def _gpubound_pipe(pp, layout=""):
     _require_h100()
     _ensure_b16_m16()
     _install_rdsp()
-    out = {"pp": pp, "b": 16, "m": 16, "seq": 512, "steps": 36, "layout": layout,
-           "gpus": _sh("nvidia-smi --query-gpu=index,name --format=csv,noheader").stdout,
-           "order": ["megatron_te_ce", "rdsp"]}
-    r = _megatron_hf(pp, TEXT_B16_M16, 36, "/tmp/meg.json", grad_bf16=1, ce_impl="te",
-                     layout=layout)
+    out = {
+        "pp": pp,
+        "b": 16,
+        "m": 16,
+        "seq": 512,
+        "steps": 36,
+        "layout": layout,
+        "gpus": _sh("nvidia-smi --query-gpu=index,name --format=csv,noheader").stdout,
+        "order": ["megatron_te_ce", "rdsp"],
+    }
+    r = _megatron_hf(
+        pp, TEXT_B16_M16, 36, "/tmp/meg.json", grad_bf16=1, ce_impl="te", layout=layout
+    )
     out["megatron_te_ce"] = _load("/tmp/meg.json") if r.returncode == 0 else {"error": _tail(r)}
     out["megatron_te_ce_check"] = _megatron_checks(r.stdout + r.stderr)
     r = _rdsp(pp, 16, TEXT_B16_M16, 36, "/tmp/rdsp.json", b=16)
-    out["rdsp"] = (_pick("/tmp/rdsp.json", ("step_s", "loss", "stage_tags"))
-                   if r.returncode == 0 else {"error": _tail(r)})
+    out["rdsp"] = (
+        _pick("/tmp/rdsp.json", ("step_s", "loss", "stage_tags"))
+        if r.returncode == 0
+        else {"error": _tail(r)}
+    )
     return out
 
 
@@ -457,9 +576,15 @@ def hetero_x8():
     _require_h100()
     _ensure_b16_m16()
     _install_rdsp()
-    out = {"gpus": _sh("nvidia-smi --query-gpu=index,name --format=csv,noheader").stdout,
-           "b": 16, "m": 16, "seq": 512, "steps": 36, "order": [h[0] for h in HETERO],
-           "configs": HETERO}
+    out = {
+        "gpus": _sh("nvidia-smi --query-gpu=index,name --format=csv,noheader").stdout,
+        "b": 16,
+        "m": 16,
+        "seq": 512,
+        "steps": 36,
+        "order": [h[0] for h in HETERO],
+        "configs": HETERO,
+    }
     for name, system, pp, spec, last in HETERO:
         path = f"/tmp/{name}.json"
         if system == "megatron":
@@ -468,8 +593,11 @@ def hetero_x8():
             out[name + "_check"] = _megatron_checks(r.stdout + r.stderr)
         else:
             r = _rdsp(pp, 16, TEXT_B16_M16, 36, path, b=16, cuts=spec, last_stage_gpus=last)
-            out[name] = (_pick(path, ("step_s", "loss", "stage_tags", "last_stage_gpus", "b"))
-                         if r.returncode == 0 else {"error": _tail(r)})
+            out[name] = (
+                _pick(path, ("step_s", "loss", "stage_tags", "last_stage_gpus", "b"))
+                if r.returncode == 0
+                else {"error": _tail(r)}
+            )
     return out
 
 
@@ -487,20 +615,27 @@ def fewmb_x8():
     H100 machine. Prediction (stated before running): 2-GPU head stage wins,
     ~1.14x at 4 microbatches, ~1.05x at 16, minus its gradient all-reduce."""
     import torch
+
     _require_h100()
     x = torch.load(TEXT).reshape(-1, 513)
     if not os.path.exists(TEXT_B16):
         torch.save(x.reshape(150, 4, 16, 513).clone(), TEXT_B16)
     _ensure_b16_m16()
     _install_rdsp()
-    out = {"gpus": _sh("nvidia-smi --query-gpu=index,name --format=csv,noheader").stdout,
-           "order": [f[0] for f in FEWMB], "configs": FEWMB}
+    out = {
+        "gpus": _sh("nvidia-smi --query-gpu=index,name --format=csv,noheader").stdout,
+        "order": [f[0] for f in FEWMB],
+        "configs": FEWMB,
+    }
     for name, data, m, cuts, last in FEWMB:
         pp = len(cuts.split(",")) + 1
         path = f"/tmp/{name}.json"
         r = _rdsp(pp, m, data, 36, path, b=16, cuts=cuts, last_stage_gpus=last)
-        out[name] = (_pick(path, ("step_s", "loss", "stage_tags", "last_stage_gpus", "m", "b"))
-                     if r.returncode == 0 else {"error": _tail(r)})
+        out[name] = (
+            _pick(path, ("step_s", "loss", "stage_tags", "last_stage_gpus", "m", "b"))
+            if r.returncode == 0
+            else {"error": _tail(r)}
+        )
     return out
 
 
@@ -519,16 +654,23 @@ def profile_x1():
     """Kernel profile of matched-precision Megatron and rdsp, one pinned H100,
     same tool (torch.profiler) and window (steps 20-29) on both."""
     import glob
+
     gpus = _require_h100()
     _install_rdsp()
     out = {"gpu": gpus.strip()}
     r = _megatron_hf(1, TEXT16, 31, "/tmp/meg.json", grad_bf16=1, prof_out="/tmp/meg_prof.json")
-    out["megatron"] = (dict(_load("/tmp/meg_prof.json"), step_s=_load("/tmp/meg.json")["step_s"])
-                       if r.returncode == 0 else {"error": _tail(r)})
+    out["megatron"] = (
+        dict(_load("/tmp/meg_prof.json"), step_s=_load("/tmp/meg.json")["step_s"])
+        if r.returncode == 0
+        else {"error": _tail(r)}
+    )
     r = _rdsp(1, 16, TEXT16, 31, "/tmp/rdsp.json", prof=1)
     files = glob.glob("/tmp/rdsp_bench/prof_*.json")
-    out["rdsp"] = (dict(_load(files[0]), step_s=_load("/tmp/rdsp.json")["step_s"])
-                   if r.returncode == 0 and files else {"error": _tail(r)})
+    out["rdsp"] = (
+        dict(_load(files[0]), step_s=_load("/tmp/rdsp.json")["step_s"])
+        if r.returncode == 0 and files
+        else {"error": _tail(r)}
+    )
     return out
 
 
@@ -587,9 +729,11 @@ def prepare():
     """Untied Qwen3-0.6B checkpoint and the random-token grid files, once."""
     import torch
     import transformers
+
     if not os.path.exists(f"{HF}/config.json"):
-        m = transformers.AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-0.6B",
-                                                              dtype=torch.bfloat16)
+        m = transformers.AutoModelForCausalLM.from_pretrained(
+            "Qwen/Qwen3-0.6B", dtype=torch.bfloat16
+        )
         m.lm_head.weight = torch.nn.Parameter(m.model.embed_tokens.weight.detach().clone())
         m.config.tie_word_embeddings = False
         m.save_pretrained(HF)
@@ -610,54 +754,103 @@ def grid(only: str):
         return [
             # Megatron as people run it (fusions on): full grid plus its own
             # PP=1 baselines for pipeline efficiency
-            *[{"system": "M-defaults", "variant": "defaults", "pp": 1, "m": 8, "seq": seq}
-              for seq in (512, 2048)],
-            *[{"system": "M-defaults", "variant": "defaults", "pp": pp, "m": m, "seq": seq}
-              for pp in (2, 4) for m in (4, 8, 16) for seq in (512, 2048)],
+            *[
+                {"system": "M-defaults", "variant": "defaults", "pp": 1, "m": 8, "seq": seq}
+                for seq in (512, 2048)
+            ],
+            *[
+                {"system": "M-defaults", "variant": "defaults", "pp": pp, "m": m, "seq": seq}
+                for pp in (2, 4)
+                for m in (4, 8, 16)
+                for seq in (512, 2048)
+            ],
             # balanced split: move layers off the head-heavy last stage
-            {"system": "R-local", "pp": 4, "m": 8, "seq": 512, "cuts": "9,18,27",
-             "tag": "balanced"},
+            {
+                "system": "R-local",
+                "pp": 4,
+                "m": 8,
+                "seq": 512,
+                "cuts": "9,18,27",
+                "tag": "balanced",
+            },
             {"system": "M-plain", "pp": 4, "m": 8, "seq": 512, "balanced": True, "tag": "balanced"},
             # a second GPU for the last stage (5 GPUs): not expressible in Megatron
-            {"system": "R-local", "pp": 4, "m": 8, "seq": 512, "last_stage_gpus": 2,
-             "tag": "capability", "shape": 8},
+            {
+                "system": "R-local",
+                "pp": 4,
+                "m": 8,
+                "seq": 512,
+                "last_stage_gpus": 2,
+                "tag": "capability",
+                "shape": 8,
+            },
         ]
     if only == "local":
-        return [{"system": "R-local-fused", "fused": True, "pp": pp, "m": 16, "seq": 512,
-                 "shape": 8} for pp in (8, 4)]
+        return [
+            {"system": "R-local-fused", "fused": True, "pp": pp, "m": 16, "seq": 512, "shape": 8}
+            for pp in (8, 4)
+        ]
     if only == "profile":
         # one 8-GPU container: rdsp at 8 stages, then 4 for contrast
-        base = {"system": "R-local-fused", "fused": True, "m": 16, "seq": 512, "timed": True,
-                "timeline": True, "warmup": 5, "steps": 10, "shape": 8}
+        base = {
+            "system": "R-local-fused",
+            "fused": True,
+            "m": 16,
+            "seq": 512,
+            "timed": True,
+            "timeline": True,
+            "warmup": 5,
+            "steps": 10,
+            "shape": 8,
+        }
         return [dict(base, pp=8), dict(base, pp=4)]
     if only == "pp8-megatron":
         return [c for c in grid("pp8") if c["system"] == "M-defaults"]
     if only == "pp8":
         # 8 stages; 28 layers split 4-4-4-4-3-3-3-3 on both sides (rdsp's uniform split)
-        return [{"system": "M-defaults", "variant": "defaults", "pp": 8, "m": 16, "seq": 512,
-                 "layout": PP8_LAYOUT},
-                {"system": "R-local-fused", "fused": True, "pp": 8, "m": 16, "seq": 512}]
+        return [
+            {
+                "system": "M-defaults",
+                "variant": "defaults",
+                "pp": 8,
+                "m": 16,
+                "seq": 512,
+                "layout": PP8_LAYOUT,
+            },
+            {"system": "R-local-fused", "fused": True, "pp": 8, "m": 16, "seq": 512},
+        ]
     if only == "fused-smoke":
-        return [{"system": "R-local-fused", "fused": True, "pp": 2, "m": 4, "seq": 512},
-                {"system": "R-local", "pp": 2, "m": 4, "seq": 512}]
+        return [
+            {"system": "R-local-fused", "fused": True, "pp": 2, "m": 4, "seq": 512},
+            {"system": "R-local", "pp": 2, "m": 4, "seq": 512},
+        ]
     if only == "fused":
-        cells = [{"system": "R-local-fused", "fused": True, "pp": 1, "m": 8, "seq": seq}
-                 for seq in (512, 2048)]
-        cells += [{"system": "R-local-fused", "fused": True, "pp": pp, "m": m, "seq": seq}
-                  for pp, m, seq in itertools.product((2, 4), (4, 8, 16), (512, 2048))]
+        cells = [
+            {"system": "R-local-fused", "fused": True, "pp": 1, "m": 8, "seq": seq}
+            for seq in (512, 2048)
+        ]
+        cells += [
+            {"system": "R-local-fused", "fused": True, "pp": pp, "m": m, "seq": seq}
+            for pp, m, seq in itertools.product((2, 4), (4, 8, 16), (512, 2048))
+        ]
         return cells
     if only == "smoke":
-        return [{"system": "M-plain", "pp": 2, "m": 4, "seq": 512},
-                {"system": "R-local", "pp": 2, "m": 4, "seq": 512}]
+        return [
+            {"system": "M-plain", "pp": 2, "m": 4, "seq": 512},
+            {"system": "R-local", "pp": 2, "m": 4, "seq": 512},
+        ]
     if only not in ("", "headline"):
         raise ValueError(f"unknown mode {only!r}")
     # main grid ("" or "headline" = m=8 only), fusions off on both sides
     cells = []
     for seq in (512, 2048):  # PP=1 baselines (pipeline efficiency denominators)
-        cells += [{"system": "M-plain", "pp": 1, "m": 8, "seq": seq},
-                  {"system": "R-local", "pp": 1, "m": 8, "seq": seq}]
-    for sysname, pp, m, seq in itertools.product(("M-plain", "R-local"), (2, 4),
-                                                 (4, 8, 16), (512, 2048)):
+        cells += [
+            {"system": "M-plain", "pp": 1, "m": 8, "seq": seq},
+            {"system": "R-local", "pp": 1, "m": 8, "seq": seq},
+        ]
+    for sysname, pp, m, seq in itertools.product(
+        ("M-plain", "R-local"), (2, 4), (4, 8, 16), (512, 2048)
+    ):
         if only == "headline" and m != 8:
             continue
         cells.append({"system": sysname, "pp": pp, "m": m, "seq": seq})
@@ -665,6 +858,7 @@ def grid(only: str):
 
 
 # --- local entrypoint -----------------------------------------------------------
+
 
 def _save(prefix, obj, indent=None):
     RESULTS.mkdir(parents=True, exist_ok=True)
@@ -686,10 +880,12 @@ def _print_row(name, x, tokens_per_step, width):
         print(f"  {name} FAILED:", x.get("error", "")[-2500:])
         return False
     med, p10, p90 = _stats(x["step_s"])
-    print(f"  {name:{width}s} median {med * 1000:6.0f} ms = "
-          f"{tokens_per_step / med / 1000:6.1f}k tok/s "
-          f"(p10 {p10 * 1000:.0f}, p90 {p90 * 1000:.0f}) "
-          f"loss {x['loss'][0]:.4f} -> {x['loss'][-1]:.4f}")
+    print(
+        f"  {name:{width}s} median {med * 1000:6.0f} ms = "
+        f"{tokens_per_step / med / 1000:6.1f}k tok/s "
+        f"(p10 {p10 * 1000:.0f}, p90 {p90 * 1000:.0f}) "
+        f"loss {x['loss'][0]:.4f} -> {x['loss'][-1]:.4f}"
+    )
     return True
 
 
@@ -703,8 +899,10 @@ def _print_loss_run(r, names):
             print(f"  {name} FAILED:", x.get("error", "")[-3000:])
             continue
         med = _stats(x["step_s"])[0]
-        print(f"  {name}: step0 {x['loss'][0]:.4f} last {x['loss'][-1]:.4f} "
-              f"median {med * 1000:.0f} ms = {r['m'] * 4 * 512 / med / 1000:.1f}k tok/s")
+        print(
+            f"  {name}: step0 {x['loss'][0]:.4f} last {x['loss'][-1]:.4f} "
+            f"median {med * 1000:.0f} ms = {r['m'] * 4 * 512 / med / 1000:.1f}k tok/s"
+        )
 
 
 @app.local_entrypoint()
@@ -722,8 +920,10 @@ def main(reps: int = 1, only: str = ""):
             r = res[name]
             if "loss" in r:
                 med = _stats(r["step_s"])[0]
-                print(f"{name}: step0 {r['loss'][0]:.4f}  step{len(r['loss']) - 1} "
-                      f"{r['loss'][-1]:.4f}  median step {med * 1000:.0f} ms")
+                print(
+                    f"{name}: step0 {r['loss'][0]:.4f}  step{len(r['loss']) - 1} "
+                    f"{r['loss'][-1]:.4f}  median step {med * 1000:.0f} ms"
+                )
             else:
                 print(name, "FAILED:", r.get("error", "")[-1500:])
         print("->", path)
@@ -775,11 +975,16 @@ def main(reps: int = 1, only: str = ""):
             # steps 20-30 carry the profiler
             t = sorted(x["step_s"][10:20] + x["step_s"][31:])
             med = t[len(t) // 2]
-            kernel_ms = sum(v[1] for k, v in x["kernels"].items()
-                            if not k.startswith("##")) / 1e3 / x["steps"]
-            print(f"  {name:20s} median {med * 1000:5.0f} ms = {32768 / med / 1000:5.1f}k tok/s "
-                  f"| GPU kernels {kernel_ms:4.0f} ms/step "
-                  f"| loss {x['loss'][0]:.4f} -> {x['loss'][-1]:.4f}")
+            kernel_ms = (
+                sum(v[1] for k, v in x["kernels"].items() if not k.startswith("##"))
+                / 1e3
+                / x["steps"]
+            )
+            print(
+                f"  {name:20s} median {med * 1000:5.0f} ms = {32768 / med / 1000:5.1f}k tok/s "
+                f"| GPU kernels {kernel_ms:4.0f} ms/step "
+                f"| loss {x['loss'][0]:.4f} -> {x['loss'][-1]:.4f}"
+            )
         print("->", path)
         return
     if only == "profile1":
@@ -792,14 +997,16 @@ def main(reps: int = 1, only: str = ""):
                 print(name, "FAILED:", x.get("error", "")[-2500:])
                 continue
             busy = sum(v[1] for v in x["kernels"].values()) / 1e6
-            print(f"{name}: window {x['wall_s']:.2f} s for 10 steps, kernel time {busy:.2f} s, "
-                  f"{len(x['kernels'])} distinct kernels")
+            print(
+                f"{name}: window {x['wall_s']:.2f} s for 10 steps, kernel time {busy:.2f} s, "
+                f"{len(x['kernels'])} distinct kernels"
+            )
         print("->", path)
         return
     if only in ("samebox", "samebox1"):
         res = []
         # one at a time: 10-GPU workspace limit
-        for fn in ((samebox_x1,) if only == "samebox1" else (samebox_x8, samebox_x4)):
+        for fn in (samebox_x1,) if only == "samebox1" else (samebox_x8, samebox_x4):
             r = fn.remote()
             res.append(r)
             print(f"=== {r['pp']} GPUs, one container ===")
@@ -809,10 +1016,12 @@ def main(reps: int = 1, only: str = ""):
                 if _print_row(name, x, 16 * 2048, 14):
                     s = x["step_s"]
                     h = len(s) // 2
-                    print(f"      halves: steps 10-{h - 1} median "
-                          f"{sorted(s[10:h])[(h - 10) // 2] * 1000:.0f} ms, "
-                          f"steps {h}-{len(s) - 1} median "
-                          f"{sorted(s[h:])[(len(s) - h) // 2] * 1000:.0f} ms")
+                    print(
+                        f"      halves: steps 10-{h - 1} median "
+                        f"{sorted(s[10:h])[(h - 10) // 2] * 1000:.0f} ms, "
+                        f"steps {h}-{len(s) - 1} median "
+                        f"{sorted(s[h:])[(len(s) - h) // 2] * 1000:.0f} ms"
+                    )
                 for c in r.get(name + "_check", []):
                     print("     ", c[-110:])
         print("->", _save("samebox_", res))

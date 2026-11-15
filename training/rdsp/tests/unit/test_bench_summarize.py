@@ -13,12 +13,16 @@ import summarize  # noqa: E402
 def _megatron_log(ms: float) -> str:
     return "".join(
         f" iteration {i + 1:8d}/      50 | consumed samples: {64 * (i + 1)} | "
-        f"elapsed time per iteration (ms): {ms:.1f} | lm loss: 5.0E-01 |\n" for i in range(50))
+        f"elapsed time per iteration (ms): {ms:.1f} | lm loss: 5.0E-01 |\n"
+        for i in range(50)
+    )
 
 
 def _rdsp_log(ms: int) -> str:
-    return "".join(f"step {i} loss 0.5000 {ms} ms 1 real tok/s 2 padded tok/s "
-                   f"real 65000 supervised 13000\n" for i in range(50))
+    return "".join(
+        f"step {i} loss 0.5000 {ms} ms 1 real tok/s 2 padded tok/s real 65000 supervised 13000\n"
+        for i in range(50)
+    )
 
 
 def test_pairs_megatron_and_rdsp_logs(tmp_path, capsys):
@@ -31,6 +35,21 @@ def test_pairs_megatron_and_rdsp_logs(tmp_path, capsys):
     per_gpu = row.split()[-2:]  # tokens/s per GPU: 65000 tokens over 10 s / 8 s, 8 GPUs
     assert per_gpu == ["812", "1016"]
     assert "TP4xPP2xDP1" not in out  # pairs without logs are left out
+
+
+def test_every_mimo_layout_gets_its_row(tmp_path, capsys):
+    for case in ("vision2", "langpp2", "langtp4"):
+        (tmp_path / f"{case}-mimo.log").write_text(_megatron_log(10000.0))
+        (tmp_path / f"{case}-rdsp.log").write_text(_rdsp_log(8000))
+    summarize.main([str(tmp_path)])
+    out = capsys.readouterr().out
+    for layout in (
+        "vision DP2 + language TP2xDP2",
+        "vision 1 GPU + language TP2xPP2",
+        "vision 1 GPU + language TP4",
+    ):
+        row = next(line for line in out.splitlines() if line.startswith(layout))
+        assert "-20%" in row, row
 
 
 def test_rdsp_only_layout_gets_a_row_without_megatron(tmp_path, capsys):

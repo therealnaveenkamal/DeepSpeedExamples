@@ -11,8 +11,11 @@ from ray_deepspeed_pipeline.errors import UnsupportedEngineMethod, ValidationErr
 @pytest.fixture
 def engine(fake_coordinator, tiny_model, tiny_dataset, pipeline_config):
     engine, _, _, _ = rdsp.initialize(
-        model=tiny_model, training_data=tiny_dataset,
-        pipeline_config=pipeline_config, loss_fn=simple_loss_fn)
+        model=tiny_model,
+        training_data=tiny_dataset,
+        pipeline_config=pipeline_config,
+        loss_fn=simple_loss_fn,
+    )
     return engine
 
 
@@ -46,14 +49,15 @@ def test_global_steps_is_read_only_int(engine):
 
 
 def test_unsupported_forward_backward_step(engine):
-    for call in (lambda: engine(torch.zeros(1)),
-                 lambda: engine.forward(torch.zeros(1)),
-                 lambda: engine.backward(torch.zeros(())),
-                 lambda: engine.step()):
+    for call in (
+        lambda: engine(torch.zeros(1)),
+        lambda: engine.forward(torch.zeros(1)),
+        lambda: engine.backward(torch.zeros(())),
+        lambda: engine.step(),
+    ):
         with pytest.raises(UnsupportedEngineMethod) as e:
             call()
-        assert "train_batch" in str(e.value), \
-            "the error must direct users to train_batch()"
+        assert "train_batch" in str(e.value), "the error must direct users to train_batch()"
 
 
 def test_no_local_module_or_parameters(engine):
@@ -74,8 +78,11 @@ def test_engine_owned_loader_rejects_explicit_data_iter(engine):
 
 def test_user_iterator_mode(fake_coordinator, tiny_model, tiny_dataset, pipeline_config):
     engine, _, dataloader, _ = rdsp.initialize(
-        model=tiny_model, training_data=None,
-        pipeline_config=pipeline_config, loss_fn=simple_loss_fn)
+        model=tiny_model,
+        training_data=None,
+        pipeline_config=pipeline_config,
+        loss_fn=simple_loss_fn,
+    )
     assert dataloader is None
     with pytest.raises(ValidationError):
         engine.train_batch()  # no data source at all

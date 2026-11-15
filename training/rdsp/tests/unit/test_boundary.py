@@ -19,8 +19,17 @@ from ray_deepspeed_pipeline.boundary import (
 )
 from ray_deepspeed_pipeline.errors import StepFailed
 
-GRIDS = [Grid(1, 1), Grid(2, 1), Grid(4, 1), Grid(8, 1), Grid(2, 2), Grid(4, 2),
-         Grid(1, 2), Grid(2, 1, tp=4), Grid(4, 1, tp=2)]
+GRIDS = [
+    Grid(1, 1),
+    Grid(2, 1),
+    Grid(4, 1),
+    Grid(8, 1),
+    Grid(2, 2),
+    Grid(4, 2),
+    Grid(1, 2),
+    Grid(2, 1, tp=4),
+    Grid(4, 1, tp=2),
+]
 
 
 @pytest.mark.parametrize("src,dest", list(itertools.product(GRIDS, GRIDS)))
@@ -29,8 +38,11 @@ def test_static_boundary_reshard_equals_slice_of_whole(src, dest):
     the same region cut from the full tensor — for every grid pair."""
     torch.manual_seed(0)
     full = torch.randn(8, 16, 3)
-    pieces = {Cell(d, src.dp, q, src.sp): cell_slice(full, Cell(d, src.dp, q, src.sp))
-              for d in range(src.dp) for q in range(src.sp)}
+    pieces = {
+        Cell(d, src.dp, q, src.sp): cell_slice(full, Cell(d, src.dp, q, src.sp))
+        for d in range(src.dp)
+        for q in range(src.sp)
+    }
     for r in representatives(dest):
         cell = rank_cell(dest, r)
         needed = overlapping_cells(src, cell)
@@ -62,8 +74,15 @@ def test_integer_token_ids_reshard():
 def test_canonical_rank_order_tp_fastest():
     g = Grid(dp=2, sp=1, tp=4)
     assert [rank_coords(g, r) for r in range(8)] == [
-        (0, 0, 0), (0, 0, 1), (0, 0, 2), (0, 0, 3),
-        (1, 0, 0), (1, 0, 1), (1, 0, 2), (1, 0, 3)]
+        (0, 0, 0),
+        (0, 0, 1),
+        (0, 0, 2),
+        (0, 0, 3),
+        (1, 0, 0),
+        (1, 0, 1),
+        (1, 0, 2),
+        (1, 0, 3),
+    ]
     assert representatives(g) == [0, 4]
 
 
@@ -90,6 +109,7 @@ def test_p2p_routing_is_symmetric_and_complete(src, dest):
     """Every (source -> destination) message one side expects, the other side
     sends — and each destination rank gets exactly the cells it needs."""
     from ray_deepspeed_pipeline.boundary import p2p_destinations, p2p_sources
+
     sends = {(s, d) for s in range(src.world) for d in p2p_destinations(src, dest, s)}
     recvs = {(s, d) for d in range(dest.world) for s, _ in p2p_sources(src, dest, d)}
     assert sends == recvs

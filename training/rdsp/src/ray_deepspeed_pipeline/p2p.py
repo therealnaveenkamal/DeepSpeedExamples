@@ -29,8 +29,16 @@ import torch.distributed as dist
 
 from ray_deepspeed_pipeline.errors import ValidationError
 
-_DTYPES = [torch.float32, torch.bfloat16, torch.float16, torch.float64, torch.int64,
-           torch.bool, torch.int32, torch.int16]
+_DTYPES = [
+    torch.float32,
+    torch.bfloat16,
+    torch.float16,
+    torch.float64,
+    torch.int64,
+    torch.bool,
+    torch.int32,
+    torch.int16,
+]
 _HEADER_LEN = 10  # dtype code, ndim, up to 7 dims, extras count
 _SLOTS = 64  # messages per microbatch and direction: hidden, extras' names, extras
 _SIZED_TAGS = 1 << 24  # CPU-group messages (colocated vision) use tags from here on
@@ -50,7 +58,7 @@ def _encode(t: torch.Tensor, n_extras: int = 0) -> torch.Tensor:
 
 def _decode(header: torch.Tensor) -> tuple[torch.dtype, tuple[int, ...], int]:
     vals = header.tolist()
-    return _DTYPES[vals[0]], tuple(vals[2:2 + vals[1]]), vals[-1]
+    return _DTYPES[vals[0]], tuple(vals[2 : 2 + vals[1]]), vals[-1]
 
 
 class PipelineP2P:
@@ -60,8 +68,16 @@ class PipelineP2P:
     message there can wait any time for its receiver without holding up the
     GPU, which an NCCL send does."""
 
-    def __init__(self, store, rank: int, world: int, epoch: int, timeout_s: float,
-                 device: torch.device, collective: bool = False):
+    def __init__(
+        self,
+        store,
+        rank: int,
+        world: int,
+        epoch: int,
+        timeout_s: float,
+        device: torch.device,
+        collective: bool = False,
+    ):
         self.rank, self.world, self.device = rank, world, device
         timeout = datetime.timedelta(seconds=timeout_s)
         self.fwd = self._group(dist.PrefixStore(f"e{epoch}/fwd", store), timeout)
@@ -69,13 +85,14 @@ class PipelineP2P:
         self.all = self.cpu = None
         if collective:
             self.all = self._group(dist.PrefixStore(f"e{epoch}/all", store), timeout)
-            self.cpu = dist.ProcessGroupGloo(dist.PrefixStore(f"e{epoch}/cpu", store),
-                                             rank, world, timeout)
-        self._pending = []       # (work, tensor) sends in flight this step
-        self._shapes = {}        # (direction, peer, slot) -> decoded header, this step
-        self._varying = False    # this step's microbatches differ in length
+            self.cpu = dist.ProcessGroupGloo(
+                dist.PrefixStore(f"e{epoch}/cpu", store), rank, world, timeout
+            )
+        self._pending = []  # (work, tensor) sends in flight this step
+        self._shapes = {}  # (direction, peer, slot) -> decoded header, this step
+        self._varying = False  # this step's microbatches differ in length
         self._announced = set()  # (direction, peer, slot) already sent a header this step
-        self._names = {}         # (direction, peer) -> extras' names, this step
+        self._names = {}  # (direction, peer) -> extras' names, this step
 
     def _group(self, store, timeout):
         if self.device.type == "cuda":
@@ -120,8 +137,9 @@ class PipelineP2P:
     def _pg(self, direction: str):
         return self.fwd if direction == "fwd" else self.bwd
 
-    def send(self, direction: str, t: torch.Tensor, peer: int, mb: int,
-             slot: int = 0, n_extras: int = 0) -> None:
+    def send(
+        self, direction: str, t: torch.Tensor, peer: int, mb: int, slot: int = 0, n_extras: int = 0
+    ) -> None:
         pg = self._pg(direction)
         t = t.detach().contiguous()
         if (direction, peer, slot) not in self._announced or (self._varying and slot != 1):
@@ -166,16 +184,22 @@ class PipelineP2P:
             buf = buf.view(torch.bfloat16)
         return buf.to(self.device)
 
-    def send_boundary(self, direction: str, hidden: torch.Tensor, extras: dict,
-                      peer: int, mb: int) -> None:
+    def send_boundary(
+        self, direction: str, hidden: torch.Tensor, extras: dict, peer: int, mb: int
+    ) -> None:
         """The hidden state plus named extra tensors, which carry no gradient."""
         if len(extras) > _SLOTS - 2:
             raise ValidationError(f"at most {_SLOTS - 2} extra tensors, got {len(extras)}")
         self.send(direction, hidden, peer, mb, n_extras=len(extras))
         if extras and (direction, peer, 1) not in self._announced:
             names = list(",".join(extras).encode())
-            self.send(direction, torch.tensor(names, dtype=torch.int64, device=self.device),
-                      peer, mb, slot=1)
+            self.send(
+                direction,
+                torch.tensor(names, dtype=torch.int64, device=self.device),
+                peer,
+                mb,
+                slot=1,
+            )
         for i, t in enumerate(extras.values()):
             self.send(direction, t, peer, mb, slot=2 + i)
 
@@ -186,11 +210,18 @@ class PipelineP2P:
         if (direction, peer) not in self._names:
             names = self.recv(direction, peer, mb, slot=1).tolist()
             self._names[(direction, peer)] = bytes(names).decode().split(",")
-        return hidden, {name: self.recv(direction, peer, mb, slot=2 + i)
-                        for i, name in enumerate(self._names[(direction, peer)])}
+        return hidden, {
+            name: self.recv(direction, peer, mb, slot=2 + i)
+            for i, name in enumerate(self._names[(direction, peer)])
+        }
 
 
 def make_store(host: str, port: int, world: int, is_master: bool, timeout_s: float):
-    return dist.TCPStore(host, port, world, is_master,
-                         timeout=datetime.timedelta(seconds=timeout_s),
-                         wait_for_workers=False)
+    return dist.TCPStore(
+        host,
+        port,
+        world,
+        is_master,
+        timeout=datetime.timedelta(seconds=timeout_s),
+        wait_for_workers=False,
+    )

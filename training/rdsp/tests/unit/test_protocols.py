@@ -14,21 +14,42 @@ from ray_deepspeed_pipeline.protocols import (
 
 
 def test_command_canonical_roundtrip():
-    cmd = Command(command_id="g0.s1.f2", generation=0, global_step=3, stage=1,
-                  kind="forward", microbatch=2, predecessors=("g0.s0.f2",))
+    cmd = Command(
+        command_id="g0.s1.f2",
+        generation=0,
+        global_step=3,
+        stage=1,
+        kind="forward",
+        microbatch=2,
+        predecessors=("g0.s0.f2",),
+    )
     parsed = json.loads(cmd.canonical_json())
-    assert parsed == {"command_id": "g0.s1.f2", "generation": 0,
-                      "global_step": 3, "stage": 1, "kind": "forward",
-                      "microbatch": 2, "predecessors": ["g0.s0.f2"]}
+    assert parsed == {
+        "command_id": "g0.s1.f2",
+        "generation": 0,
+        "global_step": 3,
+        "stage": 1,
+        "kind": "forward",
+        "microbatch": 2,
+        "predecessors": ["g0.s0.f2"],
+    }
     with pytest.raises(dataclasses.FrozenInstanceError):
         cmd.kind = "backward"
 
 
 def test_command_kinds_cover_the_runtime_verbs():
-    assert set(COMMAND_KINDS) == {"forward", "backward", "ready", "apply",
-                                  "eval", "save", "load",
-                                  # stage-local dispatch: a stage's whole step
-                                  "step", "eval_step"}
+    assert set(COMMAND_KINDS) == {
+        "forward",
+        "backward",
+        "ready",
+        "apply",
+        "eval",
+        "save",
+        "load",
+        # stage-local dispatch: a stage's whole step
+        "step",
+        "eval_step",
+    }
 
 
 def test_result_schema():

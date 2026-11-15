@@ -22,12 +22,14 @@ def take_microbatch_entries(data_iter, n: int) -> list[tuple]:
         except StopIteration:
             raise StepFailed(
                 f"data iterator exhausted after {i} of {n} required "
-                f"microbatch entries; the whole step fails") from None
+                f"microbatch entries; the whole step fails"
+            ) from None
         if not isinstance(entry, (tuple, list)) or len(entry) != 2:
             raise ValidationError(
                 f"entry {i} violates the v1 data contract: expected a 2-tuple "
                 f"(inputs, labels), got {type(entry).__name__} "
-                f"of length {len(entry) if hasattr(entry, '__len__') else '?'}")
+                f"of length {len(entry) if hasattr(entry, '__len__') else '?'}"
+            )
         entries.append((entry[0], entry[1]))
     return entries
 
@@ -54,12 +56,14 @@ def data_position(loader: DataLoader, consumed: int) -> dict:
     from torch.utils.data import IterableDataset, SequentialSampler
 
     if isinstance(loader.dataset, IterableDataset) or not isinstance(
-            loader.sampler, SequentialSampler):
+        loader.sampler, SequentialSampler
+    ):
         raise ValidationError(
             "the engine-owned data loader cannot be resumed exactly (iterable "
             "dataset or non-sequential sampler); pass training_data=None and "
             "an explicit data_iter, and checkpoint your data position yourself "
-            "via client_state")
+            "via client_state"
+        )
     return {"owner": "engine", "entries_consumed": int(consumed)}
 
 
@@ -69,8 +73,8 @@ def resume_loader_iter(loader: DataLoader, consumed: int) -> CountingIterator:
     from torch.utils.data import Subset
 
     start = consumed * loader.batch_size
-    rest = Subset(loader.dataset, range(min(start, len(loader.dataset)),
-                                        len(loader.dataset)))
-    resumed = DataLoader(rest, batch_size=loader.batch_size,
-                         collate_fn=loader.collate_fn, drop_last=loader.drop_last)
+    rest = Subset(loader.dataset, range(min(start, len(loader.dataset)), len(loader.dataset)))
+    resumed = DataLoader(
+        rest, batch_size=loader.batch_size, collate_fn=loader.collate_fn, drop_last=loader.drop_last
+    )
     return CountingIterator(iter(resumed), start=consumed)
