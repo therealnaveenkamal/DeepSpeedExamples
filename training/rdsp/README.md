@@ -2,19 +2,7 @@
 
 rdsp (`ray_deepspeed_pipeline`) splits a model into pipeline stages and gives each stage its own GPU count and parallel layout. You can split a Hugging Face vision-language model so the vision encoder gets its own stage, and train it from the HF checkpoint without converting it.
 
-```mermaid
-flowchart TB
-    driver(["Driver: plans the split, hands out the schedule"])
-    subgraph stages ["Stages: Ray actors, one per GPU, each running a DeepSpeed engine"]
-        direction LR
-        s0["Stage 0<br/>vision encoder<br/>4 GPUs"]
-        s1["Stage 1<br/>decoder layers<br/>2 GPUs"]
-        s2["Last stage<br/>decoder layers, loss<br/>2 GPUs"]
-        s0 -- activations --> s1 -- activations --> s2
-        s2 -- gradients --> s1 -- gradients --> s0
-    end
-    driver -.-> stages
-```
+![rdsp architecture. The driver cuts the model into stages and sends every GPU its schedule and batch. Each stage has its own group of GPUs, and every GPU is a Ray actor running a DeepSpeed engine. Activations go forward and gradients come back directly between the GPUs of neighbouring stages.](docs/images/architecture.png)
 
 Every stage is a group of Ray actors, one per GPU, each running a stock DeepSpeed engine. Stages pass activations and gradients to each other directly over NCCL; the driver only plans and schedules.
 
