@@ -181,3 +181,13 @@ def test_settings_that_do_not_change_checkpoints_keep_the_plan_hash():
     assert lower(ToyLM(), runtime, DS).plan_hash() == base
     moved = PipelineConfig(stages=2, partition=ExplicitCuts((1,)))
     assert lower(ToyLM(), moved, DS).plan_hash() != base
+
+
+def test_recompute_blocks_reaches_the_stage_spec_and_excludes_recompute():
+    plan = lower(ToyLM(), simple_config(stage_overrides=(
+        StageOverride(stage=0, recompute_blocks=3),)), DS)
+    assert plan.stages[0].recompute_blocks == 3 and not plan.stages[0].recompute
+    for bad, match in ((dict(recompute=True, recompute_blocks=2), "set one"),
+                       (dict(recompute_blocks=-1), ">= 0")):
+        with pytest.raises(ValidationError, match=match):
+            lower(ToyLM(), simple_config(stage_overrides=(StageOverride(stage=0, **bad),)), DS)

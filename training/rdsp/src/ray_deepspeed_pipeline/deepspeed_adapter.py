@@ -13,6 +13,7 @@ under ZeRO-0.
 
 import functools
 import json
+import os
 
 import torch
 
@@ -165,6 +166,9 @@ def _with_immediate_grad_update(conf: dict) -> dict:
     return conf
 
 
+DIRECT_GRAD_ADD_ENV = "RDSP_DIRECT_GRAD_ADD"
+
+
 def _free_bf16_grads_after_accumulating(optimizer) -> None:
     """Under immediate_grad_update, free each parameter's bf16 gradient once
     it is in the fp32 buffer. DeepSpeed only zeroes it, so a bf16 copy of
@@ -174,13 +178,118 @@ def _free_bf16_grads_after_accumulating(optimizer) -> None:
     if not getattr(optimizer, "immediate_grad_update", False):
         return
     accumulate = optimizer.accumulate_hp_grads_and_remove_lp
+    # Add the bf16 gradient straight into the fp32 buffer. DeepSpeed's
+    # `hp_grad.add_(lp.grad.to(fp32))` converts into a temporary fp32 copy first: two GPU
+    # kernels per parameter per microbatch where one gives the same bits (H100: 0.107 ms
+    # against 0.184 ms for 25M elements; 5-9% of a 9B step, 2026-11-11). Not with folded
+    # expert gradients, which DeepSpeed corrects before its add. RDSP_DIRECT_GRAD_ADD=0
+    # goes back to DeepSpeed's own add.
+    direct = (os.environ.get(DIRECT_GRAD_ADD_ENV) != "0"
+              and getattr(optimizer, "autoep_folding_tp_group", None) is None
+              and hasattr(optimizer, "fp32_groups_gradients"))
+    print(f"rdsp: direct gradient add {'on' if direct else 'off'}", flush=True)
 
     def accumulate_and_free(lp, group_idx, param_idx):
-        accumulate(lp, group_idx, param_idx)
+        if direct and lp.grad is not None:
+            hp_grad = optimizer.fp32_groups_gradients[group_idx][param_idx]
+            hp_grad.data.add_(lp.grad.data.view(hp_grad.shape))
+            lp._hp_grad = hp_grad
+            optimizer.fp32_groups_has_gradients[group_idx][param_idx] = True
+        else:
+            accumulate(lp, group_idx, param_idx)
         lp.grad = None
 
     # DeepSpeed's hooks look the method up on the instance at call time
     optimizer.accumulate_hp_grads_and_remove_lp = accumulate_and_free
+
+
+GROUP_NUMEL_KEY = "rdsp_optimizer_group_numel"
+
+
+def _optimizer_param_groups(stage_module, max_numel: int):
+    """The stage's parameters as consecutive optimizer groups of at most
+    max_numel elements (a larger parameter is a group of its own). DeepSpeed's
+    ZeRO-1/2 optimizer steps one group at a time and holds a flat bf16 and an
+    fp32 copy of that group's gradients while it does: with one group that is
+    6-8 bytes per parameter of the whole stage at once, with small groups a
+    fraction of it. The math is the same: Adam updates every element on its
+    own. A generator: DeepSpeed lists it after its tensor-parallel split, so
+    the groups hold the split parameters."""
+    group, numel = [], 0
+    for p in stage_module.parameters():
+        if group and numel + p.numel() > max_numel:
+            yield {"params": group}
+            group, numel = [], 0
+        group.append(p)
+        numel += p.numel()
+    if group:
+        yield {"params": group}
+
+
+def _autoep_preset(hf_config) -> str | None:
+    """AutoEP's preset for a model type: its own name for it where they differ
+    (the Qwen3.5-MoE text backbone, "qwen3_5_moe_text", is preset
+    "qwen3_5_moe"), else the model type itself."""
+    model_type = getattr(hf_config, "model_type", None)
+    try:
+        from deepspeed.module_inject.auto_ep_presets.registry import preset_name_for_hf_model_type
+    except ImportError:
+        return model_type
+    return preset_name_for_hf_model_type(model_type) or model_type
+
+
+MASTER_KEY = "rdsp_master_weights"
+
+
+def _remainder_optimizer(conf: dict):
+    """For {"rdsp_master_weights": "remainder"}: RemainderAdamW, built from the
+    config's AdamW settings, as the client optimizer DeepSpeed wraps. DeepSpeed
+    is told its master copy is bf16, so it neither upcasts the gradients to
+    fp32 for the step nor keeps a 4-byte master; _master_in_model_weights then
+    drops that bf16 copy too. None without the key.
+
+    With expert parallelism the parameters come in DeepSpeed's MoE groups (the
+    expert weights apart, reduced and split over their own data-parallel
+    group), which DeepSpeed builds only for optimizers it makes itself."""
+    if conf.pop(MASTER_KEY, None) != "remainder":
+        return None
+    from ray_deepspeed_pipeline.remainder_adamw import RemainderAdamW
+
+    params = dict((conf.pop("optimizer", None) or {}).get("params", {}))
+    params.pop("torch_adam", None)
+    # bf16_optimizer_states only passes DeepSpeed's check that bf16 masters keep
+    # their states on the GPU; RemainderAdamW's moments are fp32
+    conf["bf16"] = {**(conf.get("bf16") or {}), "bf16_master_weights_and_grads": True,
+                    "bf16_optimizer_states": True}
+    conf["zero_allow_untested_optimizer"] = True  # DeepSpeed vets optimizers by exact type
+    if int((conf.get("expert_parallel") or {}).get("autoep_size", 1) or 1) <= 1:
+        return functools.partial(RemainderAdamW, **params)
+
+    def with_moe_groups(model_parameters):
+        from deepspeed.moe.utils import configure_moe_param_groups
+
+        return RemainderAdamW(configure_moe_param_groups(list(model_parameters)), **params)
+
+    return with_moe_groups
+
+
+def _master_in_model_weights(optimizer) -> None:
+    """Make each ZeRO partition's master the model's own bf16 partition, not a
+    copy of it: RemainderAdamW keeps the low 16 bits beside it. DeepSpeed's
+    step then copies the master onto itself, and the copy (2 bytes per
+    parameter) is freed."""
+    import torch.distributed as dist
+
+    if not hasattr(optimizer, "single_partition_of_fp32_groups") or optimizer.cpu_offload:
+        raise ValidationError("the remainder master needs DeepSpeed's ZeRO-1/2 optimizer "
+                              "(bf16 gradients, no offload)")
+    for i, group in enumerate(optimizer.optimizer.param_groups):
+        rank = dist.get_rank(group=optimizer.real_dp_process_group[i])
+        master = optimizer.parallel_partitioned_bit16_groups[i][rank].detach()
+        master.requires_grad = True  # as DeepSpeed sets on its copy
+        optimizer.single_partition_of_fp32_groups[i] = master
+        group["params"] = [master]
+    optimizer._link_all_hp_params()  # each parameter's master fragment pointed into the copy
 
 
 def _deepspeed_engine_factory(stage_module, ds_config: dict):
@@ -191,6 +300,8 @@ def _deepspeed_engine_factory(stage_module, ds_config: dict):
 
     conf = _with_immediate_grad_update(json.loads(json.dumps(ds_config)))  # deep copy
     conf["gradient_accumulation_steps"] = 1  # the coordinator accumulates (module doc)
+    group_numel = int(conf.pop(GROUP_NUMEL_KEY, 0) or 0)  # rdsp's key, not DeepSpeed's
+    remainder_optimizer = _remainder_optimizer(conf)
     # DeepSpeed derives train_batch_size from the per-rank micro batch and its
     # own data-parallel world, which excludes TP
     conf.pop("train_batch_size", None)
@@ -217,7 +328,7 @@ def _deepspeed_engine_factory(stage_module, ds_config: dict):
     ep_conf = conf.get("expert_parallel")
     if ep_conf and int(ep_conf.get("autoep_size", 1)) > 1:
         if hf_config is not None:
-            ep_conf.setdefault("preset_model", getattr(hf_config, "model_type", None))
+            ep_conf.setdefault("preset_model", _autoep_preset(hf_config))
             ep_conf.setdefault("top_k", hf_config.num_experts_per_tok)
             ep_conf.setdefault("route_norm", bool(getattr(hf_config, "norm_topk_prob", True)))
         # DeepSpeed full-matches module names; stages name layers `layers.<i>`
@@ -227,9 +338,14 @@ def _deepspeed_engine_factory(stage_module, ds_config: dict):
         # no model_parameters: AutoEP creates the expert parameters inside
         # initialize(), and DeepSpeed collects them (and MoE groups) itself
     else:
-        kwargs["model_parameters"] = stage_module.parameters()
+        kwargs["model_parameters"] = (_optimizer_param_groups(stage_module, group_numel)
+                                      if group_numel > 0 else stage_module.parameters())
 
+    if remainder_optimizer is not None:
+        kwargs["optimizer"] = remainder_optimizer
     engine, _, _, _ = deepspeed.initialize(**kwargs)
+    if remainder_optimizer is not None:
+        _master_in_model_weights(engine.optimizer)
     return engine
 
 

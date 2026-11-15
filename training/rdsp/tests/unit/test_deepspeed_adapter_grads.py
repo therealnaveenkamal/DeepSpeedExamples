@@ -57,3 +57,59 @@ def test_other_optimizers_are_left_alone():
     opt = Plain()
     _free_bf16_grads_after_accumulating(opt)
     assert not hasattr(opt, "accumulate_hp_grads_and_remove_lp")
+
+
+class FakeDeepSpeedBF16Optimizer(FakeBF16Optimizer):
+    """With the buffers DeepSpeed's BF16_Optimizer keeps per parameter, and its own add
+    (convert to fp32, then add: two GPU kernels and a temporary)."""
+
+    autoep_folding_tp_group = None
+
+    def __init__(self, n):
+        self.fp32_groups_gradients = [[torch.zeros(n)]]
+        self.fp32_groups_has_gradients = [[False]]
+        self.deepspeed_calls = 0
+
+    def accumulate_hp_grads_and_remove_lp(self, lp, group_idx, param_idx):
+        self.deepspeed_calls += 1
+        hp = self.fp32_groups_gradients[group_idx][param_idx]
+        hp.data.add_(lp.grad.data.to(hp.dtype).view(hp.shape))
+        lp._hp_grad = hp
+        self.fp32_groups_has_gradients[group_idx][param_idx] = True
+
+
+def accumulate_microbatches(opt, grads):
+    w = torch.nn.Parameter(torch.zeros(2, 3, dtype=torch.bfloat16))
+    _free_bf16_grads_after_accumulating(opt)
+    for g in grads:
+        w.grad = g.clone()
+        opt.accumulate_hp_grads_and_remove_lp(w, 0, 0)
+        assert w.grad is None
+    return w
+
+
+def test_direct_add_gives_deepspeeds_bits_without_its_conversion(monkeypatch):
+    torch.manual_seed(0)
+    grads = [torch.randn(2, 3).to(torch.bfloat16) * 10 ** k for k in (-3, 0, 2, -1)]
+    monkeypatch.setenv("RDSP_DIRECT_GRAD_ADD", "0")  # DeepSpeed's own add, for the reference
+    reference = FakeDeepSpeedBF16Optimizer(6)
+    accumulate_microbatches(reference, grads)
+    assert reference.deepspeed_calls == 4
+
+    monkeypatch.delenv("RDSP_DIRECT_GRAD_ADD")  # the default
+    direct = FakeDeepSpeedBF16Optimizer(6)
+    w = accumulate_microbatches(direct, grads)
+    assert direct.deepspeed_calls == 0  # the add ran here, as one operation
+    assert torch.equal(direct.fp32_groups_gradients[0][0], reference.fp32_groups_gradients[0][0])
+    assert direct.fp32_groups_gradients[0][0].dtype == torch.float32
+    assert direct.fp32_groups_has_gradients == [[True]]
+    assert w._hp_grad is direct.fp32_groups_gradients[0][0]
+
+
+def test_direct_add_leaves_expert_folding_to_deepspeed(monkeypatch):
+    # DeepSpeed corrects folded expert gradients before its add: that path stays DeepSpeed's
+    monkeypatch.delenv("RDSP_DIRECT_GRAD_ADD", raising=False)
+    opt = FakeDeepSpeedBF16Optimizer(6)
+    opt.autoep_folding_tp_group = object()
+    accumulate_microbatches(opt, [torch.ones(2, 3, dtype=torch.bfloat16)])
+    assert opt.deepspeed_calls == 1

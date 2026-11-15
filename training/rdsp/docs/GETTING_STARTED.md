@@ -60,8 +60,11 @@ For your own data, write a loader that yields `(inputs, labels)` entries (see `d
 **Layout.** Flags:
 
 - `--stages N`: pipeline stages.
-- `--stage S:gpus=G,tp=T,zero=Z`: stage S's GPU count, tensor parallelism and ZeRO stage. The data-parallel degree is G / T. Other keys: `sp`, `ep`, `recompute=1`, `offload=1`, `compile=1`, `compile_vision=1`.
-- `--cuts balanced` (default): rdsp estimates where to cut from the model and the first batch. `--cuts even` splits the decoder layers evenly; `--cuts 5,18` sets them by hand. A first cut of `0` puts the vision encoder alone on stage 0.
+- `--stage S:gpus=G,tp=T,zero=Z`: stage S's GPU count, tensor parallelism and ZeRO stage. The data-parallel degree is G / T. Other keys: `sp`, `ep`, `recompute=1`, `recompute_blocks=N` (recompute only the stage's first N decoder layers, plus its vision encoder), `offload=1`, `compile=1`, `compile_vision=1`.
+- `--cuts balanced` (default): rdsp estimates where to cut from the model and the first batch. `--cuts measured` starts there, times every stage over `--calibration-steps` steps at learning rate 0, and re-cuts: each stage's time beyond its layers' (vision encoder, embeddings, output layer and loss, kernel launches) counts as a fixed cost of that stage, and no stage gains layers past its GPU's memory. The run then starts from the loaded weights and the first batch. `--cuts even` splits the decoder layers evenly; `--cuts 5,18` sets them by hand. A first cut of `0` puts the vision encoder alone on stage 0: `--cuts 0,balanced` cuts the decoder over the other stages by estimate, `--cuts 0,measured` then re-cuts the decoder stages as `measured` does (the vision stage keeps its GPUs).
+- `--master-dtype remainder`: exact fp32 master weights stored as the bf16 weights plus a 16-bit remainder, 2 bytes per parameter instead of 4 (Megatron's `store_param_remainders`). Needs `--grad-dtype bf16` and ZeRO 1 or 2. Works with expert parallelism (`ep=`): the expert weights keep their own group.
+- `--moe-experts hf` (mixture-of-experts models, with `--liger`): the routed experts run Hugging Face's grouped matmuls instead of Liger's fused kernel (`liger`, the default). Which is faster depends on the model and GPU; time a few steps of each.
+- `--vision-attn varlen`: the vision encoder's attention as one variable-length FlashAttention call per layer (PyTorch's `varlen_attn`), instead of one call per image and three host syncs per layer under SDPA. CUDA only.
 - `--colocated-vision`: run the vision encoder on every GPU instead of on stage 0.
 
 `docs/CONTRACTS.md` lists the validated layouts and what isn't supported.
@@ -74,7 +77,9 @@ For your own data, write a loader that yields `(inputs, labels)` entries (see `d
 ValidationError: the pipeline needs 8 GPUs; this Ray cluster has 4. Reduce gpus= in the stage layouts, or add GPUs
 ```
 
-On a multi-node cluster with enough GPUs in total, a stage that doesn't fit on one node fails after `RDSP_PLACEMENT_TIMEOUT_S` (default 600 s) with `stage S: cannot place G GPUs (STRICT_PACK) in this Ray cluster`.
+On a multi-node cluster, stages fill the driver's node first, then the next. A stage with more GPUs than a node has spans nodes, its tensor-parallel groups kept inside a node (each node's share of the stage must be a multiple of `tp` x `sp`). A stage that cannot be placed at all fails after `RDSP_PLACEMENT_TIMEOUT_S` (default 600 s) with `stage S: cannot place G GPUs ... in this Ray cluster`.
+
+**Several nodes.** Start Ray on each node yourself (`ray start --head` on the first, `ray start --address <first node>:6379` on the others) with the network settings NCCL needs in that shell, and run `train_vl.py` on the first node with `RAY_ADDRESS=auto`. Workers of a cluster started this way run in `ray start`'s environment, not the driver's; `train_vl.py` passes them the driver's `RDSP_*`, `NCCL_*`, `FI_*`, `HF_*`, `PYTORCH_*`, `TORCH_*`, `DS_*`, `CUDA_HOME` and `LD_LIBRARY_PATH`. On AWS with EFA: `bench/two_node/` (`efa_env.sh`, `ray_cluster.sh`).
 
 **TP doesn't divide the key/value heads.** Qwen3.5-2B has 2 key/value heads:
 
@@ -84,8 +89,9 @@ ValidationError: stage 0: tp=4 does not divide the model's 2 key/value heads; us
 
 **Out of memory.** `torch.OutOfMemoryError` on the first or second step, in order of cost:
 
-1. Move layers off the full stage: stage 0 holds the vision encoder plus the most microbatches in flight, so try a lower first cut, e.g. `--cuts 4`.
-2. Add data parallelism so ZeRO splits the optimizer state over more GPUs.
-3. `recompute=1` on the full stage. This keeps only each block's input and recomputes the rest, about 30% more compute on that stage.
+1. `--master-dtype remainder` (with `--grad-dtype bf16`): 2 bytes less per parameter of master weights, split over the data-parallel GPUs. The master weights are still exact fp32.
+2. Move layers off the full stage: stage 0 holds the vision encoder plus the most microbatches in flight, so try a lower first cut, e.g. `--cuts 4`.
+3. Add data parallelism so ZeRO splits the optimizer state over more GPUs.
+4. `recompute=1` on the full stage. This keeps only each block's input and recomputes the rest, about 30% more compute on that stage. `recompute_blocks=N` recomputes only the first N layers, for a stage that almost fits.
 
 **`--drop-padding-mask needs rows padded on the right only`.** Your data has padding before real tokens. Drop the flag.

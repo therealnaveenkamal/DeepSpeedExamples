@@ -30,6 +30,7 @@ from ray_deepspeed_pipeline.deepspeed_adapter import DeepSpeedStageAdapter, obse
 from ray_deepspeed_pipeline.errors import ValidationError
 from ray_deepspeed_pipeline.hf_stage import load_meta_parameters
 from ray_deepspeed_pipeline.losses import token_weight
+from ray_deepspeed_pipeline.varlen_attention import register_if_used
 from ray_deepspeed_pipeline.vision import vision_schedule
 
 _VISION_FILE = "colocated_vision.pt"
@@ -45,14 +46,16 @@ def _free_port() -> int:
 
 
 class _PhaseTimer:
-    """Wall time per phase of a step when RDSP_PROFILE=1, printed as one JSON
-    line per rank. Pending compute is waited for before each reading, so a
-    phase's time is its own; profiling makes steps slower."""
+    """Wall time per phase of a step when RDSP_PROFILE=1 (or set_profile),
+    printed as one JSON line per rank and kept in `records`. Pending compute
+    is waited for before each reading, so a phase's time is its own;
+    profiling makes steps slower."""
 
     def __init__(self, device):
         self.on = os.environ.get("RDSP_PROFILE") == "1"
         self.device = device
         self.totals = collections.defaultdict(float)
+        self.records = []
 
     def _sync(self):
         # the compute stream only: a device-wide sync would also wait for this
@@ -82,6 +85,7 @@ class _PhaseTimer:
                 ms["peak_gb"] = round(torch.cuda.max_memory_allocated() / 2**30, 2)
                 torch.cuda.reset_peak_memory_stats()
             print(json.dumps({"rdsp_profile": where, **ms}), flush=True)
+            self.records.append({**where, **ms})
         self.totals.clear()
 
 
@@ -121,6 +125,7 @@ class StageWorkerActor:
         os.environ["MASTER_ADDR"] = master_addr
         os.environ["MASTER_PORT"] = str(master_port)
         module = init["stage_module"]
+        register_if_used(module)
         load_meta_parameters(module, init["weights"])
         if init["backend"] == "nccl":
             torch.cuda.set_device(0)
@@ -144,6 +149,7 @@ class StageWorkerActor:
         from ray_deepspeed_pipeline.vision import ColocatedVisionEngine
 
         tower, spec = vision  # the tower and its plan.VisionSpec
+        register_if_used(tower)
         self._vision_per_microbatch = spec.encode_per_microbatch
         load_meta_parameters(tower, weights)
         if spec.recompute:
@@ -155,6 +161,21 @@ class StageWorkerActor:
 
     def ping(self) -> bool:
         return True
+
+    def set_profile(self, on: bool) -> None:
+        """Time the phases of the steps from now on (as RDSP_PROFILE=1 does
+        from the start), or stop; clears the kept records."""
+        self._timer.on = on
+        self._timer.totals.clear()
+        self._timer.records.clear()
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+
+    def profile_records(self) -> dict:
+        """The phase timer's records since set_profile, and this GPU's memory."""
+        total = (torch.cuda.get_device_properties(self.adapter.device).total_memory / 2**30
+                 if self.adapter.device.type == "cuda" else None)
+        return {"records": list(self._timer.records), "total_gib": total}
 
     def has_loss_fn(self) -> bool:
         return self.adapter.loss_fn is not None

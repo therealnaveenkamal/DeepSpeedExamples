@@ -118,6 +118,13 @@ def _stage_grid(override, index: int, n_stages: int, rows: int) -> tuple[Grid, i
         raise ValidationError(
             f"stage {index}: sequence parallelism on the terminal (loss) stage "
             f"is unsupported — shifted-label losses straddle sequence shards")
+    if override is not None and override.recompute_blocks is not None:
+        if override.recompute:
+            raise ValidationError(f"stage {index}: recompute recomputes every block; "
+                                  f"recompute_blocks only the first N: set one")
+        if override.recompute_blocks < 0:
+            raise ValidationError(f"stage {index}: recompute_blocks must be >= 0, got "
+                                  f"{override.recompute_blocks}")
     if override is not None and override.fold and ep == 1:
         raise ValidationError(f"stage {index}: fold=True requires ep > 1")
     if override is not None and override.fold != (ep > 1 and tp > 1):
@@ -180,6 +187,19 @@ def _check_tp_divides_heads(model, tp: int, stage: int) -> None:
             f"heads; use a tp that divides {heads}")
 
 
+def _recompute_blocks(override, part, policy, n_blocks: int) -> int | None:
+    """The stage's recompute_blocks. Under a measured cut, the blocks a stage
+    gains or loses against the measured cut are recomputed ones: the blocks
+    that keep their activations stay as many, and so does their memory."""
+    n = override.recompute_blocks if override else None
+    measured = getattr(policy, "measured", None)
+    if n is None or measured is None:
+        return n
+    bounds = [0, *measured.cuts, n_blocks]
+    held = bounds[part.index + 1] - bounds[part.index]
+    return max(0, n + (part.block_stop - part.block_start) - held)
+
+
 def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> ExecutionPlan:
     """Validate and lower; raises ValidationError before any Ray actor exists."""
     n = pipeline_config.stages
@@ -232,6 +252,8 @@ def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> Exe
             recompute=bool(override.recompute) if override else False,
             compile=bool(override.compile) if override else False,
             compile_vision=bool(override.compile_vision) if override else False,
+            recompute_blocks=_recompute_blocks(override, part, pipeline_config.partition,
+                                               partitions[-1].block_stop),
         ))
 
     # a ConnectionOverride only asserts the conversion the layouts imply

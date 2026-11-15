@@ -8,3 +8,6 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# raw run logs and profiles; the published ones are in bench/published
+bench/results/

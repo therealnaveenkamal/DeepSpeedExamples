@@ -6,8 +6,13 @@ explicit predecessor ids; intra-stage order is the sequence order. Tests check
 the result against DeepSpeed's TrainSchedule.
 """
 
+import os
+
+from ray_deepspeed_pipeline.errors import ValidationError
 from ray_deepspeed_pipeline.plan import ExecutionPlan
 from ray_deepspeed_pipeline.protocols import Command
+
+FIRST_STAGE_LEAD_ENV = "RDSP_FIRST_STAGE_LEAD"
 
 
 def _cid(generation: int, step: int, stage: int, kind: str, microbatch: int | None) -> str:
@@ -15,8 +20,27 @@ def _cid(generation: int, step: int, stage: int, kind: str, microbatch: int | No
     return f"g{generation}.t{step}.s{stage}.{suffix}"
 
 
-def _ops_1f1b(stage: int, n_stages: int, n_mb: int) -> list[tuple[str, int]]:
-    warmup = min(n_stages - 1 - stage, n_mb)
+def _first_stage_lead() -> int:
+    """RDSP_FIRST_STAGE_LEAD=N (a trial switch, 2026-11-12): stage 0 runs N more
+    warm-up forwards than 1F1B gives it. With 1F1B's single microbatch of lead,
+    a first stage about as busy as the next one (a vision encoder alone on
+    stage 0, large microbatches) finishes its next forward late and the next
+    stage waits for it (0.5-0.9 s a step on Qwen3.5-9B). Costs N more
+    microbatches of activations on stage 0. Nothing else moves: both
+    directions still walk the microbatches in order, and every command keeps
+    its predecessors."""
+    raw = os.environ.get(FIRST_STAGE_LEAD_ENV, "0")
+    try:
+        lead = int(raw)
+    except ValueError:
+        lead = -1
+    if lead < 0:
+        raise ValidationError(f"{FIRST_STAGE_LEAD_ENV} must be a whole number >= 0, got {raw!r}")
+    return lead
+
+
+def _ops_1f1b(stage: int, n_stages: int, n_mb: int, lead: int = 0) -> list[tuple[str, int]]:
+    warmup = min(n_stages - 1 - stage + lead, n_mb)
     ops = [("forward", k) for k in range(warmup)]
     for k in range(n_mb - warmup):
         ops.append(("forward", warmup + k))
@@ -53,8 +77,9 @@ def generate_commands(plan: ExecutionPlan, generation: int, global_step: int,
                 out[s].append(cmd(s, "eval", k, preds))
         return {s: tuple(cs) for s, cs in out.items()}
 
+    lead = _first_stage_lead() if n_stages > 1 else 0
     for s in range(n_stages):
-        for kind, k in _ops_1f1b(s, n_stages, n_mb):
+        for kind, k in _ops_1f1b(s, n_stages, n_mb, lead if s == 0 else 0):
             if kind == "forward":
                 preds = [cid(s - 1, "forward", k)] if s > 0 else []
             elif s == n_stages - 1:

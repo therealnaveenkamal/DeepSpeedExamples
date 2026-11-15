@@ -38,6 +38,8 @@ class StageSpec:
     # torch.compile each block, or only the vision encoder's
     compile: bool = False
     compile_vision: bool = False
+    # recompute only the first N blocks (and the encoder's); None: per `recompute`
+    recompute_blocks: int | None = None
 
 
 @dataclass(frozen=True)
@@ -72,8 +74,8 @@ class VisionSpec:
 
 
 # fields that change how a step runs, not a stage's parameters or saved state
-_RUNTIME_ONLY = frozenset({"prefetch", "recompute", "compile", "compile_vision",
-                           "encode_per_microbatch"})
+_RUNTIME_ONLY = frozenset({"prefetch", "recompute", "recompute_blocks", "compile",
+                           "compile_vision", "encode_per_microbatch"})
 
 
 def _without(value, keys: frozenset):

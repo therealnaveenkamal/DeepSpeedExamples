@@ -1,5 +1,7 @@
 """Deterministic contiguous partitioning and name-based rebinding."""
 
+import functools
+
 import pytest
 import torch
 import torch.nn as nn
@@ -262,3 +264,53 @@ def test_vision_token_ratio_counts_real_tokens_and_the_encoders_attention():
     images = [16, 8, 16]  # patches per image; the empty grid is a row without an image
     weighted = sum(p * (1 + 2 * p * 8 / layer) for p in images)
     assert vision_token_ratio(config, sample) == pytest.approx(weighted / (2 * 10 + 2 * 6))
+
+
+def test_recompute_first_blocks_only():
+    """recompute_blocks(stage, n): the first n of the stage's blocks keep
+    only their input, the rest keep everything; gradients unchanged."""
+    from ray_deepspeed_pipeline.partition import build_stage_module, recompute_blocks
+
+    torch.manual_seed(0)
+    model = ToyLM(n_blocks=6)
+    middle = partition_parameters(model, ExplicitCuts((1, 5)), 3)[1]  # blocks 1-4
+    stages = {n: build_stage_module(model, 1, 5, middle.parameter_names) for n in (0, 2, 4, None)}
+    for n, stage in stages.items():
+        if n != 0:
+            recompute_blocks(stage, n)
+    wrapped = [sum(isinstance(b.forward, functools.partial) for b in s.local_blocks())
+               for s in stages.values()]
+    assert wrapped == [0, 2, 4, 4]
+    assert [isinstance(b.forward, functools.partial) for b in stages[2].local_blocks()] == \
+        [True, True, False, False]
+
+    hidden = torch.randn(4, 16, 8)
+    kept = {}
+    for n, stage in stages.items():
+        kept[n], out = _saved_bytes(stage, hidden)
+        out.sum().backward()
+    assert kept[4] < kept[2] < kept[0] and kept[4] == kept[None]
+    for name, a in stages[0].named_parameters():
+        b = dict(stages[2].named_parameters())[name]
+        assert torch.allclose(a.grad, b.grad, atol=1e-6), name
+
+
+def test_recompute_first_blocks_takes_the_encoder_whole():
+    from ray_deepspeed_pipeline.partition import recompute_blocks
+
+    class Stage(nn.Module):  # an HF stage holding a vision encoder
+        def __init__(self):
+            super().__init__()
+            self.decoder = nn.ModuleList(nn.Linear(2, 2) for _ in range(3))
+            self.encoder = nn.ModuleList(nn.Linear(2, 2) for _ in range(2))
+
+        def local_blocks(self):
+            return list(self.decoder) + self.encoder_blocks()
+
+        def encoder_blocks(self):
+            return list(self.encoder)
+
+    stage = Stage()
+    recompute_blocks(stage, 1)
+    assert [isinstance(b.forward, functools.partial) for b in stage.local_blocks()] == \
+        [True, False, False, True, True]

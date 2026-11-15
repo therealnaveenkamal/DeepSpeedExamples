@@ -170,6 +170,15 @@ class StageGroupClient:
         except Exception:
             return False
 
+    def set_profile(self, on: bool) -> None:
+        import ray
+        ray.get([actor.set_profile.remote(on) for actor in self.actors])
+
+    def profile_records(self) -> list[dict]:
+        """Each rank's StageWorkerActor.profile_records(), in rank order."""
+        import ray
+        return ray.get([actor.profile_records.remote() for actor in self.actors])
+
     def shutdown(self) -> None:
         """Best effort: kill the actors and release the placement group."""
         import ray
@@ -232,6 +241,52 @@ def _builder_kwargs(builder, spec) -> dict:
     return {"stage_index": spec.index} if builder is build_hf_stage else {}
 
 
+def fill_nodes_in_order(stage_gpus: list[int], nodes: list[tuple[str, int]]) -> list | None:
+    """A node for each stage: consecutive stages fill the first node, then
+    the next, so the pipeline crosses between nodes as few times as it can
+    (each crossing sends every microbatch's boundary over the network). nodes:
+    (node id, GPUs) in the order to fill. None if a stage fits no node."""
+    out, i, free = [], 0, nodes[0][1] if nodes else 0
+    for need in stage_gpus:
+        while i < len(nodes) and need > free:
+            i += 1
+            free = nodes[i][1] if i < len(nodes) else 0
+        if i == len(nodes):
+            return None
+        out.append(nodes[i][0])
+        free -= need
+    return out
+
+
+def bundles_in_rank_order(bundles_to_node: dict, node_order: list, group: int) -> list[int]:
+    """Placement-group bundle for each rank of a stage that spans nodes: the
+    bundles grouped by node (in node_order), so consecutive ranks share a
+    node. A stage's ranks are tensor-parallel fastest, so a tensor-parallel
+    (x sequence-parallel) group of `group` consecutive ranks then stays on one
+    node, provided each node holds a multiple of `group` of the stage's GPUs."""
+    where = {node: i for i, node in enumerate(node_order)}
+    order = sorted(bundles_to_node, key=lambda b: (where.get(bundles_to_node[b], len(where)), b))
+    per_node = {}
+    for b in order:
+        per_node[bundles_to_node[b]] = per_node.get(bundles_to_node[b], 0) + 1
+    split = [n for n in per_node.values() if n % group]
+    if split:
+        raise ValidationError(
+            f"a stage spanning nodes got {sorted(per_node.values())} GPUs per node; each node "
+            f"must hold a multiple of tp x sp = {group} so no tensor-parallel group crosses nodes")
+    return order
+
+
+def _nodes_in_fill_order() -> list[tuple[str, int]]:
+    """Alive nodes with GPUs: the driver's first, the rest by address."""
+    import ray
+    here = ray.get_runtime_context().get_node_id()
+    nodes = [(n["NodeID"], int(n["Resources"].get("GPU", 0)), n["NodeManagerAddress"])
+             for n in ray.nodes() if n["Alive"] and n["Resources"].get("GPU", 0) >= 1]
+    nodes.sort(key=lambda n: (n[0] != here, n[2]))
+    return [(node, gpus) for node, gpus, _ in nodes]
+
+
 def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
                          use_gpu: bool | None = None, stage_builder=None,
                          prefer_nodes: list | None = None, weights: str | None = None):
@@ -240,9 +295,12 @@ def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
     Needs an attached Ray context. Each stage gets its own STRICT_PACK
     placement group (all its GPUs on one node, so TP/EP/SP collectives stay on
     the node's interconnect and its checkpoint shards land on one disk), its
-    own rendezvous and its own stage-local world. prefer_nodes: per-stage node
+    own rendezvous and its own stage-local world. A stage that needs more GPUs
+    than a node has spans nodes instead (PACK), its ranks ordered so its
+    tensor-parallel groups stay inside a node. prefer_nodes: per-stage node
     ids to reuse on a rebuild, so node-local shards stay reachable after an
-    actor (not node) failure. weights: HF checkpoint dir each stage loads its
+    actor (not node) failure. Without them, on several nodes, stages fill the
+    driver's node first, then the next (fill_nodes_in_order). weights: HF checkpoint dir each stage loads its
     meta-device parameters from. On any failure every started stage is shut
     down.
     """
@@ -264,6 +322,10 @@ def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
             f"Reduce gpus= in the stage layouts, or add GPUs")
     backend = "nccl" if use_gpu else "gloo"
     actor_cls = ray.remote(StageWorkerActor)
+    nodes = _nodes_in_fill_order() if use_gpu else []
+    max_node_gpus = max((gpus for _, gpus in nodes), default=0)
+    if use_gpu and prefer_nodes is None and len(nodes) > 1:
+        prefer_nodes = fill_nodes_in_order([s.num_gpus for s in plan.stages], nodes)
 
     clients = []
     n_stages = len(plan.stages)
@@ -281,16 +343,18 @@ def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
             grid = Grid(dp=spec.dp, sp=spec.sp, tp=spec.tp)
             module = builder(model, spec.block_start, spec.block_stop,
                              spec.parameter_names, **_builder_kwargs(builder, spec))
-            if spec.recompute:
-                recompute_blocks(module)
+            if spec.recompute or spec.recompute_blocks is not None:
+                recompute_blocks(module, None if spec.recompute else spec.recompute_blocks)
             if spec.compile or spec.compile_vision:
                 compile_blocks(module, encoder_only=not spec.compile)
             is_last = spec.index == n_stages - 1
             pg = None
             options = {"num_gpus": 1 if use_gpu else 0}
+            bundle_of_rank = list(range(spec.num_gpus))
             if use_gpu:
-                strategy = "STRICT_PACK"
-                target = prefer_nodes[spec.index] if prefer_nodes else None
+                spans = spec.num_gpus > max_node_gpus
+                strategy = "PACK" if spans else "STRICT_PACK"
+                target = prefer_nodes[spec.index] if prefer_nodes and not spans else None
                 pg = placement_group([{"GPU": 1, "CPU": 1}] * spec.num_gpus,
                                      strategy=strategy, _soft_target_node_id=target)
                 try:
@@ -300,13 +364,21 @@ def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
                     raise ValidationError(
                         f"stage {spec.index}: cannot place {spec.num_gpus} GPUs "
                         f"({strategy}) in this Ray cluster: {e}") from e
+                if spans:
+                    table = ray.util.placement_group_table(pg)["bundles_to_node_id"]
+                    try:
+                        bundle_of_rank = bundles_in_rank_order(
+                            table, [n for n, _ in _nodes_in_fill_order()], spec.tp * spec.sp)
+                    except ValidationError:
+                        ray.util.remove_placement_group(pg)
+                        raise
             module_ref = ray.put(module)
             actors = []
             for rank in range(spec.num_gpus):
                 rank_options = dict(options)
                 if pg is not None:
                     rank_options["scheduling_strategy"] = PlacementGroupSchedulingStrategy(
-                        placement_group=pg, placement_group_bundle_index=rank)
+                        placement_group=pg, placement_group_bundle_index=bundle_of_rank[rank])
                 actors.append(actor_cls.options(**rank_options).remote(
                     module_ref, spec.ds_config_json,
                     stage=spec.index, rank=rank, grid=grid,

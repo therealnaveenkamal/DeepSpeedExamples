@@ -1,5 +1,7 @@
 """RayPipelineEngine: the blocking driver-side facade over the coordinator."""
 
+import json
+
 import torch
 
 from ray_deepspeed_pipeline.data import CountingIterator, data_position, resume_loader_iter
@@ -105,6 +107,34 @@ class RayPipelineEngine:
                 self._training_dataloader, position["entries_consumed"])
         return result["path"], result["client_state"]
 
+    def measure_stages(self, data_iter=None, steps: int = 3, skip: int = 1,
+                       reserve_gib: float = 5.0):
+        """Run `steps` training steps with every stage's phase timer on and
+        return what they measured (config.MeasuredStages), from the steps
+        after the first `skip` (allocation, compilation): each stage's
+        forward and backward time per step on its slowest rank, its peak
+        memory on its fullest rank, and its weights, gradients and optimizer
+        state per parameter. The memory limit is the smallest GPU's, less
+        reserve_gib for what the allocator's peak does not count (CUDA
+        context, NCCL buffers, fragmentation). The steps update the weights
+        as any step does (a learning rate of 0 leaves them)."""
+        if steps <= skip:
+            raise ValidationError(f"measure_stages: {steps} steps leave none after "
+                                  f"skipping {skip}")
+        self._coordinator.set_profile(True)
+        try:
+            for _ in range(steps):
+                self.train_batch(data_iter)
+            records = self._coordinator.profile_records()
+        finally:
+            self._coordinator.set_profile(False)
+        return measured_stages(self._coordinator.plan, records, skip, reserve_gib)
+
+    def shutdown(self) -> None:
+        """Stop every stage's workers and release their GPUs; the engine is
+        unusable afterwards."""
+        self._coordinator.shutdown()
+
     # Local-engine methods that have no meaning for a partitioned model.
 
     def __call__(self, *args, **kwargs):
@@ -125,3 +155,33 @@ class RayPipelineEngine:
 
     def parameters(self, *args, **kwargs):
         raise UnsupportedEngineMethod(_UNSUPPORTED_MSG.format(name="parameters()"))
+
+
+_BUSY = ("forward", "backward", "vision_forward", "vision_backward")
+
+
+def measured_stages(plan, records, skip: int, reserve_gib: float):
+    """RayPipelineEngine.measure_stages' result from each rank's records
+    (StageWorkerActor.profile_records): per stage, per rank."""
+    from ray_deepspeed_pipeline.config import MeasuredStages
+    from ray_deepspeed_pipeline.partition import static_bytes_per_param
+
+    seconds, peaks, totals = [], [], []
+    for stage in records:
+        steps = [[r for r in rank["records"] if r.get("kind") == "step"][skip:]
+                 for rank in stage]
+        if not all(steps):
+            raise ValidationError("measure_stages: a rank recorded no step to measure")
+        per_step = [max(sum(r.get(k, 0.0) for k in _BUSY) for r in at)
+                    for at in zip(*steps)]
+        seconds.append(sum(per_step) / len(per_step) / 1e3)
+        peaks.append(max((r.get("peak_gb", 0.0) for rank in stage for r in rank["records"]),
+                         default=0.0))
+        totals += [rank["total_gib"] for rank in stage if rank["total_gib"] is not None]
+    limit = (min(totals) if totals else float("inf")) - reserve_gib
+    return MeasuredStages(
+        cuts=tuple(s.block_start for s in plan.stages[1:]), seconds=tuple(seconds),
+        peak_gib=tuple(peaks),
+        bytes_per_param=tuple(static_bytes_per_param(json.loads(s.ds_config_json), s.tp, s.dp)
+                              for s in plan.stages),
+        limit_gib=limit)

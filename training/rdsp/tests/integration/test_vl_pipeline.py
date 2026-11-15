@@ -70,6 +70,30 @@ def tiny_qwen3_5_vl(tied=False):
     return cfg
 
 
+def tiny_qwen3_5_moe_vl():
+    """Qwen3.5-MoE: the Qwen3.5 layers with every MLP a mixture of experts
+    (routed experts, top-k, plus a gated shared expert)."""
+    cfg = transformers.Qwen3_5MoeConfig(
+        text_config=dict(vocab_size=VOCAB, hidden_size=64, num_hidden_layers=6,
+                         num_attention_heads=4, num_key_value_heads=2, head_dim=16,
+                         linear_num_key_heads=2, linear_num_value_heads=4,
+                         linear_key_head_dim=16, linear_value_head_dim=16,
+                         moe_intermediate_size=32, shared_expert_intermediate_size=32,
+                         num_experts=8, num_experts_per_tok=2,
+                         layer_types=["linear_attention", "linear_attention",
+                                      "full_attention"] * 2,
+                         rope_parameters={"rope_type": "default", "rope_theta": 10000.0,
+                                          "mrope_section": [2, 1, 1], "mrope_interleaved": True,
+                                          "partial_rotary_factor": 0.5}),
+        vision_config=dict(depth=4, hidden_size=32, intermediate_size=64, num_heads=2,
+                           out_hidden_size=64, patch_size=4, spatial_merge_size=2,
+                           temporal_patch_size=1, num_position_embeddings=16),
+        image_token_id=IMAGE_PAD, video_token_id=251, vision_start_token_id=VISION_START,
+        tie_word_embeddings=False)
+    cfg._attn_implementation = "sdpa"
+    return cfg
+
+
 def make_batches(seed=0):
     """N_MB microbatches of ROWS rows, one image per row at the same place, so
     every row has the same number of masked label positions."""
@@ -202,6 +226,57 @@ def test_qwen3_5_vl_with_data_parallel_vision_stage_matches_unsplit_model(ray_ct
     expected = unsplit_losses(reference, make_batches(), steps=2)
     got = pipelined_losses(model, (1, 4), steps=2,
                            overrides=(StageOverride(stage=0, num_gpus=2),))
+    assert got == pytest.approx(expected, rel=1e-4)
+
+
+@pytest.mark.skipif(not hasattr(transformers, "Qwen3_5MoeForConditionalGeneration"),
+                    reason="transformers without Qwen3.5-MoE")
+@pytest.mark.parametrize("cuts,overrides", [
+    ((3,), ()),
+    ((1, 4), (StageOverride(stage=1, num_gpus=2),)),   # experts on 2 data-parallel ranks
+], ids=["two-stages", "data-parallel-experts"])
+def test_qwen3_5_moe_vl_matches_unsplit_model(ray_ctx, stub_engines, cuts, overrides):
+    torch.manual_seed(15)
+    model = transformers.Qwen3_5MoeForConditionalGeneration(tiny_qwen3_5_moe_vl()).float()
+    reference = transformers.Qwen3_5MoeForConditionalGeneration(tiny_qwen3_5_moe_vl()).float()
+    reference.load_state_dict(model.state_dict())
+    expected = unsplit_losses(reference, make_batches(), steps=2)
+    assert pipelined_losses(model, cuts, steps=2, overrides=overrides) == pytest.approx(
+        expected, rel=1e-4)
+
+
+@pytest.mark.skipif(not hasattr(transformers, "Qwen3_5MoeForConditionalGeneration"),
+                    reason="transformers without Qwen3.5-MoE")
+def test_vision_stage_measured_then_re_cut_matches_unsplit_model(ray_ctx, stub_engines):
+    """--cuts 0,measured: the vision encoder alone on stage 0 (2 ranks), the decoder over two
+    stages; measure_stages times the stages, the decoder is re-cut by what they measured, and
+    the re-cut pipeline (vision stage unchanged) trains as the unsplit model does."""
+    import dataclasses
+
+    torch.manual_seed(16)
+    model = transformers.Qwen3_5MoeForConditionalGeneration(tiny_qwen3_5_moe_vl()).float()
+    reference = transformers.Qwen3_5MoeForConditionalGeneration(tiny_qwen3_5_moe_vl()).float()
+    reference.load_state_dict(model.state_dict())
+    overrides = (StageOverride(stage=0, num_gpus=2),)
+
+    def build(policy):
+        engine, _, _, _ = rdsp.initialize(
+            model=model, config=DS, loss_fn=lm_loss,
+            pipeline_config=rdsp.PipelineConfig(stages=3, partition=policy,
+                                                stage_overrides=overrides))
+        return engine
+
+    estimate = rdsp.BalancedTransformerBlocks(vision_stage=True)
+    calibration = build(estimate)
+    measured = calibration.measure_stages(
+        (b for _ in range(3) for b in make_batches()), steps=3, skip=1)
+    calibration.shutdown()
+    assert measured.cuts[0] == 0 and len(measured.seconds) == 3
+
+    engine = build(dataclasses.replace(estimate, measured=measured))
+    assert engine.stage_blocks[0] == (0, 0)
+    expected = unsplit_losses(reference, make_batches(), steps=2)
+    got = [float(engine.train_batch(data_iter=iter(make_batches()))) for _ in range(2)]
     assert got == pytest.approx(expected, rel=1e-4)
 
 

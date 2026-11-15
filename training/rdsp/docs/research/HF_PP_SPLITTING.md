@@ -3,7 +3,7 @@
 Date: 2026-09-22. Scope: splitting only (where to cut, how a stage module is built, how tied weights and
 rotary embeddings are handled). Schedules are out of scope.
 
-Versions read (installed in `/Users/nav/Desktop/hustle/Deepspeed_Ray_PP/.venv`, abbreviated `SP/` =
+Versions read (installed in `../.venv`, abbreviated `SP/` =
 `.venv/lib/python3.12/site-packages/`): transformers 5.16.1, accelerate 1.14.0, torch 2.13.0,
 deepspeed 0.19.6. Shallow clones read on 2026-09-22: torchtitan `7349a22`, nanotron `6447b0d`,
 picotron `59714b1`, vllm `4edb551` (only `vllm/model_executor/models/transformers/` and `vllm/distributed/`).
@@ -429,7 +429,7 @@ keeping `embed_tokens` on the last stage — it is inference-only.
 ## Sources
 
 Local (transformers 5.16.1, accelerate 1.14.0, torch 2.13.0, deepspeed 0.19.6 under
-`/Users/nav/Desktop/hustle/Deepspeed_Ray_PP/.venv/lib/python3.12/site-packages/`): file paths as cited inline.
+`../.venv/lib/python3.12/site-packages/`): file paths as cited inline.
 
 Repositories (shallow clones, commits above):
 - TorchTitan: https://github.com/pytorch/torchtitan — `torchtitan/distributed/pipeline_parallel.py`,
