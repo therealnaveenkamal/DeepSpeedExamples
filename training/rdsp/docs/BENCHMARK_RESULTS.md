@@ -1,6 +1,6 @@
 # Benchmark results
 
-rdsp against MegatronMIMO and Megatron-Bridge, training Qwen3.5-2B and 4B on CORD-v2. Main results: one AWS g7.48xlarge, 8× RTX PRO 4500 Blackwell, 32 GB, PCIe, no NVLink. A first 4B run on 8× H100 with NVLink follows them. Settings held equal, software versions and how to rerun: [REPRODUCE.md](REPRODUCE.md). Raw logs: `bench/published/{2b,4b,h100}/`; `python bench/mimo/summarize.py bench/published/2b` prints the table rows, and `tests/unit/test_bench_summarize.py` checks them against the README.
+rdsp against MegatronMIMO and Megatron-Bridge, training Qwen3.5-2B and 4B on CORD-v2. The first set: one AWS g7.48xlarge, 8× RTX PRO 4500 Blackwell, 32 GB, PCIe, no NVLink. A first 4B run on 8× H100 with NVLink follows them. Settings held equal, software versions and how to rerun: [REPRODUCE.md](REPRODUCE.md). Raw logs: `bench/published/{2b,4b,h100}/`; `python bench/mimo/summarize.py bench/published/2b` prints the table rows, and `tests/unit/test_bench_summarize.py` checks them against this file. The Qwen3.5-27B and 35B-A3B results on H100 nodes are in the [README](../README.md) and [REPRODUCE.md](REPRODUCE.md#h100-runs).
 
 ## Results: 8× RTX PRO 4500, PCIe
 

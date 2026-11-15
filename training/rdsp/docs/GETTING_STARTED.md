@@ -18,6 +18,18 @@ uv pip install --no-build-isolation causal-conv1d
 
 The DeepSpeed commit is the one every result was measured with.
 
+## Terms
+
+| Term | Meaning |
+|---|---|
+| Stage | A contiguous slice of the model on its own group of GPUs. |
+| PP | Pipeline parallelism: the number of stages. |
+| TP | Tensor parallelism: each layer's matrices split across GPUs. |
+| DP | Data parallelism: copies of a stage, each on different rows. ZeRO-1 splits the optimizer state across them. |
+| Cut | The decoder layer where one stage ends and the next begins. |
+| Microbatch | The rows one stage processes at a time. A step is many microbatches, with gradients accumulated across them. |
+| TP2×PP2×DP2 | 2 stages, each 4 GPUs as TP2 × DP2: 8 GPUs. |
+
 ## Run a recipe
 
 `recipes/` has one script per validated layout:

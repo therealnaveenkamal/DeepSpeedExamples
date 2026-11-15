@@ -76,7 +76,7 @@ Validated against an unsplit model (loss parity, gradient parity, checkpoint rou
 | autoep-folding | 1 GPU, ep=4, ep=2 folded with tp=2 |
 | sequence-parallel | sp=2, sp=2×dp=2, 1 GPU |
 
-The vision-language layouts benchmarked against Megatron (Qwen3.5-2B/4B) are listed in the README's results.
+The vision-language layouts benchmarked against Megatron (Qwen3.5-2B/4B) are listed in [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md).
 
 ## Not supported
 
