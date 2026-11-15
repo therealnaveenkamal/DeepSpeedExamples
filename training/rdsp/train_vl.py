@@ -30,6 +30,7 @@ import torch
 import torch.nn.functional as F
 
 import ray_deepspeed_pipeline as rdsp
+from ray_deepspeed_pipeline.config import MASTER_WEIGHTS_KEY, OPTIMIZER_GROUP_NUMEL_KEY
 from train import parse_stage
 
 COLORS = ["red", "green", "blue", "yellow", "purple", "orange", "white", "black"]
@@ -342,7 +343,7 @@ def ds_config(args, lr: float | None = None) -> dict:
         conf["data_types"] = {"grad_accum_dtype": "fp32"}
         conf["communication_data_type"] = "fp32"
     if args.optimizer_group_numel:
-        conf["rdsp_optimizer_group_numel"] = args.optimizer_group_numel
+        conf[OPTIMIZER_GROUP_NUMEL_KEY] = args.optimizer_group_numel
     if args.master_dtype == "bf16":
         # DeepSpeed's low-precision model states: the ZeRO optimizer keeps its
         # master weights, gradients and Adam's two moments in bf16, about 10-12
@@ -351,7 +352,7 @@ def ds_config(args, lr: float | None = None) -> dict:
     if args.master_dtype == "remainder":
         # exact fp32 master weights at 2 bytes per parameter: the bf16 weights
         # plus a 16-bit remainder (the stage adapter swaps in RemainderAdamW)
-        conf["rdsp_master_weights"] = "remainder"
+        conf[MASTER_WEIGHTS_KEY] = "remainder"
     return conf
 
 
@@ -359,18 +360,22 @@ def ds_config(args, lr: float | None = None) -> dict:
 # plugin, the Hugging Face cache, the CUDA allocator, DeepSpeed's op builds
 _WORKER_ENV_PREFIXES = ("RDSP_", "NCCL_", "FI_", "HF_", "PYTORCH_", "TORCH_", "DS_")
 _WORKER_ENV_NAMES = ("CUDA_HOME", "LD_LIBRARY_PATH", "TRANSFORMERS_OFFLINE")
+# never passed: Ray keeps a job's runtime_env with the job, readable by whoever can see the cluster
+_CREDENTIAL_MARKS = ("TOKEN", "KEY", "SECRET", "PASSWORD")
 
 
 def worker_env(environ=None) -> dict:
     """The driver's settings rdsp's actors read, for Ray to give every worker of this job.
     A cluster started with `ray start` (two nodes) runs workers in that command's
     environment, not the driver's; a cluster ray.init() starts here already has it. Ray
-    sets CUDA_VISIBLE_DEVICES per actor itself, so it is never passed."""
+    sets CUDA_VISIBLE_DEVICES per actor itself, so it is never passed; nor is anything
+    named like a credential (HF_TOKEN): the workers read weights the driver downloaded."""
     environ = os.environ if environ is None else environ
     return {
         k: v
         for k, v in environ.items()
-        if k.startswith(_WORKER_ENV_PREFIXES) or k in _WORKER_ENV_NAMES
+        if (k.startswith(_WORKER_ENV_PREFIXES) or k in _WORKER_ENV_NAMES)
+        and not any(mark in k for mark in _CREDENTIAL_MARKS)
     }
 
 
@@ -402,6 +407,29 @@ def optimizer_problem(args) -> str | None:
     return None
 
 
+def experts_problem(args) -> str | None:
+    """Why --moe-experts hf cannot apply as asked, or None: it undoes Liger's
+    expert kernel, which only --liger installs."""
+    if args.moe_experts == "hf" and not args.liger:
+        return (
+            "--moe-experts hf needs --liger: without it the experts already run "
+            "Hugging Face's implementation"
+        )
+    return None
+
+
+def _at_least(minimum: int):
+    """argparse type: a whole number >= minimum."""
+
+    def parse(text: str) -> int:
+        value = int(text)
+        if value < minimum:
+            raise argparse.ArgumentTypeError(f"must be at least {minimum}, got {value}")
+        return value
+
+    return parse
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--model", default="Qwen/Qwen3-VL-2B-Instruct")
@@ -416,7 +444,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--calibration-steps",
-        type=int,
+        type=_at_least(2),
         default=3,
         help="--cuts measured: steps profiled at learning rate 0, the first not counted",
     )
@@ -481,11 +509,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--optimizer-group-numel",
-        type=int,
+        type=_at_least(0),
         default=0,
         help="split each stage's parameters into optimizer groups of at most "
         "this many elements (0: one group); DeepSpeed's ZeRO step then "
-        "copies one group's gradients at a time: less peak memory, same math",
+        "copies one group's gradients at a time: less peak memory, same "
+        "math; stages with ep= keep DeepSpeed's own groups",
     )
     p.add_argument(
         "--fused-adam",
@@ -586,7 +615,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
-    if problem := optimizer_problem(args):
+    if problem := optimizer_problem(args) or experts_problem(args):
         parser.error(problem)
 
     import accelerate

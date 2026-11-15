@@ -59,7 +59,7 @@ for pid, p in procs.items():
     else:
         stage = 0 if p["cat"]["conv"] > 0 else 1
     rows.append((stage, p["dev"], pid, p))
-for stage, dev, pid, p in sorted(rows, key=lambda r: (r[0], r[1], r[2])):
+for stage, dev, _pid, p in sorted(rows, key=lambda r: (r[0], r[1], r[2])):
     c = p["cat"]
     print(
         f"{stage:5d}  {dev:3d}  {len(p['iv']):8d}  {busy(p['iv']) / 1e9:10.1f}  {c['matmul'] / 1e9:6.1f}"

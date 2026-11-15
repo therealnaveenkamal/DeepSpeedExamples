@@ -18,10 +18,11 @@ SMALL = ImageFont.truetype("/System/Library/Fonts/HelveticaNeue.ttc", 26)
 
 def label(d, xy, text, font=FONT, anchor="la"):
     """Text on a white box with a red border, so it reads on any background."""
-    l, t, r, b = d.textbbox(xy, text, font=font, anchor=anchor)
-    d.rectangle((l - 6, t - 4, r + 6, b + 4), fill=PAPER, outline=RED, width=2)
+    left, top, right, bottom = d.textbbox(xy, text, font=font, anchor=anchor)
+    box = (left - 6, top - 4, right + 6, bottom + 4)
+    d.rectangle(box, fill=PAPER, outline=RED, width=2)
     d.text(xy, text, font=font, fill=INK, anchor=anchor)
-    return l - 6, t - 4, r + 6, b + 4
+    return box
 
 
 def box(d, xyxy, width=3):

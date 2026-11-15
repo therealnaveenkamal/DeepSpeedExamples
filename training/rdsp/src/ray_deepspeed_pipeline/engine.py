@@ -1,11 +1,12 @@
 """RayPipelineEngine: the blocking driver-side facade over the coordinator."""
 
-import json
+import contextlib
 
 import torch
 
 from ray_deepspeed_pipeline.data import CountingIterator, data_position, resume_loader_iter
 from ray_deepspeed_pipeline.errors import UnsupportedEngineMethod, ValidationError
+from ray_deepspeed_pipeline.measurement import measured_stages
 from ray_deepspeed_pipeline.protocols import resolve
 
 _UNSUPPORTED_MSG = (
@@ -137,14 +138,21 @@ class RayPipelineEngine:
         context, NCCL buffers, fragmentation). The steps update the weights
         as any step does (a learning rate of 0 leaves them)."""
         if steps <= skip:
-            raise ValidationError(f"measure_stages: {steps} steps leave none after skipping {skip}")
+            raise ValidationError(
+                f"measure_stages: {steps} steps leave none after "
+                f"skipping {skip}; pass steps greater than skip"
+            )
         self._coordinator.set_profile(True)
         try:
             for _ in range(steps):
                 self.train_batch(data_iter)
             records = self._coordinator.profile_records()
-        finally:
-            self._coordinator.set_profile(False)
+        except BaseException:
+            # a lost rank cannot switch its timer off: keep the step's own error
+            with contextlib.suppress(Exception):
+                self._coordinator.set_profile(False)
+            raise
+        self._coordinator.set_profile(False)
         return measured_stages(self._coordinator.plan, records, skip, reserve_gib)
 
     def shutdown(self) -> None:
@@ -172,35 +180,3 @@ class RayPipelineEngine:
 
     def parameters(self, *args, **kwargs):
         raise UnsupportedEngineMethod(_UNSUPPORTED_MSG.format(name="parameters()"))
-
-
-_BUSY = ("forward", "backward", "vision_forward", "vision_backward")
-
-
-def measured_stages(plan, records, skip: int, reserve_gib: float):
-    """RayPipelineEngine.measure_stages' result from each rank's records
-    (StageWorkerActor.profile_records): per stage, per rank."""
-    from ray_deepspeed_pipeline.config import MeasuredStages
-    from ray_deepspeed_pipeline.partition import static_bytes_per_param
-
-    seconds, peaks, totals = [], [], []
-    for stage in records:
-        steps = [[r for r in rank["records"] if r.get("kind") == "step"][skip:] for rank in stage]
-        if not all(steps):
-            raise ValidationError("measure_stages: a rank recorded no step to measure")
-        per_step = [max(sum(r.get(k, 0.0) for k in _BUSY) for r in at) for at in zip(*steps)]
-        seconds.append(sum(per_step) / len(per_step) / 1e3)
-        peaks.append(
-            max((r.get("peak_gb", 0.0) for rank in stage for r in rank["records"]), default=0.0)
-        )
-        totals += [rank["total_gib"] for rank in stage if rank["total_gib"] is not None]
-    limit = (min(totals) if totals else float("inf")) - reserve_gib
-    return MeasuredStages(
-        cuts=tuple(s.block_start for s in plan.stages[1:]),
-        seconds=tuple(seconds),
-        peak_gib=tuple(peaks),
-        bytes_per_param=tuple(
-            static_bytes_per_param(json.loads(s.ds_config_json), s.tp, s.dp) for s in plan.stages
-        ),
-        limit_gib=limit,
-    )

@@ -7,7 +7,12 @@ overrides at their defaults. All validation happens here, before any actor exist
 import json
 
 from ray_deepspeed_pipeline.boundary import Grid, conversion_name
-from ray_deepspeed_pipeline.config import ExplicitCuts, PipelineConfig
+from ray_deepspeed_pipeline.config import (
+    MASTER_WEIGHTS_KEY,
+    OPTIMIZER_GROUP_NUMEL_KEY,
+    ExplicitCuts,
+    PipelineConfig,
+)
 from ray_deepspeed_pipeline.errors import ValidationError
 from ray_deepspeed_pipeline.partition import (
     partition_parameters,
@@ -64,7 +69,7 @@ def global_microbatch_rows(ds_config: dict | None, microbatches: int) -> int:
     return int(conf.get("train_micro_batch_size_per_gpu", 1))
 
 
-def _stage_ds_config(ds_config: dict | None, override, rows_per_rank: int) -> str:
+def _stage_ds_config(ds_config: dict | None, override, rows_per_rank: int, index: int) -> str:
     """Canonical JSON of the user's DeepSpeed config specialised for one stage."""
     conf = dict(ds_config) if isinstance(ds_config, dict) else {}
     conf["train_micro_batch_size_per_gpu"] = rows_per_rank
@@ -73,7 +78,54 @@ def _stage_ds_config(ds_config: dict | None, override, rows_per_rank: int) -> st
     conf["gradient_clipping"] = 0.0
     if override is not None:
         _apply_override(conf, override)
+    _check_rdsp_keys(conf, index)
     return json.dumps(conf, sort_keys=True, separators=(",", ":"))
+
+
+# what RemainderAdamW takes from the config's optimizer params (torch_adam is DeepSpeed's)
+_REMAINDER_ADAMW_PARAMS = {"lr", "betas", "eps", "weight_decay", "foreach", "fused", "torch_adam"}
+
+
+def _check_rdsp_keys(conf: dict, index: int) -> None:
+    """rdsp's own keys in one stage's DeepSpeed config. The stage adapter acts
+    on them inside the actors, where a wrong value would be ignored or fail
+    after the weights are loaded."""
+    numel = conf.get(OPTIMIZER_GROUP_NUMEL_KEY, 0)
+    if isinstance(numel, bool) or not isinstance(numel, int) or numel < 0:
+        raise ValidationError(
+            f"{OPTIMIZER_GROUP_NUMEL_KEY} must be a whole number >= 0 (0: one group), got {numel!r}"
+        )
+    master = conf.get(MASTER_WEIGHTS_KEY)
+    if master is None:
+        return
+    if master != "remainder":
+        raise ValidationError(f"{MASTER_WEIGHTS_KEY} must be 'remainder' or absent, got {master!r}")
+    needs = f"stage {index}: {MASTER_WEIGHTS_KEY}='remainder' needs"
+    if not (conf.get("bf16") or {}).get("enabled"):
+        raise ValidationError(f"{needs} bf16 weights; set bf16.enabled")
+    zero = conf.get("zero_optimization") or {}
+    if int(zero.get("stage", 0) or 0) not in (1, 2):
+        raise ValidationError(
+            f"{needs} ZeRO stage 1 or 2, got {zero.get('stage', 0)}; set "
+            f"zero_optimization.stage or StageOverride(zero_stage=...)"
+        )
+    if zero.get("offload_optimizer"):
+        raise ValidationError(f"{needs} its optimizer on the GPU; drop the optimizer offload")
+    if (conf.get("data_types") or {}).get("grad_accum_dtype") == "fp32":
+        raise ValidationError(
+            f"{needs} bf16 gradient accumulation; drop data_types.grad_accum_dtype"
+        )
+    optimizer = conf.get("optimizer") or {}
+    if str(optimizer.get("type", "AdamW")).lower() != "adamw":
+        raise ValidationError(
+            f"{needs} AdamW (it replaces the optimizer with its own AdamW), "
+            f"got optimizer type {optimizer.get('type')!r}"
+        )
+    unknown = sorted(set(optimizer.get("params") or {}) - _REMAINDER_ADAMW_PARAMS)
+    if unknown:
+        raise ValidationError(
+            f"{needs} AdamW params among {sorted(_REMAINDER_ADAMW_PARAMS)}, got {unknown}"
+        )
 
 
 def _apply_override(conf: dict, override) -> None:
@@ -210,13 +262,12 @@ def _recompute_blocks(override, part, policy, n_blocks: int) -> int | None:
     """The stage's recompute_blocks. Under a measured cut, the blocks a stage
     gains or loses against the measured cut are recomputed ones: the blocks
     that keep their activations stay as many, and so does their memory."""
-    n = override.recompute_blocks if override else None
+    requested = override.recompute_blocks if override else None
     measured = getattr(policy, "measured", None)
-    if n is None or measured is None:
-        return n
-    bounds = [0, *measured.cuts, n_blocks]
-    held = bounds[part.index + 1] - bounds[part.index]
-    return max(0, n + (part.block_stop - part.block_start) - held)
+    if requested is None or measured is None:
+        return requested
+    start, stop = measured.block_ranges(n_blocks)[part.index]
+    return max(0, requested + (part.block_stop - part.block_start) - (stop - start))
 
 
 def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> ExecutionPlan:
@@ -266,7 +317,7 @@ def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> Exe
                 block_start=part.block_start,
                 block_stop=part.block_stop,
                 num_gpus=grid.world,
-                ds_config_json=_stage_ds_config(ds_config, override, rows // grid.dp),
+                ds_config_json=_stage_ds_config(ds_config, override, rows // grid.dp, part.index),
                 process_group_tag=f"stage{part.index}",
                 dp=grid.dp,
                 tp=grid.tp,

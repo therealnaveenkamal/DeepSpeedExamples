@@ -113,7 +113,9 @@ def check_varlen():
     report["grad_rel_diff_max"] = worst_grad
     for name, encoder in (("sdpa", sdpa), ("varlen", varlen)):
         report[f"{name}_fwd_bwd_ms"] = round(
-            timed(lambda: [step(encoder, p, g) for p, g in batches], repeat=5) / len(batches), 1
+            timed(lambda encoder=encoder: [step(encoder, p, g) for p, g in batches], repeat=5)
+            / len(batches),
+            1,
         )
     # bf16 kernels differ in summation order: a few 1e-3 relative is expected
     report["pass"] = worst_out < 2e-2 and worst_grad < 5e-2

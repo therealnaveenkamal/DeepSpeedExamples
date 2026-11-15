@@ -24,7 +24,7 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 
-from ray_deepspeed_pipeline.vocab_parallel import _SumGradOverRanks, _SumOverRanks
+from ray_deepspeed_pipeline.vocab_parallel import SumGradOverRanks, SumOverRanks
 
 _LINEARS = ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
 _SIZES = ("num_k_heads", "num_v_heads", "head_k_dim", "head_v_dim", "key_dim", "value_dim")
@@ -112,12 +112,12 @@ def _summed(grad: torch.Tensor, group) -> torch.Tensor:
 def _sum_input_grad(module, args, kwargs, group):
     if "hidden_states" in kwargs:
         kwargs = dict(
-            kwargs, hidden_states=_SumGradOverRanks.apply(kwargs["hidden_states"], group())
+            kwargs, hidden_states=SumGradOverRanks.apply(kwargs["hidden_states"], group())
         )
     else:
-        args = (_SumGradOverRanks.apply(args[0], group()), *args[1:])
+        args = (SumGradOverRanks.apply(args[0], group()), *args[1:])
     return args, kwargs
 
 
 def _sum_output(module, args, output, group):
-    return _SumOverRanks.apply(output, group())
+    return SumOverRanks.apply(output, group())

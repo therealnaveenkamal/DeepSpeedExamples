@@ -40,6 +40,10 @@ _Avoid_: split, partition, boundary
 rdsp's default cut. It gives each stage an equal share of the estimated compute, and that estimate includes the vision encoder.
 _Avoid_: auto cut, smart cut
 
+**Measured cut**:
+A balanced cut redone from what a few profiled steps measured: each stage's time per step, and its memory as a limit on how many layers it may gain.
+_Avoid_: calibrated cut, tuned cut
+
 **Even cut**:
 A cut with the same number of decoder layers on every stage. Megatron uses it by default, and it does not count the vision encoder.
 _Avoid_: uniform split, default split
@@ -107,6 +111,10 @@ _Avoid_: optimizer step, update
 **GDN layer**:
 A Gated DeltaNet decoder layer: Qwen3.5's linear-attention layer type. Qwen3.5-4B has 24 of them next to 8 full-attention layers.
 _Avoid_: linear layer, DeltaNet, SSM layer
+
+**Remainder master**:
+Exact fp32 master weights kept as the bf16 weights plus the 16 bits the rounding dropped, 2 bytes per parameter instead of 4.
+_Avoid_: bf16 master (that one is not exact), compressed master
 
 **Untied output layer**:
 The last stage's own copy of the output-layer weight, which the original model shares with the input embedding on stage 0.

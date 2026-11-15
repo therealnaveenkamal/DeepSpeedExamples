@@ -10,12 +10,10 @@ import glob
 import os
 import sys
 
+import cord_data
 import torch
-
 from torchtitan.components.loss import IGNORE_INDEX
 from torchtitan.components.tokenizer import MultiModalTokenizer
-
-import cord_data
 
 export, hf, out = sys.argv[1:4]
 # torchtitan/models/qwen3_5/flavors.py QWEN3_5_SPECIAL_TOKENS (importing the model

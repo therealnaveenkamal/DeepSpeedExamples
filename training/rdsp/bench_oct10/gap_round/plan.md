@@ -117,7 +117,8 @@ nodes, the vision encoder on the third box.
 Result so far: Bridge TP1 x PP2 x EP8 across the nodes ran (no deadlock with
 model.batch_p2p_comm=false): 9.28 s.
 
-2026-10-19 04:35 UTC, the user: "add a 17 gpu rdsp run too ... once mimo is done". queue2 now ends: MIMO 17 GPUs, then the 27B's rows at 128 a step on all three boxes,
+2026-10-19 04:35 UTC, the user: "add a 17 gpu rdsp run too ... once mimo is done". queue2 now
+ends: MIMO 17 GPUs, then the 27B's rows at 128 a step on all three boxes,
 the 3-node Ray cluster (bench/two_node/ray_cluster3.sh), rdsp over 17 GPUs (scripts/rdsp17.sh,
 driver on the third box: vision encoder on its GPU, language 8 stages x 2 on the 8-GPU nodes;
 every block recomputed only if needed).

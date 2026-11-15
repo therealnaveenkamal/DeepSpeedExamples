@@ -6,12 +6,13 @@ Why split by depth: only activations cross a cut, once per microbatch, so it is 
 
 ## Design rules
 
-**Stock DeepSpeed and Ray.** DeepSpeed is pinned to one commit and installed unmodified; every stage calls `deepspeed.initialize()`. rdsp crosses into DeepSpeed internals in exactly two places, both in `deepspeed_adapter.py`:
+**Stock DeepSpeed and Ray.** DeepSpeed is pinned to one commit and installed unmodified; every stage calls `deepspeed.initialize()`. rdsp crosses into DeepSpeed internals in exactly three places, all in `deepspeed_adapter.py`:
 
-- `_free_bf16_grads_after_accumulating` wraps one bf16 optimizer method on the instance to free each bf16 gradient once it's folded into fp32 (see Memory).
+- `_free_bf16_grads_after_accumulating` wraps one bf16 optimizer method on the instance to free each bf16 gradient once it's folded into fp32 (see Memory). It also does the fold itself, straight from bf16 into the fp32 buffer: one operation where DeepSpeed converts and then adds, with the same result.
+- `_master_in_model_weights` (the remainder master) points each ZeRO partition's master weights at the model's own bf16 partition, so no separate master copy is kept.
 - `reset()` clears two private ZeRO running sums that `zero_grad()` leaves behind, so a retried step doesn't add onto an abandoned one.
 
-Both depend on the pinned commit (unit tests in `tests/unit/test_deepspeed_adapter_grads.py`, the abandoned-step GPU test); a DeepSpeed upgrade has to re-run the GPU suite.
+All three depend on the pinned commit (unit tests in `tests/unit/test_deepspeed_adapter_grads.py` and `tests/unit/test_remainder_master_engine.py`, the abandoned-step GPU test); a DeepSpeed upgrade has to re-run the GPU suite.
 
 **The driver never touches tensors.** The driver, meaning the user's process, holds no weights and never receives an activation or gradient. Autograd graphs can't leave their process, so whichever GPU ran a forward runs its backward, the loss is computed on the last stage (labels travel there), and only losses and statuses return to the driver.
 
@@ -184,7 +185,7 @@ One yardstick at every level: the split model must produce the unsplit model's n
   - Never on the last stage: its labels would straddle ranks.
   - Never on the first stage of a vision model: image positions need the whole sequence.
 - **TP and SP** can't share a stage (a DeepSpeed limitation).
-- **Placement.** One stage fits on one node.
+- **Placement.** One stage fits on one node, unless it needs more GPUs than a node has: then it spans nodes with each tensor-parallel group inside one node, and its checkpoints need storage those nodes share.
 - **Checkpoints.** Node-local: they survive actor loss, not node loss.
 - **No global gradient clipping.** DeepSpeed would clip each stage by its own norm, a different algorithm, so a nonzero `gradient_clipping` is rejected.
 - **Untested at scale.**

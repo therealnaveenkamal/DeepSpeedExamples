@@ -5,8 +5,7 @@
 #   B = 9b_v1_tp2pp1dp2 (1 vision GPU + language TP2 x DP2; shipped: 2 rows x 32 microbatches)
 # The order comes from ~/order9b_pair.txt, re-read before every run (so later lines can be edited):
 #   <A|B> mimo <rows per microbatch> <run number>
-#   <A|B> rdsp <rows per microbatch> <run number> [compile] [rcN] [leadN]
-# leadN: RDSP_FIRST_STAGE_LEAD=N, the vision stage runs N more microbatches ahead (schedule.py).
+#   <A|B> rdsp <rows per microbatch> <run number> [compile] [rcN]
 # This copy (queue_9b_pair.sh) runs on node 1 of the two-node pair, on its own 8 GPUs, after prep9b_pair.sh.
 # rcN: recompute the first N decoder layers of the first language stage (recompute_blocks=N),
 # which frees activation memory there for more rows per microbatch (layout A ran out of memory
@@ -27,16 +26,15 @@ cleanup() {
   pkill -f "[t]orch.distributed.run"; pkill -f "[t]rain_vl.py"
   bash -c ". ~/venv/bin/activate; ray stop --force" > /dev/null 2>&1; sleep 10
 }
-one() {  # one <A|B> <mimo|rdsp> <rows> <n> [compile] [rcN] [leadN]
+one() {  # one <A|B> <mimo|rdsp> <rows> <n> [compile] [rcN]
   local lay=$1 sys=$2 rows=$3 n=$4; shift 4
-  local opt="" o L lang stages c="" liger="--liger" name kind rc peak rc1="" lead=0
+  local opt="" o L lang stages c="" liger="--liger" name kind rc peak rc1=""
   local mb=$((64 / rows))
   for o in "$@"; do
     opt="${opt:+$opt-}$o"
     case $o in
       compile) c=",compile=1"; liger="" ;;
       rc[0-9]*) rc1=",recompute_blocks=${o#rc}" ;;
-      lead[0-9]*) lead=${o#lead} ;;   # RDSP_FIRST_STAGE_LEAD: the vision stage runs that many more microbatches ahead
     esac
   done
   case $lay in
@@ -61,7 +59,7 @@ one() {  # one <A|B> <mimo|rdsp> <rows> <n> [compile] [rcN] [leadN]
       timeout 1500 bash ~/rdsp/bench/mimo/runs.sh mimo-layout > /dev/null 2>&1; rc=$?
   else
     (unset LD_LIBRARY_PATH && . "$HOME/venv/bin/activate" && . "$HOME/cuda_env.sh" && \
-     env DS_BUILD_OPS=0 HF_HOME=$HOME/hf PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True RDSP_DIRECT_GRAD_ADD=1 RDSP_FIRST_STAGE_LEAD=$lead \
+     env DS_BUILD_OPS=0 HF_HOME=$HOME/hf PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True RDSP_DIRECT_GRAD_ADD=1 \
      timeout 1200 python ~/rdsp/train_vl.py --model Qwen/Qwen3.5-9B --dataset "exported:$HOME/mimo/cord_steps-Qwen3.5-9B" \
        $stages --rows "$rows" --microbatches "$mb" --seq 2048 --pad-multiple 0 \
        --steps 50 --lr 1e-5 --betas 0.9,0.95 --eps 1e-8 --weight-decay 0.0 \

@@ -30,6 +30,7 @@ qwen35_27b_cord_tp2pp2dp2 (TP2 x PP2 x FSDP 2) and qwen35_27b_cord_tp2pp4 (TP2 x
 
 import os
 
+from cord_data import ROWS_PER_STEP, exported_dataloader
 from torchtitan.components.checkpointer import CheckpointManager
 from torchtitan.components.loss import ChunkedLossWrapper, CrossEntropyLoss
 from torchtitan.components.optim import AdamW, LRSchedulersContainer, Optim, OptimizersContainer
@@ -41,8 +42,6 @@ from torchtitan.models.common.config_utils import decoder_vocab_size
 from torchtitan.models.qwen3_5 import QWEN3_5_SPECIAL_TOKENS, build_model_config
 from torchtitan.observability.metrics import MetricsProcessor
 from torchtitan.trainer import Trainer
-
-from cord_data import ROWS_PER_STEP, exported_dataloader
 
 SEQ = int(os.environ.get("SEQ", "2048"))  # 4096 for NVIDIA's published SFT setup
 

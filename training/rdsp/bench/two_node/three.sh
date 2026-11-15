@@ -1,6 +1,6 @@
 #!/bin/bash
 # three.sh <command...>, on node 1 from ~/rdsp: both.sh over three nodes, the two in ~/env2.sh and
-# the third box in ~/env3.sh (ops/h100/launch3.sh). The command runs with NNODES=3, NODE_RANK (0
+# the third box in ~/env3.sh (which exports PRIV3, its private IP). The command runs with NNODES=3, NODE_RANK (0
 # here, 1 on node 2, 2 on the third box) and MASTER_ADDR (node 1); pass other settings inside the
 # command (env VAR=value ...). Node 2's and the third box's output go to ~/three-<time>.log there.
 # three.sh --cleanup: kill every container and torchrun on all three.

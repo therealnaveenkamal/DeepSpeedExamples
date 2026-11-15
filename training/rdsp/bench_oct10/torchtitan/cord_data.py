@@ -12,7 +12,6 @@ from typing import Any
 
 import numpy as np
 import torch
-
 from torchtitan.components.data import GrainDataLoader, SampleProcessor, SingleDatasetConfig
 from torchtitan.components.data.multimodal.mm_collator import MultiModalCollator
 from torchtitan.components.data.types import DatasetBuildContext

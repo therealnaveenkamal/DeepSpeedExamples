@@ -60,16 +60,15 @@ def train_rank(rank, master, port, out_dir, world, tp):
         WORLD_SIZE=str(world),
         LOCAL_RANK=str(rank),
     )
+    import deepspeed.comm.torch  # noqa: F401  (deepspeed.comm's `torch` is torch itself)
     import torch.nn.functional as F
-    import train_vl
 
     import ray_deepspeed_pipeline as rdsp
+    import train_vl
     from ray_deepspeed_pipeline.deepspeed_adapter import _deepspeed_engine_factory
     from ray_deepspeed_pipeline.hf_stage import build_hf_stage
     from ray_deepspeed_pipeline.partition import partition_parameters
     from ray_deepspeed_pipeline.remainder_adamw import join_master
-
-    import deepspeed.comm.torch  # noqa: F401  (deepspeed.comm's `torch` is torch itself)
 
     # some DeepSpeed versions build a shared-memory op for CPU collectives on init (a C++
     # build through ninja); gloo does not use it

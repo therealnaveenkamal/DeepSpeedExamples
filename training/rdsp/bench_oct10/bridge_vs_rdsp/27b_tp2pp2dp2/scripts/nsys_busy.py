@@ -5,7 +5,9 @@ Every rdsp worker sees its GPU as device 0, so processes, not devices, are the u
     python3 nsys_busy.py <report.sqlite>
 """
 
-import sqlite3, sys, collections
+import collections
+import sqlite3
+import sys
 
 db = sqlite3.connect(sys.argv[1])
 rows = collections.defaultdict(list)

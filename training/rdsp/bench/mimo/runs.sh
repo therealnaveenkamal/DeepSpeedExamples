@@ -52,7 +52,7 @@ if [ "$NNODES" -gt 1 ]; then
   # HOST_OFI=1: the host's aws-ofi-nccl (1.21.1, with its Libfabric) mounted over the container's
   # (1.17.3, built for NCCL 2.28, beside the container's NCCL 2.30.7). NCCL_P2P_PXN_LEVEL: passed
   # through (0: each rank's send/recv on its own NIC, not through another GPU's process). Both for
-  # Bridge's pipeline across the nodes, which deadlocked in batched send/recv (2026-10-18).
+  # Bridge's pipeline across the nodes, which deadlocks in batched send/recv.
   [ -n "${HOST_OFI:-}" ] && MULTI="$MULTI -v /opt/amazon/ofi-nccl:/opt/amazon/ofi-nccl:ro \
     -v /opt/amazon/efa:/opt/amazon/efa:ro"
   [ -n "${NCCL_P2P_PXN_LEVEL:-}" ] && MULTI="$MULTI -e NCCL_P2P_PXN_LEVEL=$NCCL_P2P_PXN_LEVEL"

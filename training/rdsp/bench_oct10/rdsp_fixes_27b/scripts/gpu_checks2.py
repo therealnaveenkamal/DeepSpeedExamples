@@ -128,7 +128,7 @@ def check_remainder():
             capture_output=True,
             text=True,
         )
-        lines = [l for l in done.stdout.splitlines() if l.startswith("ENGINE_REPORT ")]
+        lines = [line for line in done.stdout.splitlines() if line.startswith("ENGINE_REPORT ")]
         if done.returncode or not lines:
             raise RuntimeError(f"{master} engine failed: {done.stderr[-2000:]}")
         report[master] = json.loads(lines[-1].split(" ", 1)[1])

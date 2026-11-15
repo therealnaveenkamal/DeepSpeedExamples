@@ -9,12 +9,10 @@ as Megatron-Bridge (global microbatch k = rows 2k, 2k + 1). Also builds the C3 c
 import glob
 import os
 
-import torch
-
-from torchtitan.components.tokenizer import MultiModalTokenizer
-
 import cord_data
 import cord_qwen35
+import torch
+from torchtitan.components.tokenizer import MultiModalTokenizer
 
 export, hf = os.environ["EXPORTED"], os.environ["HF_ASSETS"]
 SPECIAL = {

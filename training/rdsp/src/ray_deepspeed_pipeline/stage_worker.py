@@ -552,7 +552,11 @@ class StageWorkerActor:
                 torch.save(state, os.path.join(stage_dir, _VISION_FILE))
         # every rank's files are complete before rank 0 fingerprints the stage
         torch.distributed.barrier()
-        record = {"rank": self.rank}
+        # rank 0 fingerprints only what its node sees: a rank elsewhere must see the same directory
+        record = {
+            "rank": self.rank,
+            "shares_dir": os.path.exists(ckpt.rng_path(root, tag, self.stage, 0)),
+        }
         if self.rank == 0:
             record["files"] = ckpt.digest_tree(stage_dir)
         return record

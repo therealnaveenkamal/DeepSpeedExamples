@@ -41,3 +41,17 @@ def test_passes_what_actors_read_and_nothing_else():
             "LD_LIBRARY_PATH",
         )
     }
+
+
+def test_credentials_stay_on_the_driver():
+    # Ray stores a job's runtime_env with the job, where others can read it
+    env = {
+        "HF_TOKEN": "hf_x",
+        "HF_HUB_TOKEN": "hf_y",
+        "HUGGING_FACE_HUB_TOKEN": "hf_z",
+        "RDSP_API_KEY": "k",
+        "TORCH_SECRET": "s",
+        "HF_HOME": "/hf",
+        "HF_HUB_OFFLINE": "1",
+    }
+    assert train_vl.worker_env(env) == {"HF_HOME": "/hf", "HF_HUB_OFFLINE": "1"}

@@ -243,3 +243,54 @@ def test_recompute_blocks_reaches_the_stage_spec_and_excludes_recompute():
     ):
         with pytest.raises(ValidationError, match=match):
             lower(ToyLM(), simple_config(stage_overrides=(StageOverride(stage=0, **bad),)), DS)
+
+
+REMAINDER = {
+    **DS,
+    "bf16": {"enabled": True},
+    "zero_optimization": {"stage": 1},
+    "rdsp_master_weights": "remainder",
+    "optimizer": {"type": "AdamW", "params": {"lr": 1e-5, "betas": [0.9, 0.95]}},
+}
+
+
+def test_remainder_master_config_lowers():
+    plan = lower(ToyLM(), simple_config(), REMAINDER)
+    assert json.loads(plan.stages[0].ds_config_json)["rdsp_master_weights"] == "remainder"
+
+
+@pytest.mark.parametrize(
+    "change,needs",
+    [
+        ({"rdsp_master_weights": "remaindr"}, "'remainder'"),
+        ({"bf16": {"enabled": False}}, "bf16"),
+        ({"zero_optimization": {"stage": 0}}, "ZeRO stage 1 or 2"),
+        ({"zero_optimization": {"stage": 3}}, "ZeRO stage 1 or 2"),
+        ({"data_types": {"grad_accum_dtype": "fp32"}}, "bf16 gradient accumulation"),
+        ({"optimizer": {"type": "SGD", "params": {"lr": 0.1}}}, "AdamW"),
+        ({"optimizer": {"type": "AdamW", "params": {"adam_w_mode": True}}}, "adam_w_mode"),
+    ],
+)
+def test_remainder_master_misuse_rejected_before_ray(change, needs):
+    # the stage adapter would ignore the key, swap the optimizer, or fail inside an actor
+    with pytest.raises(ValidationError, match=needs):
+        lower(ToyLM(), simple_config(), {**REMAINDER, **change})
+
+
+def test_remainder_master_checked_per_stage():
+    offload = StageOverride(stage=1, zero_stage=1, offload_optimizer=True)
+    with pytest.raises(ValidationError, match="stage 1.*offload"):
+        lower(ToyLM(), simple_config(stage_overrides=(offload,)), REMAINDER)
+    with pytest.raises(ValidationError, match="stage 1.*ZeRO stage 1 or 2"):
+        lower(
+            ToyLM(),
+            simple_config(stage_overrides=(StageOverride(stage=1, zero_stage=0),)),
+            REMAINDER,
+        )
+
+
+@pytest.mark.parametrize("value", [-1, "many", 2.5])
+def test_optimizer_group_size_must_be_a_whole_number(value):
+    with pytest.raises(ValidationError, match="rdsp_optimizer_group_numel"):
+        lower(ToyLM(), simple_config(), {**DS, "rdsp_optimizer_group_numel": value})
+    lower(ToyLM(), simple_config(), {**DS, "rdsp_optimizer_group_numel": 0})

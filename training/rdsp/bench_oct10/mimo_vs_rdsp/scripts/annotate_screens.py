@@ -18,7 +18,7 @@ sys.path.insert(
         os.path.dirname(os.path.abspath(__file__)), "../../bridge_vs_rdsp/9b_tp4pp2dp1/scripts"
     ),
 )
-from annotate_screens import SMALL, arrow, bracket, box, label, pad_top  # noqa: E402
+from annotate_screens import SMALL, arrow, box, bracket, label, pad_top  # noqa: E402
 
 D = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

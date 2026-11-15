@@ -11,3 +11,39 @@ build/
 
 # raw run logs and profiles; the published ones are in bench/published
 bench/results/
+
+# bench_oct10: scripts, notes and result summaries are tracked. Raw logs,
+# profiler traces and the dumps copied back from the nodes stay local.
+bench_oct10/**/box_logs*/
+bench_oct10/**/profiles*/
+bench_oct10/**/prep*_logs/
+bench_oct10/**/.cache/
+bench_oct10/**/logs*/*
+bench_oct10/**/*.log
+bench_oct10/**/*.out
+bench_oct10/**/*.csv
+bench_oct10/**/*.ok
+bench_oct10/**/*.pt
+*.sqlite
+*.nsys-rep
+*.qdrep
+*.pt.trace.json
+*.dmon
+
+# ...except the logs docs/REPRODUCE.md cites for its step times
+!bench_oct10/two_node_35b/vision_stage/logs/rdsp-k4-rc.log
+!bench_oct10/gap_round/logs/bridge-pp2ep8-nv.log
+!bench_oct10/two_node_35b/fsdp16/logs/run-qwen35_35b_a3b_cord_fsdp16_ep8_bf16-node0.log
+!bench_oct10/two_node_35b/pp8dp2/logs/rdsp.log
+!bench_oct10/bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-fix-p8.log
+!bench_oct10/torchtitan/logs/run-qwen35_27b_cord_fsdp8_rc_bf16.log
+!bench_oct10/bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-gap-cut1.log
+!bench_oct10/mimo_vs_rdsp/9b_v1_tp2pp2dp1/logs/rdsp-nov11-fix-t.log
+!bench_oct10/mimo_vs_rdsp/9b_v1_tp2pp2dp1/logs/mimo-nov11-r1.log
+!bench_oct10/mimo_vs_rdsp/9b_v1_tp2pp1dp2/logs/rdsp-nov11-directadd.log
+!bench_oct10/mimo_vs_rdsp/9b_v1_tp2pp1dp2/logs/mimo-nov11.log
+!bench_oct10/blog_round/logs27b/rdsp-27b-1rows-10steps-profile-run1.log
+!bench_oct10/blog_round/logs27b/mimo-27b-1rows-10steps-run1-node2.log
+
+# nCompass profiling plugin's working files
+ncompass/

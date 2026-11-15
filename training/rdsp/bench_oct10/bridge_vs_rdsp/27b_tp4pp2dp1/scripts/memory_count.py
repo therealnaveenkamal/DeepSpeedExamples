@@ -1,7 +1,10 @@
 # Exact per-GPU parameter counts for Qwen3.5-27B at TP4xPP2 (meta device, no weights),
 # split as rdsp now splits it: TP-plan linears, GDN (all but its norm), vocab rows and
 # vision blocks / tp; norms and other small tensors whole. Cut: even 32|32, and 30|34.
-import re, sys, torch, transformers
+import re
+
+import torch
+import transformers
 from huggingface_hub import hf_hub_download
 
 cfg = transformers.AutoConfig.from_pretrained(
