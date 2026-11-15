@@ -7,8 +7,17 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 # "step"/"eval_step" carry a stage's whole op list for one step (stage-local dispatch)
-COMMAND_KINDS = ("forward", "backward", "ready", "apply", "eval", "save", "load",
-                 "step", "eval_step")
+COMMAND_KINDS = (
+    "forward",
+    "backward",
+    "ready",
+    "apply",
+    "eval",
+    "save",
+    "load",
+    "step",
+    "eval_step",
+)
 
 
 @dataclass(frozen=True)
@@ -30,8 +39,7 @@ class Command:
         return dataclasses.asdict(self)
 
     def canonical_json(self) -> str:
-        return json.dumps(self.to_canonical_dict(), sort_keys=True,
-                          separators=(",", ":"))
+        return json.dumps(self.to_canonical_dict(), sort_keys=True, separators=(",", ":"))
 
 
 @dataclass(frozen=True)

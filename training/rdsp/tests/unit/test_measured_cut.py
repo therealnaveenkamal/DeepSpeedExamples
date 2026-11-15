@@ -26,8 +26,9 @@ BLOCK = 100  # parameters per block
 
 
 def measured(cuts, seconds, peak=(10.0, 10.0), bpp=(1.0, 1.0), limit=80.0):
-    return MeasuredStages(cuts=cuts, seconds=seconds, peak_gib=peak, bytes_per_param=bpp,
-                          limit_gib=limit)
+    return MeasuredStages(
+        cuts=cuts, seconds=seconds, peak_gib=peak, bytes_per_param=bpp, limit_gib=limit
+    )
 
 
 def costs(n=32, post=300):
@@ -48,18 +49,28 @@ def test_blocks_move_off_the_slow_stage():
 
 def test_times_that_match_the_estimate_give_the_estimate_s_cut():
     from ray_deepspeed_pipeline.partition import _balanced_cuts
+
     # 16 blocks in 16 s, 16 blocks and the head (3 blocks' worth) in 19 s
-    assert _measured_cuts(costs(), (1, 1), 0, measured((16,), (16.0, 19.0))) == \
-        _balanced_cuts(costs(), 2, 0, (1, 1)) == [18]
+    assert (
+        _measured_cuts(costs(), (1, 1), 0, measured((16,), (16.0, 19.0)))
+        == _balanced_cuts(costs(), 2, 0, (1, 1))
+        == [18]
+    )
 
 
 def test_middle_stages_set_the_rate():
     # 3 stages of 8 blocks: the middle one takes 8 s, so 1 s per block; the
     # first carries 4 blocks' worth of extra, the last 2: 10 per stage is 6 | 10 | 8
-    m = MeasuredStages(cuts=(8, 16), seconds=(12.0, 8.0, 10.0), peak_gib=(1, 1, 1),
-                       bytes_per_param=(1, 1, 1), limit_gib=80)
+    m = MeasuredStages(
+        cuts=(8, 16),
+        seconds=(12.0, 8.0, 10.0),
+        peak_gib=(1, 1, 1),
+        bytes_per_param=(1, 1, 1),
+        limit_gib=80,
+    )
     assert _measured_extras(costs(24, post=0), (1, 1, 1), m) == pytest.approx(
-        [4 * BLOCK, 0, 2 * BLOCK])
+        [4 * BLOCK, 0, 2 * BLOCK]
+    )
     assert _measured_cuts(costs(24, post=0), (1, 1, 1), 0, m) == [6, 16]
 
 
@@ -68,8 +79,7 @@ def test_memory_caps_what_a_stage_gains():
     # two blocks, not three
     m = measured((16,), (25.0, 19.0), peak=(70.0, 74.0), bpp=(1.0, 2**30 / BLOCK), limit=76.0)
     assert _measured_cuts(costs(), (1, 1), 0, m) == [14]
-    full = measured((16,), (25.0, 19.0), peak=(70.0, 76.0), bpp=(1.0, 2**30 / BLOCK),
-                    limit=76.0)
+    full = measured((16,), (25.0, 19.0), peak=(70.0, 76.0), bpp=(1.0, 2**30 / BLOCK), limit=76.0)
     assert _measured_cuts(costs(), (1, 1), 0, full) == [16]
 
 
@@ -86,25 +96,39 @@ def test_through_partition_parameters():
     slow_first = BalancedTransformerBlocks(measured=measured((cut,), (9.0, 4.5)))
     assert partition_parameters(model, slow_first, 2)[0].block_stop < cut
     with pytest.raises(ValidationError, match="do not fit"):
-        partition_parameters(model, BalancedTransformerBlocks(
-            measured=measured((9,), (1.0, 1.0))), 2)
+        partition_parameters(
+            model, BalancedTransformerBlocks(measured=measured((9,), (1.0, 1.0))), 2
+        )
 
 
-@pytest.mark.parametrize("conf,tp,dp,expected", [
-    # bf16 weights 2 + bf16 grads 2 + (fp32 master 4 + moments 8) / dp 2
-    ({"zero_optimization": {"stage": 1}}, 2, 2, (2 + 2 + 12 / 2) / 2),
-    # rdsp's remainder: a 2-byte master
-    ({"zero_optimization": {"stage": 1}, "rdsp_master_weights": "remainder"}, 1, 2,
-     2 + 2 + 10 / 2),
-    # fp32 gradient accumulation, no ZeRO
-    ({"data_types": {"grad_accum_dtype": "fp32"}}, 1, 4, 2 + 4 + 12),
-    # ZeRO-2 splits the gradients too; bf16 master and moments
-    ({"zero_optimization": {"stage": 2},
-      "bf16": {"bf16_master_weights_and_grads": True, "bf16_optimizer_states": True}}, 1, 2,
-     2 + 2 / 2 + 6 / 2),
-    # offload: no optimizer state on the GPU
-    ({"zero_optimization": {"stage": 1, "offload_optimizer": {"device": "cpu"}}}, 1, 2, 4),
-])
+@pytest.mark.parametrize(
+    "conf,tp,dp,expected",
+    [
+        # bf16 weights 2 + bf16 grads 2 + (fp32 master 4 + moments 8) / dp 2
+        ({"zero_optimization": {"stage": 1}}, 2, 2, (2 + 2 + 12 / 2) / 2),
+        # rdsp's remainder: a 2-byte master
+        (
+            {"zero_optimization": {"stage": 1}, "rdsp_master_weights": "remainder"},
+            1,
+            2,
+            2 + 2 + 10 / 2,
+        ),
+        # fp32 gradient accumulation, no ZeRO
+        ({"data_types": {"grad_accum_dtype": "fp32"}}, 1, 4, 2 + 4 + 12),
+        # ZeRO-2 splits the gradients too; bf16 master and moments
+        (
+            {
+                "zero_optimization": {"stage": 2},
+                "bf16": {"bf16_master_weights_and_grads": True, "bf16_optimizer_states": True},
+            },
+            1,
+            2,
+            2 + 2 / 2 + 6 / 2,
+        ),
+        # offload: no optimizer state on the GPU
+        ({"zero_optimization": {"stage": 1, "offload_optimizer": {"device": "cpu"}}}, 1, 2, 4),
+    ],
+)
 def test_static_bytes_per_param(conf, tp, dp, expected):
     assert static_bytes_per_param(conf, tp, dp) == pytest.approx(expected)
 
@@ -112,8 +136,16 @@ def test_static_bytes_per_param(conf, tp, dp, expected):
 def rank(*steps, peak=50.0, total=79.0):
     records = []
     for fwd, bwd in steps:
-        records.append({"stage": 0, "kind": "step", "forward": fwd, "backward": bwd,
-                        "wait_bwd": 999.0, "peak_gb": peak})
+        records.append(
+            {
+                "stage": 0,
+                "kind": "step",
+                "forward": fwd,
+                "backward": bwd,
+                "wait_bwd": 999.0,
+                "peak_gb": peak,
+            }
+        )
         records.append({"stage": 0, "kind": "apply", "apply": 50.0, "peak_gb": peak + 1})
     return {"records": records, "total_gib": total}
 
@@ -121,12 +153,18 @@ def rank(*steps, peak=50.0, total=79.0):
 def test_measured_stages_from_rank_records():
     conf = json.dumps({"zero_optimization": {"stage": 1}})
     spec = dict(ds_config_json=conf, tp=2, dp=2)
-    plan = types.SimpleNamespace(stages=[types.SimpleNamespace(block_start=0, **spec),
-                                         types.SimpleNamespace(block_start=30, **spec)])
+    plan = types.SimpleNamespace(
+        stages=[
+            types.SimpleNamespace(block_start=0, **spec),
+            types.SimpleNamespace(block_start=30, **spec),
+        ]
+    )
     records = [
         # stage 0: its slowest rank per step, the first step skipped, waits not counted
-        [rank((9000, 9000), (5000, 11000), (5000, 11400)), rank((1, 1), (6000, 11000), (1, 1),
-                                                               peak=70.0)],
+        [
+            rank((9000, 9000), (5000, 11000), (5000, 11400)),
+            rank((1, 1), (6000, 11000), (1, 1), peak=70.0),
+        ],
         [rank((1, 1), (4000, 8000), (4000, 8200), total=80.0)],
     ]
     m = measured_stages(plan, records, skip=1, reserve_gib=5.0)
@@ -154,19 +192,42 @@ def tiny_qwen3_5_vl(layers):
     if not hasattr(transformers, "Qwen3_5ForConditionalGeneration"):
         pytest.skip("transformers without Qwen3.5")
     cfg = transformers.Qwen3_5Config(
-        text_config=dict(vocab_size=256, hidden_size=64, intermediate_size=128,
-                         num_hidden_layers=layers, num_attention_heads=4, num_key_value_heads=2,
-                         head_dim=16, linear_num_key_heads=2, linear_num_value_heads=4,
-                         linear_key_head_dim=16, linear_value_head_dim=16,
-                         layer_types=["linear_attention", "linear_attention",
-                                      "full_attention"] * (layers // 3),
-                         rope_parameters={"rope_type": "default", "rope_theta": 10000.0,
-                                          "mrope_section": [2, 1, 1], "mrope_interleaved": True,
-                                          "partial_rotary_factor": 0.5}),
-        vision_config=dict(depth=2, hidden_size=32, intermediate_size=64, num_heads=2,
-                           out_hidden_size=64, patch_size=4, spatial_merge_size=2,
-                           temporal_patch_size=1, num_position_embeddings=16),
-        image_token_id=250, video_token_id=251, vision_start_token_id=252)
+        text_config=dict(
+            vocab_size=256,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=layers,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            linear_num_key_heads=2,
+            linear_num_value_heads=4,
+            linear_key_head_dim=16,
+            linear_value_head_dim=16,
+            layer_types=["linear_attention", "linear_attention", "full_attention"] * (layers // 3),
+            rope_parameters={
+                "rope_type": "default",
+                "rope_theta": 10000.0,
+                "mrope_section": [2, 1, 1],
+                "mrope_interleaved": True,
+                "partial_rotary_factor": 0.5,
+            },
+        ),
+        vision_config=dict(
+            depth=2,
+            hidden_size=32,
+            intermediate_size=64,
+            num_heads=2,
+            out_hidden_size=64,
+            patch_size=4,
+            spatial_merge_size=2,
+            temporal_patch_size=1,
+            num_position_embeddings=16,
+        ),
+        image_token_id=250,
+        video_token_id=251,
+        vision_start_token_id=252,
+    )
     return transformers.Qwen3_5ForConditionalGeneration(cfg)
 
 
@@ -182,10 +243,14 @@ def test_a_vision_stage_keeps_its_cut_and_the_decoder_stages_are_re_cut():
     before = partition_parameters(model, policy, 4, stage_gpus=gpus)
     cuts = tuple(p.block_stop for p in before[:-1])
     assert cuts[0] == 0
-    m = MeasuredStages(cuts=cuts, seconds=(5.0, 4.0, 4.0, 9.0), peak_gib=(10.0,) * 4,
-                       bytes_per_param=(1.0,) * 4, limit_gib=80.0)
-    after = partition_parameters(model, dataclasses.replace(policy, measured=m), 4,
-                                 stage_gpus=gpus)
+    m = MeasuredStages(
+        cuts=cuts,
+        seconds=(5.0, 4.0, 4.0, 9.0),
+        peak_gib=(10.0,) * 4,
+        bytes_per_param=(1.0,) * 4,
+        limit_gib=80.0,
+    )
+    after = partition_parameters(model, dataclasses.replace(policy, measured=m), 4, stage_gpus=gpus)
     blocks = [p.block_stop - p.block_start for p in after]
     assert blocks[0] == 0 and sum(blocks) == 12
     assert blocks[3] < before[3].block_stop - before[3].block_start
@@ -193,7 +258,12 @@ def test_a_vision_stage_keeps_its_cut_and_the_decoder_stages_are_re_cut():
 
 def test_a_vision_stage_needs_measurements_with_its_cut():
     model = tiny_qwen3_5_vl(layers=12)
-    m = MeasuredStages(cuts=(4, 8), seconds=(1.0, 1.0, 1.0), peak_gib=(10.0,) * 3,
-                       bytes_per_param=(1.0,) * 3, limit_gib=80.0)
+    m = MeasuredStages(
+        cuts=(4, 8),
+        seconds=(1.0, 1.0, 1.0),
+        peak_gib=(10.0,) * 3,
+        bytes_per_param=(1.0,) * 3,
+        limit_gib=80.0,
+    )
     with pytest.raises(ValidationError, match="cut at 0"):
         partition_parameters(model, BalancedTransformerBlocks(vision_stage=True, measured=m), 3)

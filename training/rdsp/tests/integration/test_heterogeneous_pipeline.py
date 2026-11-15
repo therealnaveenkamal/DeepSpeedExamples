@@ -61,6 +61,7 @@ VOCAB, DIM, SEQ = 128, 64, 32
 
 # --- models -------------------------------------------------------------------
 
+
 class Block(nn.Module):
     def __init__(self):
         super().__init__()
@@ -90,16 +91,30 @@ def tiny_qwen3(moe_layers=()):
     """Randomly initialized small Qwen3 (dense) or Qwen3-MoE whose layers
     outside `moe_layers` are dense — untied, fp32."""
     import transformers
-    common = dict(vocab_size=VOCAB, hidden_size=DIM, intermediate_size=2 * DIM,
-                  # 8 q / 4 kv heads: divisible by tp=4 (AutoTP) and sp=2 (Ulysses)
-                  num_hidden_layers=8, num_attention_heads=8, num_key_value_heads=4,
-                  head_dim=8, max_position_embeddings=4 * SEQ,
-                  tie_word_embeddings=False, attn_implementation="sdpa")
+
+    common = dict(
+        vocab_size=VOCAB,
+        hidden_size=DIM,
+        intermediate_size=2 * DIM,
+        # 8 q / 4 kv heads: divisible by tp=4 (AutoTP) and sp=2 (Ulysses)
+        num_hidden_layers=8,
+        num_attention_heads=8,
+        num_key_value_heads=4,
+        head_dim=8,
+        max_position_embeddings=4 * SEQ,
+        tie_word_embeddings=False,
+        attn_implementation="sdpa",
+    )
     if moe_layers:
         cfg = transformers.Qwen3MoeConfig(
-            **common, num_experts=8, num_experts_per_tok=2, moe_intermediate_size=DIM,
-            norm_topk_prob=True, decoder_sparse_step=1,
-            mlp_only_layers=[i for i in range(8) if i not in moe_layers])
+            **common,
+            num_experts=8,
+            num_experts_per_tok=2,
+            moe_intermediate_size=DIM,
+            norm_topk_prob=True,
+            decoder_sparse_step=1,
+            mlp_only_layers=[i for i in range(8) if i not in moe_layers],
+        )
         model = transformers.Qwen3MoeForCausalLM(cfg)
     else:
         model = transformers.Qwen3ForCausalLM(transformers.Qwen3Config(**common))
@@ -108,11 +123,11 @@ def tiny_qwen3(moe_layers=()):
 
 def lm_loss(out, labels):
     out = out.logits if hasattr(out, "logits") else out
-    return F.cross_entropy(out[:, :-1].float().reshape(-1, VOCAB),
-                           labels[:, 1:].reshape(-1))
+    return F.cross_entropy(out[:, :-1].float().reshape(-1, VOCAB), labels[:, 1:].reshape(-1))
 
 
 # --- support rows --------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class Row:
@@ -145,51 +160,87 @@ ROWS = [
     # differing GPU counts and shard-to-shard boundaries (2 -> 4 -> 2)
     Row("resource-mesh", (S(0, 2), S(1, 4), S(2, 2)), cpu_ok=True),
     # differing DP degrees AND ZeRO stages per stage
-    Row("dp-zero", (S(0, 4, zero_stage=2), S(1, 2, zero_stage=1),
-                       S(2, 2, zero_stage=0)), cpu_ok=True),
+    Row(
+        "dp-zero",
+        (S(0, 4, zero_stage=2), S(1, 2, zero_stage=1), S(2, 2, zero_stage=0)),
+        cpu_ok=True,
+    ),
     # optimizer state in host memory on the ZeRO stages, mixed with a plain one
-    Row("optimizer-offload", (S(0, 2, zero_stage=2, offload_optimizer=True),
-                                 S(1, 2, zero_stage=1, offload_optimizer=True), S(2, 1))),
+    Row(
+        "optimizer-offload",
+        (
+            S(0, 2, zero_stage=2, offload_optimizer=True),
+            S(1, 2, zero_stage=1, offload_optimizer=True),
+            S(2, 1),
+        ),
+    ),
     # stage-local AutoTP (tp=2 and tp=2 x dp=2) on a real HF architecture
     Row("autotp", (S(0, 1), S(1, 2, tp=2), S(2, 4, tp=2)), model="qwen3"),
     # stage-local Ulysses sequence parallelism (sp=2, and sp=2 x dp=2)
-    Row("sequence-parallel", (S(0, 2, sp=2), S(1, 4, sp=2), S(2, 1)),
-        model="qwen3"),
+    Row("sequence-parallel", (S(0, 2, sp=2), S(1, 4, sp=2), S(2, 1)), model="qwen3"),
     # stage-local AutoEP (ep=4) with and without Parallel Folding (tp=2)
-    Row("autoep-folding", (S(0, 1), S(1, 4, ep=4), S(2, 2, ep=2, tp=2, fold=True)),
-        model="qwen3moe", moe_layers=(3, 4, 5, 6, 7)),
+    Row(
+        "autoep-folding",
+        (S(0, 1), S(1, 4, ep=4), S(2, 2, ep=2, tp=2, fold=True)),
+        model="qwen3moe",
+        moe_layers=(3, 4, 5, 6, 7),
+    ),
     # the same three intra-stage layouts on HFModelStage (the model's own forward)
     Row("hf-autotp", (S(0, 1), S(1, 2, tp=2), S(2, 4, tp=2)), model="qwen3", builder="hf"),
-    Row("hf-sequence-parallel", (S(0, 2, sp=2), S(1, 4, sp=2), S(2, 1)),
-        model="qwen3", builder="hf"),
-    Row("hf-autoep-folding", (S(0, 1), S(1, 4, ep=4), S(2, 2, ep=2, tp=2, fold=True)),
-        model="qwen3moe", moe_layers=(3, 4, 5, 6, 7), builder="hf"),
+    Row(
+        "hf-sequence-parallel", (S(0, 2, sp=2), S(1, 4, sp=2), S(2, 1)), model="qwen3", builder="hf"
+    ),
+    Row(
+        "hf-autoep-folding",
+        (S(0, 1), S(1, 4, ep=4), S(2, 2, ep=2, tp=2, fold=True)),
+        model="qwen3moe",
+        moe_layers=(3, 4, 5, 6, 7),
+        builder="hf",
+    ),
     # the target composed topology, 32 GPUs on 4 nodes (one stage per node);
     # MoE layers only where the EP stage is (layers 4-5 = stage 2)
-    Row("four-stage-mixed", (S(0, 8, sp=2, zero_stage=2), S(1, 8, tp=4, zero_stage=1),
-                                S(2, 8, ep=8, tp=2, fold=True), S(3, 8, tp=2)),
-        model="qwen3moe", moe_layers=(4, 5)),
+    Row(
+        "four-stage-mixed",
+        (
+            S(0, 8, sp=2, zero_stage=2),
+            S(1, 8, tp=4, zero_stage=1),
+            S(2, 8, ep=8, tp=2, fold=True),
+            S(3, 8, tp=2),
+        ),
+        model="qwen3moe",
+        moe_layers=(4, 5),
+    ),
     # the same four stage KINDS composed at 8-GPU scale (fits one node, or two
     # 4-GPU nodes): composition evidence, not the 32-GPU row itself
-    Row("four-stage-mixed-mini", (S(0, 2, sp=2, zero_stage=2), S(1, 2, tp=2, zero_stage=1),
-                                     S(2, 2, ep=2, tp=2, fold=True), S(3, 2, tp=2)),
-        model="qwen3moe", moe_layers=(4, 5)),
+    Row(
+        "four-stage-mixed-mini",
+        (
+            S(0, 2, sp=2, zero_stage=2),
+            S(1, 2, tp=2, zero_stage=1),
+            S(2, 2, ep=2, tp=2, fold=True),
+            S(3, 2, tp=2),
+        ),
+        model="qwen3moe",
+        moe_layers=(4, 5),
+    ),
 ]
 ROW_IDS = [r.row_id for r in ROWS]
 
 
 def ds_config(row: Row):
-    return {"train_batch_size": row.rows_per_mb * row.n_mb,
-            "gradient_accumulation_steps": row.n_mb,
-            # SGD, not Adam: Adam's update is invariant to a uniform scale of a
-            # parameter's gradient, so a stage receiving k x its true gradient
-            # would still match — SGD exposes any boundary scaling error.
-            # Momentum gives the checkpoint real optimizer state to restore.
-            "optimizer": {"type": "SGD", "params": {"lr": 0.2, "momentum": 0.9}},
-            "zero_optimization": {"stage": row.zero},
-            "zero_allow_untested_optimizer": True,
-            "zero_force_ds_cpu_optimizer": False,  # SGD under optimizer offload
-            "steps_per_print": 10**6}
+    return {
+        "train_batch_size": row.rows_per_mb * row.n_mb,
+        "gradient_accumulation_steps": row.n_mb,
+        # SGD, not Adam: Adam's update is invariant to a uniform scale of a
+        # parameter's gradient, so a stage receiving k x its true gradient
+        # would still match — SGD exposes any boundary scaling error.
+        # Momentum gives the checkpoint real optimizer state to restore.
+        "optimizer": {"type": "SGD", "params": {"lr": 0.2, "momentum": 0.9}},
+        "zero_optimization": {"stage": row.zero},
+        "zero_allow_untested_optimizer": True,
+        "zero_force_ds_cpu_optimizer": False,  # SGD under optimizer offload
+        "steps_per_print": 10**6,
+    }
 
 
 def build_model(row: Row, seed: int):
@@ -200,9 +251,9 @@ def build_model(row: Row, seed: int):
 
 
 def pipeline_config(row: Row):
-    return rdsp.PipelineConfig(stages=row.stages,
-                               partition=rdsp.UniformTransformerBlocks(),
-                               stage_overrides=row.overrides)
+    return rdsp.PipelineConfig(
+        stages=row.stages, partition=rdsp.UniformTransformerBlocks(), stage_overrides=row.overrides
+    )
 
 
 def dataset(row: Row, n_steps=8):
@@ -222,13 +273,14 @@ def step_entries(row: Row, data, step):
     base = step * row.n_mb * per
     out = []
     for k in range(row.n_mb):
-        rows = data[base + k * per: base + (k + 1) * per]
+        rows = data[base + k * per : base + (k + 1) * per]
         ids = torch.stack([r[0] for r in rows])
         out.append((ids, ids.clone()))
     return out
 
 
 # --- runtime wiring --------------------------------------------------------------
+
 
 @pytest.fixture(scope="module")
 def ray_ctx():
@@ -237,8 +289,7 @@ def ray_ctx():
     if address:  # multi-node: attach to the running cluster
         ray.init(address=address, log_to_driver=False, runtime_env=runtime_env)
     else:
-        ray.init(num_cpus=64, include_dashboard=False, log_to_driver=False,
-                 runtime_env=runtime_env)
+        ray.init(num_cpus=64, include_dashboard=False, log_to_driver=False, runtime_env=runtime_env)
     yield
     ray.shutdown()
 
@@ -260,12 +311,14 @@ def runtime(ray_ctx, monkeypatch):
 
     def install(row: Row, use_gpu: bool):
         from test_deepspeed_adapter import stub_engine_factory
+
         factory_kw = {"use_gpu": use_gpu}
         if not use_gpu:
             factory_kw["engine_factory"] = stub_engine_factory
         if row.model != "toy":
-            factory_kw["stage_builder"] = (build_hf_stage if row.builder == "hf"
-                                           else build_causal_lm_stage)
+            factory_kw["stage_builder"] = (
+                build_hf_stage if row.builder == "hf" else build_causal_lm_stage
+            )
 
         def factory(*, model, pipeline_config, ds_config, loss_fn, weights=None):
             plan = lower(model, pipeline_config, ds_config)
@@ -274,6 +327,7 @@ def runtime(ray_ctx, monkeypatch):
                 clients = create_stage_clients(model, plan, loss_fn, **factory_kw)
                 made.append(clients)
                 return clients
+
             return PipelineCoordinator(plan, build(), rebuild=build)
 
         monkeypatch.setattr(api, "_coordinator_factory", factory)
@@ -287,8 +341,12 @@ def runtime(ray_ctx, monkeypatch):
 
 def make_engine(row, seed, data=None):
     engine, _, _, _ = rdsp.initialize(
-        model=build_model(row, seed), config=ds_config(row), training_data=data,
-        pipeline_config=pipeline_config(row), loss_fn=lm_loss)
+        model=build_model(row, seed),
+        config=ds_config(row),
+        training_data=data,
+        pipeline_config=pipeline_config(row),
+        loss_fn=lm_loss,
+    )
     return engine
 
 
@@ -329,6 +387,7 @@ def is_ray(obj):
 
 # --- the per-row acceptance test -----------------------------------------------
 
+
 @pytest.mark.parametrize("row", ROWS, ids=ROW_IDS)
 def test_row_parity_global_microbatch_checkpoint_failure(row, runtime, tmp_path):
     use_gpu = requirements(row)
@@ -367,7 +426,7 @@ def test_row_parity_global_microbatch_checkpoint_failure(row, runtime, tmp_path)
     fresh = make_engine(row, seed=7, data=data)
     fresh.load_checkpoint(str(tmp_path), "c3")
     cont = [float(fresh.train_batch()) for _ in range(2)]
-    assert cont == pytest.approx(ref[steps:steps + 2], **tol), "resume continues trajectory"
+    assert cont == pytest.approx(ref[steps : steps + 2], **tol), "resume continues trajectory"
     assert fresh.save_checkpoint(str(tmp_path), "c5")
 
     # failure: kill a non-zero rank of the widest stage, recover whole pipeline
@@ -388,15 +447,19 @@ def test_row_parity_global_microbatch_checkpoint_failure(row, runtime, tmp_path)
 
 # --- gradient parity, parameter by parameter ------------------------------------
 
+
 def _reference_name(stage_name: str, block_start: int) -> str | None:
     """Stage parameter name -> the unsplit HF model's name. HFModelStage keeps
     the model's names under `model.`; CausalLMStage renames them."""
     if stage_name.startswith("model."):
-        return stage_name[len("model."):]
-    for prefix, target in (("emb.", "model.embed_tokens."), ("norm.", "model.norm."),
-                           ("head.", "lm_head.")):
+        return stage_name[len("model.") :]
+    for prefix, target in (
+        ("emb.", "model.embed_tokens."),
+        ("norm.", "model.norm."),
+        ("head.", "lm_head."),
+    ):
         if stage_name.startswith(prefix):
-            return target + stage_name[len(prefix):]
+            return target + stage_name[len(prefix) :]
     if stage_name.startswith("layers."):
         _, i, rest = stage_name.split(".", 2)
         return f"model.layers.{block_start + int(i)}.{rest}"
@@ -409,9 +472,9 @@ def _rank0_slice(ref, shape):
     if tuple(ref.shape) == tuple(shape):
         return ref
     if ref.ndim == 2 and ref.shape[1] == shape[1] and ref.shape[0] % shape[0] == 0:
-        return ref[:shape[0]]
+        return ref[: shape[0]]
     if ref.ndim == 2 and ref.shape[0] == shape[0] and ref.shape[1] % shape[1] == 0:
-        return ref[:, :shape[1]]
+        return ref[:, : shape[1]]
     return None
 
 
@@ -422,6 +485,7 @@ def test_row_gradient_parity_per_parameter(row, runtime):
     unsplit model's — TP shards against the matching slice. Parameters AutoEP
     re-creates under new names (experts, router) are covered by loss parity."""
     import numpy as np
+
     use_gpu = requirements(row)
     runtime(row, use_gpu)
     data = dataset(row)
@@ -460,6 +524,7 @@ def test_row_gradient_parity_per_parameter(row, runtime):
 
 # --- compile-time / placement failure behavior (no GPUs needed) -------------------
 
+
 def test_failure_batch_divisibility_rejected_before_actors():
     row = ROWS[1]
     ok = dict(ds_config(row), train_batch_size=4 * row.n_mb)  # 4 rows over dp=4
@@ -469,21 +534,26 @@ def test_failure_batch_divisibility_rejected_before_actors():
         lower(TinyLM(), pipeline_config(row), bad)
 
 
-@pytest.mark.parametrize("override,match", [
-    (S(1, 3, tp=2), "divisible by tp"),
-    (S(1, 4, ep=3), "ep 3 does not divide"),
-    (S(1, 2, fold=True), "fold=True requires ep"),
-])
+@pytest.mark.parametrize(
+    "override,match",
+    [
+        (S(1, 3, tp=2), "divisible by tp"),
+        (S(1, 4, ep=3), "ep 3 does not divide"),
+        (S(1, 2, fold=True), "fold=True requires ep"),
+    ],
+)
 def test_failure_degree_rejected_before_actors(override, match):
-    cfg = rdsp.PipelineConfig(stages=3, partition=rdsp.UniformTransformerBlocks(),
-                              stage_overrides=(override,))
+    cfg = rdsp.PipelineConfig(
+        stages=3, partition=rdsp.UniformTransformerBlocks(), stage_overrides=(override,)
+    )
     with pytest.raises(ValidationError, match=match):
         lower(TinyLM(), cfg, {"train_batch_size": 48, "gradient_accumulation_steps": 4})
 
 
 def test_failure_sequence_parallel_on_terminal_stage_rejected():
-    cfg = rdsp.PipelineConfig(stages=2, partition=rdsp.UniformTransformerBlocks(),
-                              stage_overrides=(S(1, 2, sp=2),))
+    cfg = rdsp.PipelineConfig(
+        stages=2, partition=rdsp.UniformTransformerBlocks(), stage_overrides=(S(1, 2, sp=2),)
+    )
     with pytest.raises(ValidationError, match="terminal"):
         lower(TinyLM(), cfg, {"train_batch_size": 8, "gradient_accumulation_steps": 4})
 
@@ -491,9 +561,13 @@ def test_failure_sequence_parallel_on_terminal_stage_rejected():
 def test_failure_mesh_mismatch_and_duplicate_rank():
     from ray_deepspeed_pipeline.boundary import Grid
     from ray_deepspeed_pipeline.stage_group import check_mesh
+
     g = Grid(dp=2, tp=2)
-    good = [{"dp_rank": d, "dp_world": 2, "tp_rank": t, "tp_world": 2}
-            for d in range(2) for t in range(2)]
+    good = [
+        {"dp_rank": d, "dp_world": 2, "tp_rank": t, "tp_world": 2}
+        for d in range(2)
+        for t in range(2)
+    ]
     check_mesh(1, g, good)
     swapped = [dict(m) for m in good]
     swapped[1]["tp_rank"], swapped[1]["dp_rank"] = 0, 1  # DeepSpeed put rank 1 elsewhere
@@ -506,9 +580,11 @@ def test_failure_mesh_mismatch_and_duplicate_rank():
 @pytest.mark.skipif(GPUS == 0, reason="placement is only constrained on GPU")
 def test_failure_resource_loss_unplaceable_stage(ray_ctx, monkeypatch):
     import ray_deepspeed_pipeline.stage_group as stage_group
+
     monkeypatch.setattr(stage_group, "_PLACEMENT_TIMEOUT_S", 20.0)
     row = Row("too-big", (S(0, 1), S(1, GPUS + 1)))
-    plan = lower(TinyLM(), pipeline_config(row), dict(ds_config(row), train_batch_size=
-                                                      (GPUS + 1) * row.n_mb))
+    plan = lower(
+        TinyLM(), pipeline_config(row), dict(ds_config(row), train_batch_size=(GPUS + 1) * row.n_mb)
+    )
     with pytest.raises(ValidationError, match="cannot place"):
         create_stage_clients(TinyLM(), plan, lm_loss, use_gpu=True)

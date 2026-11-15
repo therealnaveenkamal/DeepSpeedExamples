@@ -17,27 +17,46 @@ from ray_deepspeed_pipeline.errors import ValidationError
 
 def test_schema_fields_frozen():
     fields = [f.name for f in dataclasses.fields(PipelineConfig)]
-    assert fields == ["stages", "partition", "schedule", "microbatches",
-                      "stage_overrides", "connection_overrides",
-                      "colocated_vision", "prefetch"]
+    assert fields == [
+        "stages",
+        "partition",
+        "schedule",
+        "microbatches",
+        "stage_overrides",
+        "connection_overrides",
+        "colocated_vision",
+        "prefetch",
+    ]
     cfg = PipelineConfig(stages=2, partition=UniformTransformerBlocks())
     assert cfg.schedule == "1f1b" and cfg.microbatches is None
     with pytest.raises(dataclasses.FrozenInstanceError):
         cfg.stages = 3
 
 
-@pytest.mark.parametrize("kwargs", [
-    dict(stages=0, partition=UniformTransformerBlocks()),
-    dict(stages=2, partition=UniformTransformerBlocks(), schedule="gpipe"),
-    dict(stages=2, partition=UniformTransformerBlocks(), microbatches=0),
-    dict(stages=2, partition="uniform"),
-    dict(stages=2, partition=UniformTransformerBlocks(),
-         stage_overrides=(StageOverride(stage=5),)),
-    dict(stages=2, partition=UniformTransformerBlocks(),
-         stage_overrides=(StageOverride(stage=0, num_gpus=0),)),
-    dict(stages=2, partition=UniformTransformerBlocks(),
-         connection_overrides=("not-an-override",)),
-])
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        dict(stages=0, partition=UniformTransformerBlocks()),
+        dict(stages=2, partition=UniformTransformerBlocks(), schedule="gpipe"),
+        dict(stages=2, partition=UniformTransformerBlocks(), microbatches=0),
+        dict(stages=2, partition="uniform"),
+        dict(
+            stages=2,
+            partition=UniformTransformerBlocks(),
+            stage_overrides=(StageOverride(stage=5),),
+        ),
+        dict(
+            stages=2,
+            partition=UniformTransformerBlocks(),
+            stage_overrides=(StageOverride(stage=0, num_gpus=0),),
+        ),
+        dict(
+            stages=2,
+            partition=UniformTransformerBlocks(),
+            connection_overrides=("not-an-override",),
+        ),
+    ],
+)
 def test_invalid_configs_rejected(kwargs):
     with pytest.raises(ValidationError):
         PipelineConfig(**kwargs)
@@ -61,31 +80,40 @@ def test_deepspeed_config_path_is_loaded(tmp_path, monkeypatch, tiny_model):
     from ray_deepspeed_pipeline import api
 
     seen = {}
-    monkeypatch.setattr(api, "_coordinator_factory",
-                        lambda **kw: seen.update(kw) or object())
+    monkeypatch.setattr(api, "_coordinator_factory", lambda **kw: seen.update(kw) or object())
     path = tmp_path / "ds.json"
     path.write_text(json.dumps({"gradient_accumulation_steps": 4}))
-    rdsp.initialize(model=tiny_model, config=str(path), loss_fn=lambda o, y: o.sum(),
-                    pipeline_config=rdsp.PipelineConfig(
-                        stages=2, partition=rdsp.UniformTransformerBlocks()))
+    rdsp.initialize(
+        model=tiny_model,
+        config=str(path),
+        loss_fn=lambda o, y: o.sum(),
+        pipeline_config=rdsp.PipelineConfig(stages=2, partition=rdsp.UniformTransformerBlocks()),
+    )
     assert seen["ds_config"] == {"gradient_accumulation_steps": 4}
 
 
-@pytest.mark.parametrize("content,match", [
-    ('{"pipeline": {}}', "external-runtime"),
-    ("[1, 2]", "JSON object"),
-    ("{not json", "cannot read"),
-])
+@pytest.mark.parametrize(
+    "content,match",
+    [
+        ('{"pipeline": {}}', "external-runtime"),
+        ("[1, 2]", "JSON object"),
+        ("{not json", "cannot read"),
+    ],
+)
 def test_bad_deepspeed_config_file_rejected(tmp_path, tiny_model, content, match):
     import ray_deepspeed_pipeline as rdsp
 
     path = tmp_path / "ds.json"
     path.write_text(content)
     with pytest.raises(ValidationError, match=match):
-        rdsp.initialize(model=tiny_model, config=str(path), loss_fn=lambda o, y: o.sum(),
-                        pipeline_config=rdsp.PipelineConfig(
-                            stages=2, partition=rdsp.UniformTransformerBlocks()))
-
+        rdsp.initialize(
+            model=tiny_model,
+            config=str(path),
+            loss_fn=lambda o, y: o.sum(),
+            pipeline_config=rdsp.PipelineConfig(
+                stages=2, partition=rdsp.UniformTransformerBlocks()
+            ),
+        )
 
 
 def test_prefetch_needs_a_caller_iterator():
@@ -94,8 +122,12 @@ def test_prefetch_needs_a_caller_iterator():
     import torch.nn as nn
 
     with pytest.raises(ValidationError, match="prefetch"):
-        rdsp.initialize(model=nn.Linear(2, 2),
-                        config={"train_batch_size": 2, "gradient_accumulation_steps": 2},
-                        loss_fn=lambda o, y: o.sum(), training_data=[(1, 2)] * 4,
-                        pipeline_config=PipelineConfig(
-                            stages=2, partition=UniformTransformerBlocks(), prefetch=True))
+        rdsp.initialize(
+            model=nn.Linear(2, 2),
+            config={"train_batch_size": 2, "gradient_accumulation_steps": 2},
+            loss_fn=lambda o, y: o.sum(),
+            training_data=[(1, 2)] * 4,
+            pipeline_config=PipelineConfig(
+                stages=2, partition=UniformTransformerBlocks(), prefetch=True
+            ),
+        )

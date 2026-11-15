@@ -39,6 +39,7 @@ SHAPES = ["circle", "square", "triangle"]
 def shape_image(size: int, rng: random.Random):
     """(PIL image, caption) of one shape on a plain background."""
     from PIL import Image, ImageDraw
+
     fg, bg = rng.sample(COLORS, 2)
     shape = rng.choice(SHAPES)
     image = Image.new("RGB", (size, size), bg)
@@ -63,13 +64,15 @@ def cord_rows(max_pixels: int, seed: int):
     """CORD-v2 receipts (train split, shuffled, repeated): the image scaled
     to at most max_pixels, and its ground-truth parse as JSON text."""
     import datasets
+
     data = datasets.load_dataset("naver-clova-ix/cord-v2", split="train").shuffle(seed=seed)
     for row in itertools.cycle(data):
         image = row["image"].convert("RGB")
         scale = (max_pixels / (image.width * image.height)) ** 0.5
         if scale < 1:
-            image = image.resize((max(28, int(image.width * scale)),
-                                  max(28, int(image.height * scale))))
+            image = image.resize(
+                (max(28, int(image.width * scale)), max(28, int(image.height * scale)))
+            )
         caption = json.dumps(json.loads(row["ground_truth"])["gt_parse"], ensure_ascii=False)
         yield image, caption
 
@@ -77,8 +80,10 @@ def cord_rows(max_pixels: int, seed: int):
 def encode_row(processor, image, caption: str, seq: int) -> tuple[dict, torch.Tensor]:
     """One row: inputs padded to `seq` tokens, labels on the caption only;
     None if it does not fit."""
-    user = {"role": "user", "content": [{"type": "image"},
-                                        {"type": "text", "text": "Describe the image."}]}
+    user = {
+        "role": "user",
+        "content": [{"type": "image"}, {"type": "text", "text": "Describe the image."}],
+    }
     answer = {"role": "assistant", "content": [{"type": "text", "text": caption}]}
     full = processor.apply_chat_template([user, answer], tokenize=False)
     prompt = processor.apply_chat_template([user], tokenize=False, add_generation_prompt=True)
@@ -111,8 +116,10 @@ def microbatches(processor, rows: int, seq: int, source, pad_multiple: int = 0):
     while True:
         encoded = [next(fitting) for _ in range(rows)]
         length = _padded_length([r for r, _ in encoded], pad_multiple, seq)
-        inputs = {k: torch.stack([r[k][:length] for r, _ in encoded])
-                  for k in ("input_ids", "attention_mask", "mm_token_type_ids")}
+        inputs = {
+            k: torch.stack([r[k][:length] for r, _ in encoded])
+            for k in ("input_ids", "attention_mask", "mm_token_type_ids")
+        }
         inputs["pixel_values"] = [r["pixel_values"] for r, _ in encoded]
         inputs["image_grid_thw"] = [r["image_grid_thw"] for r, _ in encoded]
         yield inputs, torch.stack([labels[:length] for _, labels in encoded])
@@ -121,8 +128,9 @@ def microbatches(processor, rows: int, seq: int, source, pad_multiple: int = 0):
 _EXPORTED_KEYS = ("input_ids", "attention_mask", "mm_token_type_ids")
 
 
-def exported_microbatches(directory: str, rows: int, pad_multiple: int = 0,
-                          pad_per_microbatch: bool = False):
+def exported_microbatches(
+    directory: str, rows: int, pad_multiple: int = 0, pad_per_microbatch: bool = False
+):
     """(inputs, labels) microbatches of `rows` consecutive samples from an
     exported directory, step file by step file: the order and grouping
     Megatron's sequential sampler gives a global microbatch. pad_multiple:
@@ -133,12 +141,13 @@ def exported_microbatches(directory: str, rows: int, pad_multiple: int = 0,
     for path in sorted(glob.glob(os.path.join(directory, "step_*.pt"))):
         samples = torch.load(path, weights_only=False)
         if len(samples) % rows:
-            raise ValueError(f"{path}: {len(samples)} samples do not split into "
-                             f"microbatches of {rows} rows")
+            raise ValueError(
+                f"{path}: {len(samples)} samples do not split into microbatches of {rows} rows"
+            )
         exported = samples[0]["input_ids"].shape[1]
         length = _padded_length(samples, pad_multiple, exported)
         for start in range(0, len(samples), rows):
-            group = samples[start:start + rows]
+            group = samples[start : start + rows]
             if pad_per_microbatch:
                 length = _padded_length(group, pad_multiple, exported)
             inputs = {k: torch.cat([s[k][:, :length] for s in group]) for k in _EXPORTED_KEYS}
@@ -177,9 +186,10 @@ def token_loss_sum_liger(logits, labels):
     chunk from bf16 logits, gradient written in place, so no fp32 copy of
     the (vocabulary-wide) logits."""
     from liger_kernel.transformers import LigerCrossEntropyLoss
+
     return LigerCrossEntropyLoss(ignore_index=-100, reduction="sum")(
-        logits[:, :-1].reshape(-1, logits.shape[-1]),
-        labels[:, 1:].reshape(-1).to(logits.device))
+        logits[:, :-1].reshape(-1, logits.shape[-1]), labels[:, 1:].reshape(-1).to(logits.device)
+    )
 
 
 def apply_liger(model):
@@ -187,8 +197,15 @@ def apply_liger(model):
     module instances: the patched forwards travel with the stage modules to
     their workers (a class-level patch would stay in this process)."""
     from liger_kernel.transformers import _apply_liger_kernel_to_instance
-    _apply_liger_kernel_to_instance(model=model, rms_norm=True, swiglu=True, rope=False,
-                                    cross_entropy=False, fused_linear_cross_entropy=False)
+
+    _apply_liger_kernel_to_instance(
+        model=model,
+        rms_norm=True,
+        swiglu=True,
+        rope=False,
+        cross_entropy=False,
+        fused_linear_cross_entropy=False,
+    )
 
 
 def restore_hf_experts(model) -> int:
@@ -212,9 +229,9 @@ def token_count(labels) -> int:
 # what training averages over; either way the reported step loss is the
 # mean over every caption token of the step, as Megatron logs it
 LOSSES = {
-    "token-mean": False,       # every token of the step (calculate_per_token_loss)
-    "microbatch-mean": True,   # each rank's microbatch, then the mean of those
-                               # (Megatron's default)
+    "token-mean": False,  # every token of the step (calculate_per_token_loss)
+    "microbatch-mean": True,  # each rank's microbatch, then the mean of those
+    # (Megatron's default)
 }
 
 
@@ -269,8 +286,10 @@ def unsplit_loss(weights: str, batches) -> float:
     """Token-mean loss of the whole model, unsplit: the reference for --check.
     Spread over the GPUs when it does not fit one (32B); freed afterwards."""
     import transformers
+
     model = transformers.AutoModelForImageTextToText.from_pretrained(
-        weights, dtype=torch.bfloat16, device_map="auto").eval()
+        weights, dtype=torch.bfloat16, device_map="auto"
+    ).eval()
     sums, counts = [], []
     with torch.no_grad():
         for inputs, labels in batches:
@@ -289,20 +308,32 @@ def ds_config(args, lr: float | None = None) -> dict:
     conf = {
         "train_batch_size": args.rows * args.microbatches,
         "gradient_accumulation_steps": args.microbatches,
-        "bf16": {"enabled": True, **({"immediate_grad_update": False}
-                                     if args.keep_bf16_grads else {})},
+        "bf16": {
+            "enabled": True,
+            **({"immediate_grad_update": False} if args.keep_bf16_grads else {}),
+        },
         # ZeRO's default 500M-element communication buckets cost ~2 GB each in
         # fp32; smaller buckets change how gradients are batched, not the math
-        "zero_optimization": {"stage": args.zero, "reduce_bucket_size": int(5e7),
-                              "allgather_bucket_size": int(5e7)},
+        "zero_optimization": {
+            "stage": args.zero,
+            "reduce_bucket_size": int(5e7),
+            "allgather_bucket_size": int(5e7),
+        },
         "gradient_clipping": 0.0,
         # DeepSpeed's CPU Adam under optimizer offload, PyTorch's AdamW otherwise
-        "optimizer": {"type": "AdamW", "params": {
-            "lr": args.lr if lr is None else lr, "betas": [beta1, beta2], "eps": args.eps,
-            "weight_decay": args.weight_decay, "torch_adam": not offload,
-            # one kernel per step; the default foreach AdamW also allocates a
-            # temporary as large as the fp32 master weights
-            **({"fused": True} if args.fused_adam else {})}},
+        "optimizer": {
+            "type": "AdamW",
+            "params": {
+                "lr": args.lr if lr is None else lr,
+                "betas": [beta1, beta2],
+                "eps": args.eps,
+                "weight_decay": args.weight_decay,
+                "torch_adam": not offload,
+                # one kernel per step; the default foreach AdamW also allocates a
+                # temporary as large as the fp32 master weights
+                **({"fused": True} if args.fused_adam else {}),
+            },
+        },
         "steps_per_print": 10**9,
     }
     if args.grad_dtype == "fp32":
@@ -336,8 +367,11 @@ def worker_env(environ=None) -> dict:
     environment, not the driver's; a cluster ray.init() starts here already has it. Ray
     sets CUDA_VISIBLE_DEVICES per actor itself, so it is never passed."""
     environ = os.environ if environ is None else environ
-    return {k: v for k, v in environ.items()
-            if k.startswith(_WORKER_ENV_PREFIXES) or k in _WORKER_ENV_NAMES}
+    return {
+        k: v
+        for k, v in environ.items()
+        if k.startswith(_WORKER_ENV_PREFIXES) or k in _WORKER_ENV_NAMES
+    }
 
 
 def optimizer_problem(args) -> str | None:
@@ -372,94 +406,180 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--model", default="Qwen/Qwen3-VL-2B-Instruct")
     p.add_argument("--stages", type=int, default=2)
-    p.add_argument("--cuts", default="balanced",
-                   help="'balanced', 'measured' (balanced, then re-cut by the stage "
-                        "times and memory --calibration-steps profiled steps measure), "
-                        "'0,balanced' (vision encoder alone on stage 0), '0,measured' (that, "
-                        "the decoder stages then re-cut as measured does), 'even', or e.g. 9,18")
-    p.add_argument("--calibration-steps", type=int, default=3,
-                   help="--cuts measured: steps profiled at learning rate 0, the first "
-                        "not counted")
-    p.add_argument("--stage", type=parse_stage, action="append", default=[],
-                   help="per-stage layout, as in train.py")
+    p.add_argument(
+        "--cuts",
+        default="balanced",
+        help="'balanced', 'measured' (balanced, then re-cut by the stage "
+        "times and memory --calibration-steps profiled steps measure), "
+        "'0,balanced' (vision encoder alone on stage 0), '0,measured' (that, "
+        "the decoder stages then re-cut as measured does), 'even', or e.g. 9,18",
+    )
+    p.add_argument(
+        "--calibration-steps",
+        type=int,
+        default=3,
+        help="--cuts measured: steps profiled at learning rate 0, the first not counted",
+    )
+    p.add_argument(
+        "--stage",
+        type=parse_stage,
+        action="append",
+        default=[],
+        help="per-stage layout, as in train.py",
+    )
     p.add_argument("--microbatches", type=int, default=8)
     p.add_argument("--rows", type=int, default=4, help="rows per microbatch")
     p.add_argument("--seq", type=int, default=256)
     p.add_argument("--image-size", type=int, default=448, help="synthetic images' side")
-    p.add_argument("--dataset", default="synthetic",
-                   help="synthetic, cord-v2, or exported:DIR (export_bridge_batches.py)")
-    p.add_argument("--loss", choices=tuple(LOSSES), default="token-mean",
-                   help="what training averages over; the step loss printed is the "
-                        "token mean either way")
-    p.add_argument("--liger", action="store_true",
-                   help="Liger fused RMSNorm/SwiGLU kernels and cross entropy")
-    p.add_argument("--moe-experts", choices=("liger", "hf"), default="liger",
-                   help="mixture-of-experts models under --liger: the routed experts in Liger's "
-                        "fused kernel (liger) or Hugging Face's grouped matmuls (hf)")
-    p.add_argument("--pad-multiple", type=int, default=0,
-                   help="exported data: trim each step's padding to its longest row, "
-                   "rounded up to this multiple (0 keeps the exported length); with "
-                   "--pad-per-microbatch, also applies to cord-v2 and synthetic rows")
+    p.add_argument(
+        "--dataset",
+        default="synthetic",
+        help="synthetic, cord-v2, or exported:DIR (export_bridge_batches.py)",
+    )
+    p.add_argument(
+        "--loss",
+        choices=tuple(LOSSES),
+        default="token-mean",
+        help="what training averages over; the step loss printed is the token mean either way",
+    )
+    p.add_argument(
+        "--liger", action="store_true", help="Liger fused RMSNorm/SwiGLU kernels and cross entropy"
+    )
+    p.add_argument(
+        "--moe-experts",
+        choices=("liger", "hf"),
+        default="liger",
+        help="mixture-of-experts models under --liger: the routed experts in Liger's "
+        "fused kernel (liger) or Hugging Face's grouped matmuls (hf)",
+    )
+    p.add_argument(
+        "--pad-multiple",
+        type=int,
+        default=0,
+        help="exported data: trim each step's padding to its longest row, "
+        "rounded up to this multiple (0 keeps the exported length); with "
+        "--pad-per-microbatch, also applies to cord-v2 and synthetic rows",
+    )
     p.add_argument("--betas", default="0.9,0.999", help="AdamW betas")
     p.add_argument("--eps", type=float, default=1e-8)
     p.add_argument("--weight-decay", type=float, default=0.0)
-    p.add_argument("--grad-dtype", choices=("bf16", "fp32"), default="fp32",
-                   help="gradient accumulation and reduction dtype")
-    p.add_argument("--master-dtype", choices=("bf16", "fp32", "remainder"), default="fp32",
-                   help="dtype of the optimizer's master weights and Adam's moments; "
-                        "remainder: fp32 master weights stored as the bf16 weights plus a "
-                        "16-bit remainder (2 bytes per parameter instead of 4, same math), "
-                        "fp32 moments; bf16 and remainder need --grad-dtype bf16 and ZeRO 1 "
-                        "or 2 on every stage")
-    p.add_argument("--optimizer-group-numel", type=int, default=0,
-                   help="split each stage's parameters into optimizer groups of at most "
-                        "this many elements (0: one group); DeepSpeed's ZeRO step then "
-                        "copies one group's gradients at a time: less peak memory, same math")
-    p.add_argument("--fused-adam", action="store_true",
-                   help="PyTorch's fused AdamW instead of its default foreach AdamW, "
-                        "which needs a temporary as large as the fp32 master weights")
-    p.add_argument("--attn", default="sdpa", help="attention implementation (sdpa, "
-                   "flash_attention_2, ...)")
-    p.add_argument("--vision-attn", choices=("same", "varlen"), default="same",
-                   help="vision encoder attention: same as --attn, or varlen: PyTorch's "
-                        "variable-length flash attention, one kernel per layer for all "
-                        "images and no host sync per layer (CUDA)")
-    p.add_argument("--max-pixels", type=int, default=512 * 512,
-                   help="cord-v2: scale images down to at most this many pixels")
-    p.add_argument("--untie-embeddings", action="store_true",
-                   help="train the input embedding and the output head as two matrices; "
-                        "needed when a tied pair would land on different stages")
-    p.add_argument("--keep-bf16-grads", action="store_true",
-                   help="keep DeepSpeed's per-parameter bf16 gradients (accumulated into "
-                        "fp32 after each backward) instead of freeing each one as it lands")
-    p.add_argument("--pad-per-microbatch", action="store_true",
-                   help="with --pad-multiple: pad each microbatch to its own longest row "
-                        "(as Megatron does) instead of each step to its longest")
-    p.add_argument("--drop-padding-mask", action="store_true",
-                   help="leave out the attention mask of right-padded rows, so attention "
-                        "can use its causal flash kernel")
-    p.add_argument("--sharded-loss", action="store_true",
-                   help="token-mean loss over vocab-parallel logits: tensor-parallel "
-                        "stages skip gathering the full logits")
-    p.add_argument("--prefetch", action="store_true",
-                   help="read and ship the next step's batches while this step runs")
-    p.add_argument("--colocated-vision", action="store_true",
-                   help="run the vision encoder on every GPU (rdsp.ColocatedVision)")
-    p.add_argument("--vision-per-microbatch", action="store_true",
-                   help="with --colocated-vision: encode and backpropagate images per "
-                        "microbatch inside the pipeline (less memory, can be slower)")
-    p.add_argument("--vision-compile", action="store_true",
-                   help="with --colocated-vision: torch.compile the encoder's blocks")
-    p.add_argument("--vision-recompute", action="store_true",
-                   help="with --colocated-vision: recompute the encoder's blocks")
+    p.add_argument(
+        "--grad-dtype",
+        choices=("bf16", "fp32"),
+        default="fp32",
+        help="gradient accumulation and reduction dtype",
+    )
+    p.add_argument(
+        "--master-dtype",
+        choices=("bf16", "fp32", "remainder"),
+        default="fp32",
+        help="dtype of the optimizer's master weights and Adam's moments; "
+        "remainder: fp32 master weights stored as the bf16 weights plus a "
+        "16-bit remainder (2 bytes per parameter instead of 4, same math), "
+        "fp32 moments; bf16 and remainder need --grad-dtype bf16 and ZeRO 1 "
+        "or 2 on every stage",
+    )
+    p.add_argument(
+        "--optimizer-group-numel",
+        type=int,
+        default=0,
+        help="split each stage's parameters into optimizer groups of at most "
+        "this many elements (0: one group); DeepSpeed's ZeRO step then "
+        "copies one group's gradients at a time: less peak memory, same math",
+    )
+    p.add_argument(
+        "--fused-adam",
+        action="store_true",
+        help="PyTorch's fused AdamW instead of its default foreach AdamW, "
+        "which needs a temporary as large as the fp32 master weights",
+    )
+    p.add_argument(
+        "--attn", default="sdpa", help="attention implementation (sdpa, flash_attention_2, ...)"
+    )
+    p.add_argument(
+        "--vision-attn",
+        choices=("same", "varlen"),
+        default="same",
+        help="vision encoder attention: same as --attn, or varlen: PyTorch's "
+        "variable-length flash attention, one kernel per layer for all "
+        "images and no host sync per layer (CUDA)",
+    )
+    p.add_argument(
+        "--max-pixels",
+        type=int,
+        default=512 * 512,
+        help="cord-v2: scale images down to at most this many pixels",
+    )
+    p.add_argument(
+        "--untie-embeddings",
+        action="store_true",
+        help="train the input embedding and the output head as two matrices; "
+        "needed when a tied pair would land on different stages",
+    )
+    p.add_argument(
+        "--keep-bf16-grads",
+        action="store_true",
+        help="keep DeepSpeed's per-parameter bf16 gradients (accumulated into "
+        "fp32 after each backward) instead of freeing each one as it lands",
+    )
+    p.add_argument(
+        "--pad-per-microbatch",
+        action="store_true",
+        help="with --pad-multiple: pad each microbatch to its own longest row "
+        "(as Megatron does) instead of each step to its longest",
+    )
+    p.add_argument(
+        "--drop-padding-mask",
+        action="store_true",
+        help="leave out the attention mask of right-padded rows, so attention "
+        "can use its causal flash kernel",
+    )
+    p.add_argument(
+        "--sharded-loss",
+        action="store_true",
+        help="token-mean loss over vocab-parallel logits: tensor-parallel "
+        "stages skip gathering the full logits",
+    )
+    p.add_argument(
+        "--prefetch",
+        action="store_true",
+        help="read and ship the next step's batches while this step runs",
+    )
+    p.add_argument(
+        "--colocated-vision",
+        action="store_true",
+        help="run the vision encoder on every GPU (rdsp.ColocatedVision)",
+    )
+    p.add_argument(
+        "--vision-per-microbatch",
+        action="store_true",
+        help="with --colocated-vision: encode and backpropagate images per "
+        "microbatch inside the pipeline (less memory, can be slower)",
+    )
+    p.add_argument(
+        "--vision-compile",
+        action="store_true",
+        help="with --colocated-vision: torch.compile the encoder's blocks",
+    )
+    p.add_argument(
+        "--vision-recompute",
+        action="store_true",
+        help="with --colocated-vision: recompute the encoder's blocks",
+    )
     p.add_argument("--steps", type=int, default=10)
     p.add_argument("--lr", type=float, default=1e-5)
     p.add_argument("--zero", type=int, default=0)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--check", action="store_true",
-                   help="first compare the pipeline's loss with the unsplit model on one GPU")
-    p.add_argument("--profile", action="store_true",
-                   help="print per-stage phase times (RDSP_PROFILE=1; slows steps)")
+    p.add_argument(
+        "--check",
+        action="store_true",
+        help="first compare the pipeline's loss with the unsplit model on one GPU",
+    )
+    p.add_argument(
+        "--profile",
+        action="store_true",
+        help="print per-stage phase times (RDSP_PROFILE=1; slows steps)",
+    )
     return p
 
 
@@ -475,18 +595,28 @@ def main(argv=None):
     import transformers
 
     weights = huggingface_hub.snapshot_download(
-        args.model, allow_patterns=["*.json", "*.safetensors", "*.txt", "*.jinja"])
+        args.model, allow_patterns=["*.json", "*.safetensors", "*.txt", "*.jinja"]
+    )
     processor = transformers.AutoProcessor.from_pretrained(weights)
 
     def new_data():
         """The run's microbatches from the start (a calibration reads its own)."""
         if args.dataset.startswith("exported:"):
-            return exported_microbatches(args.dataset.split(":", 1)[1], args.rows,
-                                         args.pad_multiple, args.pad_per_microbatch)
-        source = (cord_rows(args.max_pixels, args.seed) if args.dataset == "cord-v2"
-                  else synthetic_rows(args.image_size, args.seed))
-        return microbatches(processor, args.rows, args.seq, source,
-                            args.pad_multiple if args.pad_per_microbatch else 0)
+            return exported_microbatches(
+                args.dataset.split(":", 1)[1], args.rows, args.pad_multiple, args.pad_per_microbatch
+            )
+        source = (
+            cord_rows(args.max_pixels, args.seed)
+            if args.dataset == "cord-v2"
+            else synthetic_rows(args.image_size, args.seed)
+        )
+        return microbatches(
+            processor,
+            args.rows,
+            args.seq,
+            source,
+            args.pad_multiple if args.pad_per_microbatch else 0,
+        )
 
     data = new_data()
     first = [next(data) for _ in range(args.microbatches)]
@@ -498,12 +628,15 @@ def main(argv=None):
         config.tie_word_embeddings = config.get_text_config().tie_word_embeddings = False
     config._attn_implementation = args.attn
     with accelerate.init_empty_weights():
-        skeleton = transformers.AutoModelForImageTextToText.from_config(config,
-                                                                         dtype=torch.bfloat16)
+        skeleton = transformers.AutoModelForImageTextToText.from_config(
+            config, dtype=torch.bfloat16
+        )
     if args.vision_attn == "varlen":
         from ray_deepspeed_pipeline.varlen_attention import use_varlen_vision_attention
+
         use_varlen_vision_attention(skeleton)
     from ray_deepspeed_pipeline.partition import vision_token_ratio
+
     partition = partition_policy(args.cuts, ratio=lambda: vision_token_ratio(config, first))
 
     if args.profile:
@@ -517,26 +650,43 @@ def main(argv=None):
 
     def build(partition, conf):
         pipeline_config = rdsp.PipelineConfig(
-            stages=args.stages, partition=partition, stage_overrides=tuple(args.stage),
-            colocated_vision=(rdsp.ColocatedVision(
-                recompute=args.vision_recompute, compile=args.vision_compile,
-                encode_per_microbatch=args.vision_per_microbatch)
-                if args.colocated_vision else None),
-            prefetch=args.prefetch)
-        engine, _, _, _ = rdsp.initialize(model=skeleton, config=conf, loss_fn=loss_fn,
-                                          weights=weights, pipeline_config=pipeline_config)
+            stages=args.stages,
+            partition=partition,
+            stage_overrides=tuple(args.stage),
+            colocated_vision=(
+                rdsp.ColocatedVision(
+                    recompute=args.vision_recompute,
+                    compile=args.vision_compile,
+                    encode_per_microbatch=args.vision_per_microbatch,
+                )
+                if args.colocated_vision
+                else None
+            ),
+            prefetch=args.prefetch,
+        )
+        engine, _, _, _ = rdsp.initialize(
+            model=skeleton,
+            config=conf,
+            loss_fn=loss_fn,
+            weights=weights,
+            pipeline_config=pipeline_config,
+        )
         print(f"stages (blocks): {engine.stage_blocks}", flush=True)
         return engine
 
     if args.cuts in ("measured", "0,measured"):
-        partition = calibrated_policy(args, build(partition, ds_config(args, lr=0.0)),
-                                      new_data(), partition)
+        partition = calibrated_policy(
+            args, build(partition, ds_config(args, lr=0.0)), new_data(), partition
+        )
     engine = build(partition, ds_config(args))
 
     if reference is not None:
         piped = float(engine.eval_batch(data_iter=iter(first)))
-        print(f"check: pipeline {piped:.5f}  unsplit {reference:.5f}  "
-              f"rel diff {abs(piped - reference) / reference:.2e}", flush=True)
+        print(
+            f"check: pipeline {piped:.5f}  unsplit {reference:.5f}  "
+            f"rel diff {abs(piped - reference) / reference:.2e}",
+            flush=True,
+        )
 
     padded = args.rows * args.seq * args.microbatches
     counts = {}  # step -> (real, supervised), filled as its batches are read
@@ -546,8 +696,10 @@ def main(argv=None):
         for step in range(args.steps):
             entries = first if step == 0 else [next(data) for _ in range(args.microbatches)]
             # real tokens: what the attention mask covers (padding excluded)
-            counts[step] = (sum(int(x["attention_mask"].sum()) for x, _ in entries),
-                            sum(token_count(y) for _, y in entries))
+            counts[step] = (
+                sum(int(x["attention_mask"].sum()) for x, _ in entries),
+                sum(token_count(y) for _, y in entries),
+            )
             if args.drop_padding_mask:
                 entries = [(drop_padding_mask(x), y) for x, y in entries]
             yield from entries
@@ -558,9 +710,11 @@ def main(argv=None):
         loss = float(engine.train_batch(data_iter=batches))
         real, supervised = counts.pop(step)
         ms = (time.perf_counter() - start) * 1e3
-        print(f"step {step} loss {loss:.4f} {ms:.0f} ms {real / ms * 1e3:.0f} real tok/s "
-              f"{padded / ms * 1e3:.0f} padded tok/s real {real} supervised {supervised}",
-              flush=True)
+        print(
+            f"step {step} loss {loss:.4f} {ms:.0f} ms {real / ms * 1e3:.0f} real tok/s "
+            f"{padded / ms * 1e3:.0f} padded tok/s real {real} supervised {supervised}",
+            flush=True,
+        )
     return engine
 
 

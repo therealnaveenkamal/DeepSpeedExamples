@@ -8,14 +8,14 @@ from ray_deepspeed_pipeline.schedule import generate_commands, peak_in_flight
 
 
 def make_plan(stages=2, microbatches=4):
-    cfg = PipelineConfig(stages=stages, partition=UniformTransformerBlocks(),
-                         microbatches=microbatches)
+    cfg = PipelineConfig(
+        stages=stages, partition=UniformTransformerBlocks(), microbatches=microbatches
+    )
     return lower(ToyLM(), cfg, {})  # schedule shape only; 1 row per microbatch
 
 
 def ops(sequence):
-    return [(c.kind, c.microbatch) for c in sequence
-            if c.kind in ("forward", "backward")]
+    return [(c.kind, c.microbatch) for c in sequence if c.kind in ("forward", "backward")]
 
 
 def test_deterministic_1f1b():
@@ -33,18 +33,17 @@ def test_deepspeed_pipeline_oracle():
     warm-up forward then alternates."""
     seqs = generate_commands(make_plan(2, 4), 1, 0)
     F, B = "forward", "backward"
-    assert ops(seqs[0]) == [(F, 0), (F, 1), (B, 0), (F, 2), (B, 1),
-                            (F, 3), (B, 2), (B, 3)]
-    assert ops(seqs[1]) == [(F, 0), (B, 0), (F, 1), (B, 1), (F, 2),
-                            (B, 2), (F, 3), (B, 3)]
+    assert ops(seqs[0]) == [(F, 0), (F, 1), (B, 0), (F, 2), (B, 1), (F, 3), (B, 2), (B, 3)]
+    assert ops(seqs[1]) == [(F, 0), (B, 0), (F, 1), (B, 1), (F, 2), (B, 2), (F, 3), (B, 3)]
 
 
 def test_bounded_activation_lifetime():
     for stages, mbs in [(2, 4), (3, 6), (4, 8), (4, 2)]:
         seqs = generate_commands(make_plan(stages, mbs), 1, 0)
         for s in range(stages):
-            assert peak_in_flight(seqs[s]) <= min(stages - s, mbs), \
+            assert peak_in_flight(seqs[s]) <= min(stages - s, mbs), (
                 f"stage {s} of {stages} exceeds 1F1B's activation bound"
+            )
 
 
 def test_cross_stage_predecessors():
@@ -82,8 +81,9 @@ def test_first_stage_lead_lets_stage_0_run_further_ahead(monkeypatch):
     monkeypatch.delenv("RDSP_FIRST_STAGE_LEAD")
     plain = generate_commands(make_plan(2, 4), 1, 0)
     # the same commands with the same predecessors: only stage 0's order moved
-    assert {c.command_id: c.predecessors for s in seqs.values() for c in s} == \
-           {c.command_id: c.predecessors for s in plain.values() for c in s}
+    assert {c.command_id: c.predecessors for s in seqs.values() for c in s} == {
+        c.command_id: c.predecessors for s in plain.values() for c in s
+    }
 
 
 def test_first_stage_lead_keeps_every_schedule_valid(monkeypatch):
@@ -111,8 +111,14 @@ def test_first_stage_lead_is_ignored_with_one_stage_and_rejects_bad_values(monke
 
     monkeypatch.setenv("RDSP_FIRST_STAGE_LEAD", "2")
     seqs = generate_commands(make_plan(1, 3), 1, 0)
-    assert ops(seqs[0]) == [("forward", 0), ("backward", 0), ("forward", 1), ("backward", 1),
-                            ("forward", 2), ("backward", 2)]
+    assert ops(seqs[0]) == [
+        ("forward", 0),
+        ("backward", 0),
+        ("forward", 1),
+        ("backward", 1),
+        ("forward", 2),
+        ("backward", 2),
+    ]
     for bad in ("-1", "two"):
         monkeypatch.setenv("RDSP_FIRST_STAGE_LEAD", bad)
         with pytest.raises(ValidationError):

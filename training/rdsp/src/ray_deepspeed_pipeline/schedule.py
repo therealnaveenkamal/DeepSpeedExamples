@@ -49,8 +49,9 @@ def _ops_1f1b(stage: int, n_stages: int, n_mb: int, lead: int = 0) -> list[tuple
     return ops
 
 
-def generate_commands(plan: ExecutionPlan, generation: int, global_step: int,
-                      train: bool = True) -> dict[int, tuple[Command, ...]]:
+def generate_commands(
+    plan: ExecutionPlan, generation: int, global_step: int, train: bool = True
+) -> dict[int, tuple[Command, ...]]:
     """Per-stage command sequences for one global step, in execution order.
 
     Train: 1F1B forwards/backwards, then a per-stage ready, then an apply that
@@ -64,9 +65,15 @@ def generate_commands(plan: ExecutionPlan, generation: int, global_step: int,
         return _cid(generation, global_step, stage, kind, microbatch)
 
     def cmd(stage, kind, microbatch, preds):
-        return Command(command_id=cid(stage, kind, microbatch), generation=generation,
-                       global_step=global_step, stage=stage, kind=kind,
-                       microbatch=microbatch, predecessors=tuple(preds))
+        return Command(
+            command_id=cid(stage, kind, microbatch),
+            generation=generation,
+            global_step=global_step,
+            stage=stage,
+            kind=kind,
+            microbatch=microbatch,
+            predecessors=tuple(preds),
+        )
 
     out: dict[int, list[Command]] = {s: [] for s in range(n_stages)}
 
@@ -112,14 +119,21 @@ def peak_in_flight(sequence) -> int:
     return peak
 
 
-def control_commands(plan: ExecutionPlan, generation: int, global_step: int,
-                     kind: str) -> dict[int, Command]:
+def control_commands(
+    plan: ExecutionPlan, generation: int, global_step: int, kind: str
+) -> dict[int, Command]:
     """One save/load command per stage, sent to every rank of the stage
     (DeepSpeed's save/load are stage-local collectives)."""
     assert kind in ("save", "load"), kind
     return {
-        s: Command(command_id=_cid(generation, global_step, s, kind, None),
-                   generation=generation, global_step=global_step, stage=s,
-                   kind=kind, microbatch=None, predecessors=())
+        s: Command(
+            command_id=_cid(generation, global_step, s, kind, None),
+            generation=generation,
+            global_step=global_step,
+            stage=s,
+            kind=kind,
+            microbatch=None,
+            predecessors=(),
+        )
         for s in range(len(plan.stages))
     }

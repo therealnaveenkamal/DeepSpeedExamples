@@ -55,16 +55,14 @@ def fake_coordinator(monkeypatch):
     """Replace the internal coordinator factory (test-only injection point;
     never part of the public signature)."""
     coordinator = FakeCoordinator()
-    monkeypatch.setattr(api, "_coordinator_factory",
-                        lambda **kwargs: coordinator)
+    monkeypatch.setattr(api, "_coordinator_factory", lambda **kwargs: coordinator)
     return coordinator
 
 
 @pytest.fixture
 def tiny_model():
     torch.manual_seed(0)
-    return torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.ReLU(),
-                               torch.nn.Linear(8, 2))
+    return torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.ReLU(), torch.nn.Linear(8, 2))
 
 
 @pytest.fixture

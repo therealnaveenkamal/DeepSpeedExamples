@@ -26,8 +26,13 @@ def _stated(obj) -> bool:
 def test_every_public_name_states_its_contract():
     for name in rdsp.__all__:
         assert _stated(getattr(rdsp, name)), name
-    for method in ("train_batch", "eval_batch", "save_checkpoint", "load_checkpoint",
-                   "stage_blocks"):
+    for method in (
+        "train_batch",
+        "eval_batch",
+        "save_checkpoint",
+        "load_checkpoint",
+        "stage_blocks",
+    ):
         assert _stated(getattr(rdsp.RayPipelineEngine, method)), method
 
 
@@ -37,9 +42,15 @@ def test_tp_must_divide_key_value_heads():
     model = ToyLM()
     model.config = SimpleNamespace(num_key_value_heads=2)
     with pytest.raises(ValidationError, match="key/value heads"):
-        lower(model, rdsp.PipelineConfig(
-            stages=2, partition=rdsp.UniformTransformerBlocks(),
-            stage_overrides=(rdsp.StageOverride(stage=0, num_gpus=4, tp=4),)), DS)
+        lower(
+            model,
+            rdsp.PipelineConfig(
+                stages=2,
+                partition=rdsp.UniformTransformerBlocks(),
+                stage_overrides=(rdsp.StageOverride(stage=0, num_gpus=4, tp=4),),
+            ),
+            DS,
+        )
 
 
 def test_vision_token_ratio_is_neutral_without_an_encoder():

@@ -36,19 +36,32 @@ os.environ["RDSP_P2P_TIMEOUT_S"] = "600"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 N_MB, ROWS, LR = 2, 2, 0.05
-DS = {"train_batch_size": N_MB * ROWS, "gradient_accumulation_steps": N_MB,
-      "optimizer": {"type": "SGD", "params": {"lr": LR, "momentum": 0.9}},
-      "zero_optimization": {"stage": 1}, "zero_allow_untested_optimizer": True,
-      "steps_per_print": 10**6}
+DS = {
+    "train_batch_size": N_MB * ROWS,
+    "gradient_accumulation_steps": N_MB,
+    "optimizer": {"type": "SGD", "params": {"lr": LR, "momentum": 0.9}},
+    "zero_optimization": {"stage": 1},
+    "zero_allow_untested_optimizer": True,
+    "steps_per_print": 10**6,
+}
 
 LAYOUTS = {
-    "shared-layout": dict(cuts=(3,), overrides=(StageOverride(stage=0, num_gpus=2, tp=2),
-                                                StageOverride(stage=1, num_gpus=2, tp=2))),
-    "vision-stage": dict(cuts=(0,), overrides=(StageOverride(stage=0, num_gpus=2),
-                                                 StageOverride(stage=1, num_gpus=2, tp=2))),
-    "colocated": dict(cuts=(3,), overrides=(StageOverride(stage=0, num_gpus=2, tp=2),
-                                            StageOverride(stage=1, num_gpus=2)),
-                      colocated_vision=rdsp.ColocatedVision()),
+    "shared-layout": dict(
+        cuts=(3,),
+        overrides=(
+            StageOverride(stage=0, num_gpus=2, tp=2),
+            StageOverride(stage=1, num_gpus=2, tp=2),
+        ),
+    ),
+    "vision-stage": dict(
+        cuts=(0,),
+        overrides=(StageOverride(stage=0, num_gpus=2), StageOverride(stage=1, num_gpus=2, tp=2)),
+    ),
+    "colocated": dict(
+        cuts=(3,),
+        overrides=(StageOverride(stage=0, num_gpus=2, tp=2), StageOverride(stage=1, num_gpus=2)),
+        colocated_vision=rdsp.ColocatedVision(),
+    ),
 }
 
 
@@ -56,8 +69,11 @@ LAYOUTS = {
 def ray_ctx():
     """A fresh Ray per case: a failed case's actors cannot hold the GPUs."""
     unit = os.path.abspath(os.path.join(HERE, "..", "unit"))
-    ray.init(include_dashboard=False, log_to_driver=False,
-             runtime_env={"env_vars": {"PYTHONPATH": f"{HERE}:{unit}"}})
+    ray.init(
+        include_dashboard=False,
+        log_to_driver=False,
+        runtime_env={"env_vars": {"PYTHONPATH": f"{HERE}:{unit}"}},
+    )
     yield
     ray.shutdown()
 
@@ -75,8 +91,9 @@ def reference_losses(steps):
         opt.zero_grad()
         total = 0.0
         for inputs, labels in make_batches():
-            full = {k: (torch.cat(v) if isinstance(v, list) else v).cuda()
-                    for k, v in inputs.items()}
+            full = {
+                k: (torch.cat(v) if isinstance(v, list) else v).cuda() for k, v in inputs.items()
+            }
             loss = lm_loss(net(**full, use_cache=False).logits, labels.cuda()) / N_MB
             loss.backward()
             total += float(loss)
@@ -89,11 +106,16 @@ def reference_losses(steps):
 def test_layout_matches_unsplit_model(ray_ctx, name):
     layout = LAYOUTS[name]
     engine, _, _, _ = rdsp.initialize(
-        model=model(), config=DS, loss_fn=lm_loss,
+        model=model(),
+        config=DS,
+        loss_fn=lm_loss,
         pipeline_config=rdsp.PipelineConfig(
-            stages=len(layout["cuts"]) + 1, partition=rdsp.ExplicitCuts(layout["cuts"]),
+            stages=len(layout["cuts"]) + 1,
+            partition=rdsp.ExplicitCuts(layout["cuts"]),
             stage_overrides=layout["overrides"],
-            colocated_vision=layout.get("colocated_vision")))
+            colocated_vision=layout.get("colocated_vision"),
+        ),
+    )
     try:
         got = [float(engine.train_batch(data_iter=iter(make_batches()))) for _ in range(3)]
     finally:

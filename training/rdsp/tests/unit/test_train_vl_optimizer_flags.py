@@ -48,25 +48,44 @@ def test_remainder_asks_the_adapter_and_leaves_deepspeed_s_keys_alone():
 
 
 @pytest.mark.parametrize("master", ["bf16", "remainder"])
-@pytest.mark.parametrize("flags,needs", [
-    ([], "--grad-dtype bf16"),
-    (["--grad-dtype", "bf16", "--colocated-vision"], "replicated"),
-])
+@pytest.mark.parametrize(
+    "flags,needs",
+    [
+        ([], "--grad-dtype bf16"),
+        (["--grad-dtype", "bf16", "--colocated-vision"], "replicated"),
+    ],
+)
 def test_low_precision_masters_refused_where_deepspeed_would_keep_fp32(master, flags, needs):
     problem = train_vl.optimizer_problem(parse("--master-dtype", master, *flags))
     assert needs in problem and f"--master-dtype {master}" in problem
 
 
 @pytest.mark.parametrize("master", ["bf16", "remainder"])
-@pytest.mark.parametrize("stage,needs", [
-    ("1:gpus=4,tp=4,zero=0", "stage 1 has 0"),
-    ("1:gpus=4,tp=4", "stage 1 has 0"),  # inherits --zero's default 0
-    ("1:gpus=4,tp=4,zero=1,offload=1", "offload"),
-])
-def test_low_precision_masters_need_zero_1_or_2_without_offload_on_every_stage(master, stage, needs):
+@pytest.mark.parametrize(
+    "stage,needs",
+    [
+        ("1:gpus=4,tp=4,zero=0", "stage 1 has 0"),
+        ("1:gpus=4,tp=4", "stage 1 has 0"),  # inherits --zero's default 0
+        ("1:gpus=4,tp=4,zero=1,offload=1", "offload"),
+    ],
+)
+def test_low_precision_masters_need_zero_1_or_2_without_offload_on_every_stage(
+    master, stage, needs
+):
     args = train_vl.build_parser().parse_args(
-        ["--stages", "2", "--stage", "0:gpus=4,tp=4,zero=1", "--stage", stage,
-         "--master-dtype", master, "--grad-dtype", "bf16"])
+        [
+            "--stages",
+            "2",
+            "--stage",
+            "0:gpus=4,tp=4,zero=1",
+            "--stage",
+            stage,
+            "--master-dtype",
+            master,
+            "--grad-dtype",
+            "bf16",
+        ]
+    )
     assert needs in train_vl.optimizer_problem(args)
 
 
@@ -80,14 +99,21 @@ def test_fused_adam_is_off_by_default_and_passed_to_torch_adamw_when_asked():
     params = train_vl.ds_config(parse("--fused-adam"))["optimizer"]["params"]
     assert params["fused"] is True and params["torch_adam"] is True
     assert train_vl.optimizer_problem(parse("--fused-adam")) is None
-    assert train_vl.optimizer_problem(
-        parse("--fused-adam", "--grad-dtype", "bf16")) is None
+    assert train_vl.optimizer_problem(parse("--fused-adam", "--grad-dtype", "bf16")) is None
 
 
 def test_fused_adam_refused_under_offload():
     args = train_vl.build_parser().parse_args(
-        ["--stages", "2", "--stage", "0:gpus=4,tp=4,zero=1",
-         "--stage", "1:gpus=4,tp=4,zero=1,offload=1", "--fused-adam"])
+        [
+            "--stages",
+            "2",
+            "--stage",
+            "0:gpus=4,tp=4,zero=1",
+            "--stage",
+            "1:gpus=4,tp=4,zero=1,offload=1",
+            "--fused-adam",
+        ]
+    )
     assert "stage 1 offloads" in train_vl.optimizer_problem(args)
 
 
@@ -95,5 +121,6 @@ def test_stage_key_recompute_blocks():
     (stage,) = parse().stage[:1]
     assert stage.recompute_blocks is None
     args = train_vl.build_parser().parse_args(
-        ["--stages", "1", "--stage", "0:gpus=8,tp=2,recompute_blocks=24"])
+        ["--stages", "1", "--stage", "0:gpus=8,tp=2,recompute_blocks=24"]
+    )
     assert args.stage[0].recompute_blocks == 24 and not args.stage[0].recompute

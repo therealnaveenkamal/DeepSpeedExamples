@@ -64,9 +64,7 @@ class FakeStageWorker:
 
 def build(stages=2, microbatches=4, fail_on=None):
     plan = make_plan(stages, microbatches)
-    workers = [FakeStageWorker(s, s == stages - 1,
-                               (fail_on or {}).get(s))
-               for s in range(stages)]
+    workers = [FakeStageWorker(s, s == stages - 1, (fail_on or {}).get(s)) for s in range(stages)]
     return PipelineCoordinator(plan, workers), workers
 
 
@@ -103,8 +101,7 @@ def test_exhausted_iterator_fails_before_any_dispatch():
     with pytest.raises(StepFailed):
         coord.train_batch(iter([("x0", "y0")]))
     assert coord.global_steps == 0
-    assert all(w.commands == [] for w in workers), \
-        "no command may be issued when consumption fails"
+    assert all(w.commands == [] for w in workers), "no command may be issued when consumption fails"
 
 
 def test_forward_failure_aborts_without_poison_and_is_retryable():
@@ -174,21 +171,21 @@ def test_facade_integration_with_real_coordinator():
 
     def factory(*, model, pipeline_config, ds_config, loss_fn, weights=None):
         plan = lower(model, pipeline_config, ds_config)
-        workers = [FakeStageWorker(s, s == len(plan.stages) - 1)
-                   for s in range(len(plan.stages))]
+        workers = [FakeStageWorker(s, s == len(plan.stages) - 1) for s in range(len(plan.stages))]
         return PipelineCoordinator(plan, workers)
 
     original = api._coordinator_factory
     api._coordinator_factory = factory
     try:
         engine, _, _, _ = rdsp.initialize(
-            model=model, config={"train_batch_size": 8},
+            model=model,
+            config={"train_batch_size": 8},
             pipeline_config=rdsp.PipelineConfig(
-                stages=2, partition=rdsp.UniformTransformerBlocks(),
-                microbatches=4),
-            loss_fn=lambda outputs, labels: 0.0)
-        loss = engine.train_batch(data_iter=iter([(f"x{k}", f"y{k}")
-                                                  for k in range(4)]))
+                stages=2, partition=rdsp.UniformTransformerBlocks(), microbatches=4
+            ),
+            loss_fn=lambda outputs, labels: 0.0,
+        )
+        loss = engine.train_batch(data_iter=iter([(f"x{k}", f"y{k}") for k in range(4)]))
         assert isinstance(loss, torch.Tensor) and loss.shape == ()
         assert engine.global_steps == 1
     finally:
@@ -197,6 +194,7 @@ def test_facade_integration_with_real_coordinator():
 
 def build_prefetching(microbatches=2):
     import dataclasses
+
     plan = dataclasses.replace(make_plan(2, microbatches), prefetch=True)
     workers = [FakeStageWorker(s, s == 1) for s in range(2)]
     return PipelineCoordinator(plan, workers), workers

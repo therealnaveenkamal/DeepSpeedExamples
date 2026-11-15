@@ -11,19 +11,25 @@ from ray_deepspeed_pipeline.deepspeed_adapter import (
 
 
 def zero1_bf16(**bf16):
-    return {"bf16": {"enabled": True, **bf16}, "zero_optimization": {"stage": 1},
-            "data_types": {"grad_accum_dtype": "fp32"}}
+    return {
+        "bf16": {"enabled": True, **bf16},
+        "zero_optimization": {"stage": 1},
+        "data_types": {"grad_accum_dtype": "fp32"},
+    }
 
 
 def test_immediate_update_is_on_where_deepspeed_accumulates_bf16_grads_in_fp32():
     assert _with_immediate_grad_update(zero1_bf16())["bf16"]["immediate_grad_update"]
     # an explicit choice stays
-    assert not _with_immediate_grad_update(
-        zero1_bf16(immediate_grad_update=False))["bf16"]["immediate_grad_update"]
+    assert not _with_immediate_grad_update(zero1_bf16(immediate_grad_update=False))["bf16"][
+        "immediate_grad_update"
+    ]
     # other setups are left alone
-    for conf in ({**zero1_bf16(), "zero_optimization": {"stage": 2}},
-                 {**zero1_bf16(), "data_types": {"grad_accum_dtype": "bf16"}},
-                 {"zero_optimization": {"stage": 1}}):
+    for conf in (
+        {**zero1_bf16(), "zero_optimization": {"stage": 2}},
+        {**zero1_bf16(), "data_types": {"grad_accum_dtype": "bf16"}},
+        {"zero_optimization": {"stage": 1}},
+    ):
         assert "immediate_grad_update" not in _with_immediate_grad_update(conf).get("bf16", {})
 
 
@@ -54,6 +60,7 @@ def test_each_bf16_grad_is_freed_once_added_into_fp32():
 def test_other_optimizers_are_left_alone():
     class Plain:
         immediate_grad_update = False
+
     opt = Plain()
     _free_bf16_grads_after_accumulating(opt)
     assert not hasattr(opt, "accumulate_hp_grads_and_remove_lp")
@@ -90,7 +97,7 @@ def accumulate_microbatches(opt, grads):
 
 def test_direct_add_gives_deepspeeds_bits_without_its_conversion(monkeypatch):
     torch.manual_seed(0)
-    grads = [torch.randn(2, 3).to(torch.bfloat16) * 10 ** k for k in (-3, 0, 2, -1)]
+    grads = [torch.randn(2, 3).to(torch.bfloat16) * 10**k for k in (-3, 0, 2, -1)]
     monkeypatch.setenv("RDSP_DIRECT_GRAD_ADD", "0")  # DeepSpeed's own add, for the reference
     reference = FakeDeepSpeedBF16Optimizer(6)
     accumulate_microbatches(reference, grads)

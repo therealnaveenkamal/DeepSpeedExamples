@@ -56,13 +56,19 @@ class FakeStage:
                 with open(ckpt.rng_path(root, tag, self.stage, r), "wb") as f:
                     f.write(b"rng")
                 ranks.append({"rank": r})
-            return {"index": self.stage, "world_size": self.world_size,
-                    "ranks": ranks, "files": ckpt.digest_tree(sdir)}
+            return {
+                "index": self.stage,
+                "world_size": self.world_size,
+                "ranks": ranks,
+                "files": ckpt.digest_tree(sdir),
+            }
         if command.kind == "load" and "verify" in control:
             try:
                 ckpt.verify_stage_files(
                     ckpt.stage_dir(control["root"], control["tag"], self.stage),
-                    self.stage, control["verify"][self.stage])
+                    self.stage,
+                    control["verify"][self.stage],
+                )
             except CheckpointError as e:
                 return str(e)
             return True
@@ -78,19 +84,25 @@ class FakeStage:
 def make_coordinator(world_sizes=(1, 2), stage_kwargs=None, prefetch=False):
     stage_kwargs = stage_kwargs or {}
     overrides = [StageOverride(stage=i, num_gpus=n) for i, n in enumerate(world_sizes)]
-    cfg = rdsp.PipelineConfig(stages=len(world_sizes),
-                              partition=rdsp.UniformTransformerBlocks(),
-                              stage_overrides=overrides, prefetch=prefetch)
+    cfg = rdsp.PipelineConfig(
+        stages=len(world_sizes),
+        partition=rdsp.UniformTransformerBlocks(),
+        stage_overrides=overrides,
+        prefetch=prefetch,
+    )
     plan = lower(ToyLM(), cfg, DS)
-    stages = [FakeStage(i, n, is_last=i == len(world_sizes) - 1, **stage_kwargs.get(i, {}))
-              for i, n in enumerate(world_sizes)]
+    stages = [
+        FakeStage(i, n, is_last=i == len(world_sizes) - 1, **stage_kwargs.get(i, {}))
+        for i, n in enumerate(world_sizes)
+    ]
     return plan, stages, PipelineCoordinator(plan, stages)
 
 
 def test_all_stage_rank_save(tmp_path):
     plan, stages, coord = make_coordinator((1, 2))
-    assert coord.save_checkpoint(str(tmp_path), "t1", client_state={"note": 1},
-                                 data_position={"owner": "caller"})
+    assert coord.save_checkpoint(
+        str(tmp_path), "t1", client_state={"note": 1}, data_position={"owner": "caller"}
+    )
     manifest = json.loads((tmp_path / "t1" / "manifest.json").read_text())
     assert (tmp_path / "latest").read_text() == "t1"
     assert manifest["plan_hash"] == plan.plan_hash()
@@ -100,8 +112,7 @@ def test_all_stage_rank_save(tmp_path):
     assert [[r["rank"] for r in s["ranks"]] for s in manifest["stages"]] == [[0], [0, 1]]
     # every shard and rng file of every rank is fingerprinted
     files = manifest["stages"][1]["files"]
-    assert {"t1/shard_rank0.pt", "t1/shard_rank1.pt",
-            "rng/rank0.pt", "rng/rank1.pt"} <= set(files)
+    assert {"t1/shard_rank0.pt", "t1/shard_rank1.pt", "rng/rank0.pt", "rng/rank1.pt"} <= set(files)
     for rel, digest in files.items():
         assert ckpt.file_digest(str(tmp_path / "t1" / "stage1" / rel)) == digest
 
@@ -167,8 +178,7 @@ def test_failure_keeps_manifest_unpublished(tmp_path):
     with pytest.raises(CheckpointError, match="no manifest was published"):
         coord.save_checkpoint(str(tmp_path), "broken")
     assert not (tmp_path / "broken" / "manifest.json").exists()
-    assert (tmp_path / "latest").read_text() == "committed", \
-        "a failed save must not move `latest`"
+    assert (tmp_path / "latest").read_text() == "committed", "a failed save must not move `latest`"
 
 
 def test_poisoned_pipeline_refuses_to_save(tmp_path):

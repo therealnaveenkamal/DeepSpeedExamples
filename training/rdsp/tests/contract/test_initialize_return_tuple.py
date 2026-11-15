@@ -21,8 +21,9 @@ def test_four_tuple_with_training_data(fake_coordinator, tiny_model, tiny_datase
     engine, optimizer, dataloader, scheduler = result
     assert isinstance(engine, rdsp.RayPipelineEngine)
     assert optimizer is None, "no fake optimizer proxy may be returned"
-    assert isinstance(dataloader, DataLoader), \
+    assert isinstance(dataloader, DataLoader), (
         "third element is the driver-side loader, not an actor proxy"
+    )
     assert scheduler is None, "no fake scheduler proxy may be returned"
 
 
@@ -70,8 +71,10 @@ def test_parameter_subsets_and_groups_rejected(fake_coordinator, tiny_model, pip
     silently ignored, so it is refused."""
     with pytest.raises(UnsupportedInV1, match="subsets"):
         _init(tiny_model, pipeline_config, model_parameters=tiny_model[0].parameters())
-    groups = [{"params": list(tiny_model[0].parameters()), "lr": 0.1},
-              {"params": list(tiny_model[2].parameters())}]
+    groups = [
+        {"params": list(tiny_model[0].parameters()), "lr": 0.1},
+        {"params": list(tiny_model[2].parameters())},
+    ]
     with pytest.raises(UnsupportedInV1, match="groups"):
         _init(tiny_model, pipeline_config, model_parameters=groups)
 
@@ -85,6 +88,7 @@ def test_config_rejects_external_runtime_fields(fake_coordinator, tiny_model, pi
 
 def test_unserializable_loss_fn_rejected(fake_coordinator, tiny_model, pipeline_config):
     import threading
+
     lock = threading.Lock()
 
     def loss_with_lock(outputs, labels):

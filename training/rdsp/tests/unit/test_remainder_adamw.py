@@ -7,14 +7,30 @@ import torch
 
 from ray_deepspeed_pipeline.remainder_adamw import RemainderAdamW, join_master, split_master
 
-EDGES = [0.0, -0.0, 1.0, -1.0, 1e-40, -1e-40, 3.0e38, -3.0e38, 1e-8, 65504.0,
-         float("inf"), float("-inf")]
+EDGES = [
+    0.0,
+    -0.0,
+    1.0,
+    -1.0,
+    1e-40,
+    -1e-40,
+    3.0e38,
+    -3.0e38,
+    1e-8,
+    65504.0,
+    float("inf"),
+    float("-inf"),
+]
 
 
 def masters():
     g = torch.Generator().manual_seed(0)
-    x = torch.cat([torch.randn(10_000, generator=g) * 10 ** torch.randint(-6, 6, (10_000,), generator=g),
-                   torch.tensor(EDGES)])
+    x = torch.cat(
+        [
+            torch.randn(10_000, generator=g) * 10 ** torch.randint(-6, 6, (10_000,), generator=g),
+            torch.tensor(EDGES),
+        ]
+    )
     # every low half-word pattern around the rounding point, both signs
     low = torch.tensor([0x0000, 0x0001, 0x7FFF, 0x8000, 0x8001, 0xFFFF], dtype=torch.int32)
     for high in (0x3F80, 0xBF80, 0x0000, 0x8000, 0x7F7F, 0xFF7F):

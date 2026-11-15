@@ -26,16 +26,23 @@ from ray_deepspeed_pipeline.stage_group import create_stage_clients
 
 ray = pytest.importorskip("ray")
 
-DS = {"train_batch_size": N_MB * ROWS, "gradient_accumulation_steps": N_MB,
-      "train_micro_batch_size_per_gpu": ROWS,
-      "optimizer": {"type": "AdamW", "params": {"lr": 0.05}}}
+DS = {
+    "train_batch_size": N_MB * ROWS,
+    "gradient_accumulation_steps": N_MB,
+    "train_micro_batch_size_per_gpu": ROWS,
+    "optimizer": {"type": "AdamW", "params": {"lr": 0.05}},
+}
 
 
 @pytest.fixture(scope="module")
 def ray_ctx():
     unit_dir = os.path.join(os.path.dirname(__file__), "..", "unit")
-    ray.init(num_cpus=3, include_dashboard=False, log_to_driver=False,
-             runtime_env={"env_vars": {"PYTHONPATH": os.path.abspath(unit_dir)}})
+    ray.init(
+        num_cpus=3,
+        include_dashboard=False,
+        log_to_driver=False,
+        runtime_env={"env_vars": {"PYTHONPATH": os.path.abspath(unit_dir)}},
+    )
     yield
     ray.shutdown()
 
@@ -46,17 +53,18 @@ def runtime(ray_ctx):
     model = ToyLM()
     cfg = rdsp.PipelineConfig(stages=2, partition=rdsp.UniformTransformerBlocks())
     plan = lower(model, cfg, DS)
-    clients = create_stage_clients(model, plan, loss_fn,
-                                   engine_factory=stub_engine_factory,
-                                   use_gpu=False)
+    clients = create_stage_clients(
+        model, plan, loss_fn, engine_factory=stub_engine_factory, use_gpu=False
+    )
     coordinator = PipelineCoordinator(plan, clients)
     engine = RayPipelineEngine(coordinator)
     return model, plan, clients, coordinator, engine
 
 
 def microbatches(ids, labels):
-    return [(ids[k * ROWS:(k + 1) * ROWS], labels[k * ROWS:(k + 1) * ROWS])
-            for k in range(N_MB)]
+    return [
+        (ids[k * ROWS : (k + 1) * ROWS], labels[k * ROWS : (k + 1) * ROWS]) for k in range(N_MB)
+    ]
 
 
 def test_three_step_loss_trajectory_matches_monolithic(runtime):
@@ -79,8 +87,9 @@ def test_three_step_loss_trajectory_matches_monolithic(runtime):
         opt.step()
         ref_losses.append(float(ref_loss.detach()))
 
-    assert staged_losses == pytest.approx(ref_losses, rel=1e-5), \
+    assert staged_losses == pytest.approx(ref_losses, rel=1e-5), (
         f"staged {staged_losses} vs monolithic {ref_losses}"
+    )
     assert staged_losses[2] < staged_losses[0], "training must reduce the loss"
     assert engine.global_steps == 3
 
@@ -95,12 +104,10 @@ def test_actors_execute_commands_in_schedule_order(runtime):
     model, plan, clients, coordinator, engine = runtime
     ids, labels = make_data()
     engine.train_batch(data_iter=iter(microbatches(ids, labels)))
-    expected = generate_commands(plan, coordinator._generation,
-                                 engine.global_steps - 1)
+    expected = generate_commands(plan, coordinator._generation, engine.global_steps - 1)
     for s, client in enumerate(clients):
         executed = ray.get(client.actors[0].executed_commands.remote())
-        this_gen = [c for c in executed
-                    if c.startswith(f"g{coordinator._generation}.")]
+        this_gen = [c for c in executed if c.startswith(f"g{coordinator._generation}.")]
         assert this_gen == [c.command_id for c in expected[s]], f"stage {s}"
 
 
@@ -122,19 +129,20 @@ def test_through_public_initialize(ray_ctx, monkeypatch):
 
     def factory(*, model, pipeline_config, ds_config, loss_fn, weights=None):
         plan = lower(model, pipeline_config, ds_config)
-        clients = create_stage_clients(model, plan, loss_fn,
-                                       engine_factory=stub_engine_factory,
-                                       use_gpu=False)
+        clients = create_stage_clients(
+            model, plan, loss_fn, engine_factory=stub_engine_factory, use_gpu=False
+        )
         return PipelineCoordinator(plan, clients)
 
     monkeypatch.setattr(api, "_coordinator_factory", factory)
     torch.manual_seed(0)
     ids, labels = make_data()
     engine, opt, loader, sched = rdsp.initialize(
-        model=ToyLM(), config=DS,
-        pipeline_config=rdsp.PipelineConfig(
-            stages=2, partition=rdsp.UniformTransformerBlocks()),
-        loss_fn=loss_fn)
+        model=ToyLM(),
+        config=DS,
+        pipeline_config=rdsp.PipelineConfig(stages=2, partition=rdsp.UniformTransformerBlocks()),
+        loss_fn=loss_fn,
+    )
     assert opt is None and loader is None and sched is None
     loss = engine.train_batch(data_iter=iter(microbatches(ids, labels)))
     assert loss.shape == () and loss.device.type == "cpu"
@@ -144,8 +152,7 @@ def test_through_public_initialize(ray_ctx, monkeypatch):
 # Recorded from both dispatch paths (stage-local and the former driver-dispatched
 # one), which agreed bit for bit at 1 and 3 stages before the driver path was
 # removed: three train steps, then one eval.
-REFERENCE_LOSSES = [3.2497334480285645, 2.7702560424804688, 2.578868865966797,
-                    2.4435534477233887]
+REFERENCE_LOSSES = [3.2497334480285645, 2.7702560424804688, 2.578868865966797, 2.4435534477233887]
 
 
 @pytest.mark.parametrize("stages", [1, 3])
@@ -155,14 +162,17 @@ def test_losses_match_recorded_reference(ray_ctx, stages):
     ids, labels = make_data()
     torch.manual_seed(0)
     model = ToyLM()
-    plan = lower(model, rdsp.PipelineConfig(
-        stages=stages, partition=rdsp.UniformTransformerBlocks()), DS)
-    clients = create_stage_clients(model, plan, loss_fn,
-                                   engine_factory=stub_engine_factory, use_gpu=False)
+    plan = lower(
+        model, rdsp.PipelineConfig(stages=stages, partition=rdsp.UniformTransformerBlocks()), DS
+    )
+    clients = create_stage_clients(
+        model, plan, loss_fn, engine_factory=stub_engine_factory, use_gpu=False
+    )
     engine = RayPipelineEngine(PipelineCoordinator(plan, clients))
     try:
-        losses = [float(engine.train_batch(data_iter=iter(microbatches(ids, labels))))
-                  for _ in range(3)]
+        losses = [
+            float(engine.train_batch(data_iter=iter(microbatches(ids, labels)))) for _ in range(3)
+        ]
         losses.append(float(engine.eval_batch(data_iter=iter(microbatches(ids, labels)))))
     finally:
         for client in clients:
@@ -186,8 +196,9 @@ def test_public_initialize_builds_hf_causal_lm_stages(ray_ctx, monkeypatch):
 
     def cpu_stub_clients(model, plan, loss_fn, **kw):
         assert "stage_builder" not in kw  # the default path passes none
-        clients = real(model, plan, loss_fn, engine_factory=stub_engine_factory,
-                       use_gpu=False, **kw)
+        clients = real(
+            model, plan, loss_fn, engine_factory=stub_engine_factory, use_gpu=False, **kw
+        )
         built.append(clients)
         return clients
 
@@ -195,9 +206,16 @@ def test_public_initialize_builds_hf_causal_lm_stages(ray_ctx, monkeypatch):
 
     torch.manual_seed(0)
     cfg = transformers.Qwen3Config(
-        vocab_size=VOCAB, hidden_size=16, intermediate_size=32, num_hidden_layers=4,
-        num_attention_heads=4, num_key_value_heads=2, head_dim=4,
-        max_position_embeddings=64, tie_word_embeddings=False)
+        vocab_size=VOCAB,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=4,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=4,
+        max_position_embeddings=64,
+        tie_word_embeddings=False,
+    )
     model = transformers.Qwen3ForCausalLM(cfg).float().eval()
 
     def lm_loss(out, labels):
@@ -209,9 +227,11 @@ def test_public_initialize_builds_hf_causal_lm_stages(ray_ctx, monkeypatch):
         expected = sum(float(lm_loss(model(x).logits, y)) for x, y in batches) / N_MB
 
     engine, _, _, _ = rdsp.initialize(
-        model=model, config=DS, loss_fn=lm_loss,
-        pipeline_config=rdsp.PipelineConfig(
-            stages=2, partition=rdsp.UniformTransformerBlocks()))
+        model=model,
+        config=DS,
+        loss_fn=lm_loss,
+        pipeline_config=rdsp.PipelineConfig(stages=2, partition=rdsp.UniformTransformerBlocks()),
+    )
     try:
         # the generic builder cannot run Qwen3 layers at all (they need
         # position embeddings), so a matching loss proves the right builder
@@ -229,14 +249,16 @@ def test_too_few_gpus_fails_before_any_actor_starts(ray_ctx):
     model = ToyLM()
     cfg = rdsp.PipelineConfig(stages=2, partition=rdsp.UniformTransformerBlocks())
     plan = lower(model, cfg, DS)
-    actors_before = len(ray.util.list_named_actors(all_namespaces=True)) \
-        if hasattr(ray.util, "list_named_actors") else None
+    actors_before = (
+        len(ray.util.list_named_actors(all_namespaces=True))
+        if hasattr(ray.util, "list_named_actors")
+        else None
+    )
     have = int(ray.cluster_resources().get("GPU", 0))
     if have >= 2:
         pytest.skip("this cluster has enough GPUs")
     with pytest.raises(rdsp.errors.ValidationError, match=f"needs 2 GPUs.*has {have}"):
-        create_stage_clients(model, plan, loss_fn, engine_factory=stub_engine_factory,
-                             use_gpu=True)
+        create_stage_clients(model, plan, loss_fn, engine_factory=stub_engine_factory, use_gpu=True)
     if actors_before is not None:
         assert len(ray.util.list_named_actors(all_namespaces=True)) == actors_before
 
@@ -256,6 +278,7 @@ def test_measure_stages_then_shutdown(runtime):
     assert all(not rank["records"] for stage in clients for rank in stage.profile_records())
     engine.shutdown()
     import time
+
     deadline = time.monotonic() + 30  # ray.kill takes effect asynchronously
     while any(client.alive(timeout=5) for client in clients) and time.monotonic() < deadline:
         time.sleep(0.5)
@@ -266,8 +289,12 @@ def test_measure_stages_then_shutdown(runtime):
     policy = rdsp.BalancedTransformerBlocks(measured=measured)
     cfg = rdsp.PipelineConfig(stages=2, partition=policy)
     replan = lower(model, cfg, DS)
-    coordinator = PipelineCoordinator(replan, create_stage_clients(
-        model, replan, loss_fn, engine_factory=stub_engine_factory, use_gpu=False))
+    coordinator = PipelineCoordinator(
+        replan,
+        create_stage_clients(
+            model, replan, loss_fn, engine_factory=stub_engine_factory, use_gpu=False
+        ),
+    )
     loss = RayPipelineEngine(coordinator).train_batch(data_iter=iter(microbatches(ids, labels)))
     assert torch.isfinite(loss)
     coordinator.shutdown()

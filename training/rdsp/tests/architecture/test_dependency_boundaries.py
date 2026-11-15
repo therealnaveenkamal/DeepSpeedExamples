@@ -17,15 +17,21 @@ def _import_leaks(module, forbidden):
         f"import sys, importlib; importlib.import_module('{module}'); "
         f"print(sorted(m for m in {forbidden!r} if m in sys.modules))"
     )
-    out = subprocess.run([sys.executable, "-c", snippet],
-                         capture_output=True, text=True)
+    out = subprocess.run([sys.executable, "-c", snippet], capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
     return eval(out.stdout.strip())
 
 
 def test_compile_path_never_imports_ray_or_deepspeed():
-    for module in (PKG, f"{PKG}.compiler", f"{PKG}.partition", f"{PKG}.plan",
-                   f"{PKG}.config", f"{PKG}.protocols", f"{PKG}.support_matrix"):
+    for module in (
+        PKG,
+        f"{PKG}.compiler",
+        f"{PKG}.partition",
+        f"{PKG}.plan",
+        f"{PKG}.config",
+        f"{PKG}.protocols",
+        f"{PKG}.support_matrix",
+    ):
         assert _import_leaks(module, ["ray", "deepspeed", "cupy"]) == [], module
 
 
@@ -35,14 +41,18 @@ def test_schema_modules_are_plain_data():
     import ast
     import importlib.util
 
-    for module in (f"{PKG}.plan", f"{PKG}.config", f"{PKG}.protocols",
-                   f"{PKG}.support_matrix"):
+    for module in (f"{PKG}.plan", f"{PKG}.config", f"{PKG}.protocols", f"{PKG}.support_matrix"):
         source = open(importlib.util.find_spec(module).origin).read()
         for node in ast.walk(ast.parse(source)):
-            names = ([a.name for a in node.names] if isinstance(node, ast.Import)
-                     else [node.module or ""] if isinstance(node, ast.ImportFrom)
-                     else [])
+            names = (
+                [a.name for a in node.names]
+                if isinstance(node, ast.Import)
+                else [node.module or ""]
+                if isinstance(node, ast.ImportFrom)
+                else []
+            )
             for name in names:
                 root = name.split(".")[0]
-                assert root not in ("torch", "ray", "deepspeed"), \
+                assert root not in ("torch", "ray", "deepspeed"), (
                     f"{module} imports {name}: schema modules are plain data"
+                )

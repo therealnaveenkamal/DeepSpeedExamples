@@ -74,8 +74,16 @@ class VisionSpec:
 
 
 # fields that change how a step runs, not a stage's parameters or saved state
-_RUNTIME_ONLY = frozenset({"prefetch", "recompute", "recompute_blocks", "compile",
-                           "compile_vision", "encode_per_microbatch"})
+_RUNTIME_ONLY = frozenset(
+    {
+        "prefetch",
+        "recompute",
+        "recompute_blocks",
+        "compile",
+        "compile_vision",
+        "encode_per_microbatch",
+    }
+)
 
 
 def _without(value, keys: frozenset):
@@ -105,13 +113,13 @@ class ExecutionPlan:
         return dataclasses.asdict(self)
 
     def canonical_json(self) -> str:
-        return json.dumps(self.to_canonical_dict(), sort_keys=True,
-                          separators=(",", ":"))
+        return json.dumps(self.to_canonical_dict(), sort_keys=True, separators=(",", ":"))
 
     def plan_hash(self) -> str:
         """Binds checkpoints to the plan. Settings that change how steps run
         but not what a stage saves (_RUNTIME_ONLY) are left out, so toggling
         them keeps a checkpoint loadable."""
         kept = _without(self.to_canonical_dict(), _RUNTIME_ONLY)
-        return hashlib.sha256(json.dumps(kept, sort_keys=True, separators=(",", ":"))
-                              .encode()).hexdigest()
+        return hashlib.sha256(
+            json.dumps(kept, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()

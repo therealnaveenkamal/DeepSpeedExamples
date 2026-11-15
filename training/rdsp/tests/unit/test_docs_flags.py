@@ -47,7 +47,7 @@ def documented_flags():
             match = _SCRIPT.search(command)
             if match is None:
                 continue
-            rest = command[match.end():].split("#", 1)[0]
+            rest = command[match.end() :].split("#", 1)[0]
             for flag in _FLAG.findall(rest):
                 found.add((os.path.basename(doc), _script_of(match.group(1)), flag))
     return sorted(found)
@@ -78,6 +78,7 @@ def test_every_documented_flag_exists(doc, script, flag):
 
 @pytest.mark.parametrize("doc,flag", bare_flags())
 def test_every_inline_flag_exists(doc, flag):
-    options = set(_parser("train_vl.py")._option_string_actions) \
-        | set(_parser("train.py")._option_string_actions)
+    options = set(_parser("train_vl.py")._option_string_actions) | set(
+        _parser("train.py")._option_string_actions
+    )
     assert flag in options, f"{doc}: neither train_vl.py nor train.py has {flag}"

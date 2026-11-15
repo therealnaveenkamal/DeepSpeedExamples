@@ -27,18 +27,18 @@ class StagePartition:
     block_stop: int
 
 
-
 def vision_config(model):
     """The model's vision encoder config (HF `config.vision_config`), or None."""
     return getattr(getattr(model, "config", None), "vision_config", None)
+
 
 def find_block_list(model: nn.Module) -> tuple[str, nn.ModuleList]:
     """(name, module) of the longest ModuleList whose children share one
     class. Raises ValidationError if there is none, or a tie."""
     candidates = [
-        (name, m) for name, m in model.named_modules()
-        if isinstance(m, nn.ModuleList) and len(m) >= 2
-        and len({type(c) for c in m}) == 1
+        (name, m)
+        for name, m in model.named_modules()
+        if isinstance(m, nn.ModuleList) and len(m) >= 2 and len({type(c) for c in m}) == 1
     ]
     # a vision-language model's pipeline cuts its decoder, never the encoder
     # (which may be as deep: Qwen3.5-2B has 24 of each)
@@ -49,13 +49,14 @@ def find_block_list(model: nn.Module) -> tuple[str, nn.ModuleList]:
         raise ValidationError(
             "no transformer block list found: expected a ModuleList of >=2 "
             "same-class blocks; use ExplicitCuts on a model this heuristic "
-            "cannot read")
+            "cannot read"
+        )
     longest = max(len(m) for _, m in candidates)
     winners = [(n, m) for n, m in candidates if len(m) == longest]
     if len(winners) > 1:
         raise ValidationError(
-            f"ambiguous block lists {[n for n, _ in winners]}: "
-            f"partitioning refuses to guess")
+            f"ambiguous block lists {[n for n, _ in winners]}: partitioning refuses to guess"
+        )
     return winners[0]
 
 
@@ -63,6 +64,7 @@ def _vision_encoder_path(model: nn.Module) -> str | None:
     if vision_config(model) is None:
         return None
     from ray_deepspeed_pipeline.vision import find_vision_encoder
+
     try:
         return find_vision_encoder(model)
     except ValidationError:
@@ -76,8 +78,8 @@ def _cuts_for(policy, n_blocks: int, stages: int, vision: bool = False) -> list[
         cuts = list(policy.cuts)
         if len(cuts) != stages - 1:
             raise ValidationError(
-                f"ExplicitCuts needs {stages - 1} cuts for {stages} stages, "
-                f"got {len(cuts)}")
+                f"ExplicitCuts needs {stages - 1} cuts for {stages} stages, got {len(cuts)}"
+            )
     elif isinstance(policy, (UniformTransformerBlocks, UniformSequential)):
         base, extra = divmod(n_blocks, stages)
         sizes = [base + (1 if i < extra else 0) for i in range(stages)]
@@ -91,7 +93,8 @@ def _cuts_for(policy, n_blocks: int, stages: int, vision: bool = False) -> list[
     if cuts and cuts[0] == 0 and not vision:
         raise ValidationError(
             "a first cut at 0 leaves the first stage no blocks, which only a model "
-            "with a vision encoder can use (a vision-only stage)")
+            "with a vision encoder can use (a vision-only stage)"
+        )
     if any(c < 0 or c >= n_blocks for c in cuts) or 0 in cuts[1:]:
         raise ValidationError(f"cuts must lie in (0, {n_blocks}), got {cuts}")
     if any(a >= b for a, b in zip(cuts, cuts[1:])):
@@ -107,8 +110,9 @@ def vision_injection_depth(model: nn.Module) -> int:
     return len(getattr(vision, "deepstack_visual_indexes", None) or ())
 
 
-def _compute_costs(model: nn.Module, blocks_name: str, blocks,
-                   exclude: str | None = None) -> tuple[int, list[int], int]:
+def _compute_costs(
+    model: nn.Module, blocks_name: str, blocks, exclude: str | None = None
+) -> tuple[int, list[int], int]:
     """(before the blocks, per block, after the blocks) cost estimates in
     parameters, embeddings and the `exclude` module excluded, each shared
     parameter counted once."""
@@ -128,7 +132,7 @@ def _compute_costs(model: nn.Module, blocks_name: str, blocks,
                 continue
             seen.add(id(param))
             if name.startswith(prefix):
-                per_block[int(name[len(prefix):].split(".", 1)[0])] += param.numel()
+                per_block[int(name[len(prefix) :].split(".", 1)[0])] += param.numel()
             elif position[name] < first:
                 pre += param.numel()
             else:
@@ -162,8 +166,9 @@ def vision_token_ratio(hf_config, sample) -> float:
     return weighted / max(tokens, 1)
 
 
-def _balanced_cuts(costs: tuple, stages: int, min_first: int,
-                   stage_gpus: tuple[int, ...], extra=None, fits=None) -> list[int]:
+def _balanced_cuts(
+    costs: tuple, stages: int, min_first: int, stage_gpus: tuple[int, ...], extra=None, fits=None
+) -> list[int]:
     """Contiguous split minimising the most expensive stage, a stage's cost
     divided by its GPU count; then, among splits that achieve it, the sum of
     squared stage costs (so no stage is left nearly idle). Ties go to splits
@@ -173,15 +178,20 @@ def _balanced_cuts(costs: tuple, stages: int, min_first: int,
     n = len(per_block)
     if n - (stages - 1) < max(min_first, 1):
         raise ValidationError(
-            f"{n} blocks cannot fill {stages} stages with at least {min_first} "
-            f"on the first")
+            f"{n} blocks cannot fill {stages} stages with at least {min_first} on the first"
+        )
     total = [0]
     for c in per_block:
         total.append(total[-1] + c)
 
     def stage_cost(s, j, i):
-        return (total[i] - total[j] + (pre if s == 0 else 0)
-                + (post if s == stages - 1 else 0) + (extra[s] if extra else 0)) / stage_gpus[s]
+        return (
+            total[i]
+            - total[j]
+            + (pre if s == 0 else 0)
+            + (post if s == stages - 1 else 0)
+            + (extra[s] if extra else 0)
+        ) / stage_gpus[s]
 
     def allowed(s, j, i, limit):
         return stage_cost(s, j, i) <= limit and (fits is None or fits(s, j, i))
@@ -206,8 +216,9 @@ def _balanced_cuts(costs: tuple, stages: int, min_first: int,
 
     slowest, _ = solve(max, float("inf"))
     if slowest == float("inf"):
-        raise ValidationError(f"no cut of {n} blocks into {stages} stages fits every "
-                              f"stage's memory")
+        raise ValidationError(
+            f"no cut of {n} blocks into {stages} stages fits every stage's memory"
+        )
     _, back = solve(lambda acc, c: acc + c * c, slowest)
     cuts, i = [], n
     for s in range(stages - 1, 0, -1):
@@ -223,20 +234,24 @@ def _measured_extras(costs: tuple, stage_gpus: tuple[int, ...], measured) -> lis
     n = len(measured.seconds)
     bounds = [0, *measured.cuts, len(per_block)]
     if any(a >= b for a, b in zip(bounds, bounds[1:])) or n != len(stage_gpus):
-        raise ValidationError(f"measured cuts {measured.cuts} do not fit {len(per_block)} "
-                              f"blocks on {len(stage_gpus)} stages")
+        raise ValidationError(
+            f"measured cuts {measured.cuts} do not fit {len(per_block)} "
+            f"blocks on {len(stage_gpus)} stages"
+        )
     blocks = [sum(per_block[a:b]) for a, b in zip(bounds, bounds[1:])]
     middle = range(1, n - 1)
     if middle:  # stages holding blocks only
-        rate = (sum(measured.seconds[s] for s in middle)
-                / sum(blocks[s] / stage_gpus[s] for s in middle))
+        rate = sum(measured.seconds[s] for s in middle) / sum(
+            blocks[s] / stage_gpus[s] for s in middle
+        )
     else:  # the last stage, its head and loss at their parameter-count estimate
         rate = measured.seconds[-1] / ((blocks[-1] + post) / stage_gpus[-1])
     return [max(0.0, measured.seconds[s] * stage_gpus[s] / rate - blocks[s]) for s in range(n)]
 
 
-def _measured_cuts(costs: tuple, stage_gpus: tuple[int, ...], min_first: int,
-                   measured) -> list[int]:
+def _measured_cuts(
+    costs: tuple, stage_gpus: tuple[int, ...], min_first: int, measured
+) -> list[int]:
     """The balanced cut with measured fixed costs per stage, and memory: a
     stage gaining blocks gains their weights, gradients and optimizer state."""
     extra = _measured_extras(costs, stage_gpus, measured)  # checks the measured cuts
@@ -249,11 +264,14 @@ def _measured_cuts(costs: tuple, stage_gpus: tuple[int, ...], min_first: int,
 
     def fits(s, j, i):
         gained = total[i] - total[j] - held[s]
-        return gained <= 0 or (measured.peak_gib[s] + gained * measured.bytes_per_param[s]
-                               / 2**30 <= measured.limit_gib)
+        return gained <= 0 or (
+            measured.peak_gib[s] + gained * measured.bytes_per_param[s] / 2**30
+            <= measured.limit_gib
+        )
 
-    return _balanced_cuts((0, per_block, 0), len(stage_gpus), min_first, stage_gpus,
-                          extra=extra, fits=fits)
+    return _balanced_cuts(
+        (0, per_block, 0), len(stage_gpus), min_first, stage_gpus, extra=extra, fits=fits
+    )
 
 
 def _decoder_stages(measured):
@@ -262,11 +280,17 @@ def _decoder_stages(measured):
     import dataclasses
 
     if not measured.cuts or measured.cuts[0] != 0:
-        raise ValidationError("vision_stage measurements must come from a run with the vision "
-                              f"encoder alone on stage 0 (first cut at 0), got cuts {measured.cuts}")
-    return dataclasses.replace(measured, cuts=measured.cuts[1:], seconds=measured.seconds[1:],
-                               peak_gib=measured.peak_gib[1:],
-                               bytes_per_param=measured.bytes_per_param[1:])
+        raise ValidationError(
+            "vision_stage measurements must come from a run with the vision "
+            f"encoder alone on stage 0 (first cut at 0), got cuts {measured.cuts}"
+        )
+    return dataclasses.replace(
+        measured,
+        cuts=measured.cuts[1:],
+        seconds=measured.seconds[1:],
+        peak_gib=measured.peak_gib[1:],
+        bytes_per_param=measured.bytes_per_param[1:],
+    )
 
 
 def static_bytes_per_param(ds_config: dict, tp: int, dp: int) -> float:
@@ -295,9 +319,13 @@ def _under(name: str, module: str | None) -> bool:
     return module is not None and name.startswith(module + ".")
 
 
-def partition_parameters(model: nn.Module, policy, stages: int,
-                         stage_gpus: tuple[int, ...] | None = None,
-                         exclude: str | None = None) -> tuple[StagePartition, ...]:
+def partition_parameters(
+    model: nn.Module,
+    policy,
+    stages: int,
+    stage_gpus: tuple[int, ...] | None = None,
+    exclude: str | None = None,
+) -> tuple[StagePartition, ...]:
     """Assign every parameter name to exactly one stage. Blocks map by cut
     range; parameters before the block list go to the first stage, those
     after it to the last. Rejects parameters tied across stages: each stage
@@ -310,25 +338,28 @@ def partition_parameters(model: nn.Module, policy, stages: int,
         pre, per_block, post = _compute_costs(model, blocks_name, blocks, exclude)
         gpus = stage_gpus or (1,) * stages
         if policy.vision_stage:
-            if vision_config(model) is None or exclude is not None or \
-                    vision_injection_depth(model):
+            if vision_config(model) is None or exclude is not None or vision_injection_depth(model):
                 raise ValidationError(
                     "vision_stage puts the vision encoder alone on the first stage: it needs "
                     "a model with a vision encoder whose output enters only the input "
-                    "embeddings, not colocated vision")
+                    "embeddings, not colocated vision"
+                )
             if policy.measured is not None:
-                cuts = [0] + _measured_cuts((0, per_block, post), gpus[1:], 0,
-                                            _decoder_stages(policy.measured))
+                cuts = [0] + _measured_cuts(
+                    (0, per_block, post), gpus[1:], 0, _decoder_stages(policy.measured)
+                )
             else:
                 cuts = [0] + _balanced_cuts((0, per_block, post), stages - 1, 0, gpus[1:])
         elif policy.measured is not None:
-            cuts = _measured_cuts((pre, per_block, post), gpus, vision_injection_depth(model),
-                                  policy.measured)
+            cuts = _measured_cuts(
+                (pre, per_block, post), gpus, vision_injection_depth(model), policy.measured
+            )
         else:
             # what precedes the blocks, embeddings aside, is the vision encoder
             pre *= policy.vision_token_ratio
-            cuts = _balanced_cuts((pre, per_block, post), stages,
-                                  vision_injection_depth(model), gpus)
+            cuts = _balanced_cuts(
+                (pre, per_block, post), stages, vision_injection_depth(model), gpus
+            )
     else:
         vision = vision_config(model) is not None
         cuts = _cuts_for(policy, len(blocks), stages, vision) if stages > 1 else []
@@ -342,8 +373,9 @@ def partition_parameters(model: nn.Module, policy, stages: int,
 
     # declaration order stands in for topology on the sequential models
     # supported; remove_duplicate=False keeps tied names visible
-    named = [(n, p) for n, p in model.named_parameters(remove_duplicate=False)
-             if not _under(n, exclude)]
+    named = [
+        (n, p) for n, p in model.named_parameters(remove_duplicate=False) if not _under(n, exclude)
+    ]
     prefix = blocks_name + "."
     block_positions = [i for i, (n, _) in enumerate(named) if n.startswith(prefix)]
     if not block_positions:
@@ -357,7 +389,7 @@ def partition_parameters(model: nn.Module, policy, stages: int,
     by_id: dict[int, list[str]] = {}
     for i, (name, param) in enumerate(named):
         if name.startswith(prefix):
-            block_index = int(name[len(prefix):].split(".", 1)[0])
+            block_index = int(name[len(prefix) :].split(".", 1)[0])
             stage = stage_of_block(block_index)
         elif i < first_block:
             stage = 1 if encoder is not None and not _under(name, encoder) else 0
@@ -366,7 +398,8 @@ def partition_parameters(model: nn.Module, policy, stages: int,
         else:
             raise ValidationError(
                 f"parameter {name} is interleaved with the block list; "
-                f"v1 supports strictly sequential layouts only")
+                f"v1 supports strictly sequential layouts only"
+            )
         assignment[name] = stage
         by_id.setdefault(id(param), []).append(name)
 
@@ -376,7 +409,8 @@ def partition_parameters(model: nn.Module, policy, stages: int,
             raise ValidationError(
                 f"tied parameters {names} land on stages {sorted(stage_set)}: "
                 f"cross-stage tied parameters are unsupported in v1 — untie "
-                f"them (e.g. tie_word_embeddings=False) or change the partition")
+                f"them (e.g. tie_word_embeddings=False) or change the partition"
+            )
 
     return tuple(
         StagePartition(
@@ -385,7 +419,8 @@ def partition_parameters(model: nn.Module, policy, stages: int,
             block_start=bounds[s],
             block_stop=bounds[s + 1],
         )
-        for s in range(stages))
+        for s in range(stages)
+    )
 
 
 class GenericSequentialStage(nn.Module):
@@ -409,6 +444,7 @@ class GenericSequentialStage(nn.Module):
 
 def _checkpointed(forward, *args, **kwargs):
     import torch.utils.checkpoint
+
     return torch.utils.checkpoint.checkpoint(forward, *args, use_reentrant=False, **kwargs)
 
 
@@ -439,6 +475,7 @@ class _CompiledForward:
     def __call__(self, *args, **kwargs):
         if self._compiled is None:
             import torch
+
             self._compiled = torch.compile(self.forward, dynamic=True)
         return self._compiled(*args, **kwargs)
 
@@ -455,8 +492,9 @@ def compile_blocks(stage: nn.Module, encoder_only: bool = False) -> None:
         block.forward = _CompiledForward(block.forward)
 
 
-def build_stage_module(model: nn.Module, block_start: int, block_stop: int,
-                       parameter_names: tuple[str, ...]) -> nn.Module:
+def build_stage_module(
+    model: nn.Module, block_start: int, block_stop: int, parameter_names: tuple[str, ...]
+) -> nn.Module:
     """One stage as a GenericSequentialStage of deep copies, safe to ship to
     an actor."""
     import copy
@@ -497,6 +535,7 @@ class CausalLMStage(nn.Module):
 
     def forward(self, x, position_ids=None):
         import torch
+
         if self.emb is not None:
             x = self.emb(x)
         if position_ids is None:
@@ -514,8 +553,9 @@ class CausalLMStage(nn.Module):
         return list(self.layers)
 
 
-def build_causal_lm_stage(model: nn.Module, block_start: int, block_stop: int,
-                          parameter_names: tuple[str, ...]) -> nn.Module:
+def build_causal_lm_stage(
+    model: nn.Module, block_start: int, block_stop: int, parameter_names: tuple[str, ...]
+) -> nn.Module:
     """One stage of an HF llama-style causal LM as a CausalLMStage."""
     import copy
 
@@ -531,8 +571,7 @@ def build_causal_lm_stage(model: nn.Module, block_start: int, block_stop: int,
         emb=copy.deepcopy(parent.embed_tokens) if owns("embed_tokens") else None,
         layers=[copy.deepcopy(blocks[i]) for i in range(block_start, block_stop)],
         norm=copy.deepcopy(parent.norm) if owns("norm") else None,
-        head=copy.deepcopy(model.lm_head)
-            if any(n.startswith("lm_head.") for n in names) else None,
+        head=copy.deepcopy(model.lm_head) if any(n.startswith("lm_head.") for n in names) else None,
         rotary=copy.deepcopy(parent.rotary_emb),
     )
     attach_tp_plan(stage, getattr(getattr(model, "config", None), "base_model_tp_plan", None))
@@ -569,11 +608,16 @@ def select_stage_builder(model: nn.Module):
     config = getattr(model, "config", None)
     model_type = getattr(config, "model_type", None)
     eager = getattr(config, "_attn_implementation", None) == "eager"
-    if (model_type in _CAUSAL_LM_TYPES and not eager
-            and present == set(_CAUSAL_LM_PARTS) and has_head):
+    if (
+        model_type in _CAUSAL_LM_TYPES
+        and not eager
+        and present == set(_CAUSAL_LM_PARTS)
+        and has_head
+    ):
         return build_causal_lm_stage
     if hasattr(model, "config"):
         from ray_deepspeed_pipeline.hf_stage import build_hf_stage  # imports this module
+
         return build_hf_stage
     if "rotary_emb" in present:
         missing = [p for p in _CAUSAL_LM_PARTS if p not in present]
@@ -583,7 +627,8 @@ def select_stage_builder(model: nn.Module):
             f"{type(model).__name__} has a rotary embedding next to its block "
             f"list {blocks_name!r} but not the rest of the llama-style causal-LM "
             f"layout (missing {missing}); no built-in stage builder can pass it "
-            f"positions correctly")
+            f"positions correctly"
+        )
     return build_stage_module
 
 
@@ -603,4 +648,5 @@ def attach_tp_plan(stage: nn.Module, plan: dict | None) -> None:
     plan = dict(plan or {})
     stage._tp_plan = {k: v for k, v in plan.items() if v.lower() in _TP_STYLES}
     stage._rdsp_tp_grad_allreduce = tuple(
-        k for k, v in plan.items() if v.lower() == "replicated_with_grad_allreduce")
+        k for k, v in plan.items() if v.lower() == "replicated_with_grad_allreduce"
+    )

@@ -24,12 +24,17 @@ def bridge_sample(tokens, supervised):
     labels = torch.cat([ids[:, 1:], torch.full((1, 1), -100)], dim=1)
     labels = labels.masked_fill(mask == 0, -100)
     return {
-        "input_ids": ids, "labels": labels, "loss_mask": mask,
+        "input_ids": ids,
+        "labels": labels,
+        "loss_mask": mask,
         "attention_mask": torch.ones(1, len(tokens), dtype=torch.long),
         "mm_token_type_ids": torch.zeros(1, len(tokens), dtype=torch.long),
         "position_ids": torch.arange(len(tokens)).unsqueeze(0),
-        "visual_inputs": type("V", (), {"pixel_values": torch.randn(16, 6),
-                                        "image_grid_thw": torch.tensor([[1, 4, 4]])})(),
+        "visual_inputs": type(
+            "V",
+            (),
+            {"pixel_values": torch.randn(16, 6), "image_grid_thw": torch.tensor([[1, 4, 4]])},
+        )(),
     }
 
 
@@ -54,8 +59,13 @@ def test_exported_steps_group_rows_into_microbatches_in_order(tmp_path):
     assert inputs["input_ids"][:, 0].tolist() == [2, 3]  # samples 2 and 3
     assert [p.shape for p in inputs["pixel_values"]] == [(16, 6), (16, 6)]
     assert labels.tolist() == [[-100, -100, 4, -100], [-100, -100, 5, -100]]
-    assert set(inputs) == {"input_ids", "attention_mask", "mm_token_type_ids",
-                           "pixel_values", "image_grid_thw"}
+    assert set(inputs) == {
+        "input_ids",
+        "attention_mask",
+        "mm_token_type_ids",
+        "pixel_values",
+        "image_grid_thw",
+    }
     assert train_vl.token_count(labels) == 2
 
 
@@ -70,8 +80,10 @@ def test_padding_trimmed_to_each_steps_longest_row(tmp_path):
         sample["attention_mask"][:, real:] = 0
         rows.append(sample)
     save_step(str(tmp_path), 0, rows)
-    shapes = [x["input_ids"].shape for x, _ in train_vl.exported_microbatches(
-        str(tmp_path), rows=2, pad_multiple=4)]
+    shapes = [
+        x["input_ids"].shape
+        for x, _ in train_vl.exported_microbatches(str(tmp_path), rows=2, pad_multiple=4)
+    ]
     assert shapes == [(2, 8), (2, 8)]  # longest row 5 -> 8
 
 
@@ -86,8 +98,11 @@ def test_padding_trimmed_to_each_microbatchs_longest_row(tmp_path):
         sample["attention_mask"][:, real:] = 0
         rows.append(sample)
     save_step(str(tmp_path), 0, rows)
-    got = list(train_vl.exported_microbatches(str(tmp_path), rows=2, pad_multiple=4,
-                                              pad_per_microbatch=True))
+    got = list(
+        train_vl.exported_microbatches(
+            str(tmp_path), rows=2, pad_multiple=4, pad_per_microbatch=True
+        )
+    )
     assert [x["input_ids"].shape for x, _ in got] == [(2, 8), (2, 4)]
     assert [y.shape for _, y in got] == [(2, 8), (2, 4)]
 
@@ -101,8 +116,13 @@ def test_cord_microbatches_pad_to_their_own_longest_row(monkeypatch):
         ids = torch.zeros(seq, dtype=torch.long)
         ids[:length] = 1
         mask = (ids == 1).long()
-        row = {"input_ids": ids, "attention_mask": mask, "mm_token_type_ids": mask * 0,
-               "pixel_values": torch.zeros(1), "image_grid_thw": torch.ones(1, 3)}
+        row = {
+            "input_ids": ids,
+            "attention_mask": mask,
+            "mm_token_type_ids": mask * 0,
+            "pixel_values": torch.zeros(1),
+            "image_grid_thw": torch.ones(1, 3),
+        }
         return row, torch.where(mask.bool(), ids, -100)
 
     monkeypatch.setattr(train_vl, "encode_row", fake_row)

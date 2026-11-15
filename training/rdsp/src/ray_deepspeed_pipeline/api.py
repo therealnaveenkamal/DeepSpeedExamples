@@ -11,10 +11,20 @@ from ray_deepspeed_pipeline.engine import RayPipelineEngine
 from ray_deepspeed_pipeline.errors import UnsupportedInV1, ValidationError
 
 # Pipeline/runtime settings belong in PipelineConfig, never in the DeepSpeed config.
-_RESERVED_CONFIG_KEYS = frozenset({
-    "pipeline", "pipeline_config", "ray", "actors", "placement",
-    "stages", "schedule", "transport", "manifest", "connections",
-})
+_RESERVED_CONFIG_KEYS = frozenset(
+    {
+        "pipeline",
+        "pipeline_config",
+        "ray",
+        "actors",
+        "placement",
+        "stages",
+        "schedule",
+        "transport",
+        "manifest",
+        "connections",
+    }
+)
 
 
 def _default_coordinator_factory(*, model, pipeline_config, ds_config, loss_fn, weights):
@@ -26,14 +36,16 @@ def _default_coordinator_factory(*, model, pipeline_config, ds_config, loss_fn, 
 
     config = ds_config if isinstance(ds_config, dict) else {}
     plan = lower(model, pipeline_config, config)
-    coordinator = PipelineCoordinator(plan, create_stage_clients(model, plan, loss_fn,
-                                                                weights=weights))
+    coordinator = PipelineCoordinator(
+        plan, create_stage_clients(model, plan, loss_fn, weights=weights)
+    )
 
     def rebuild():
         # prefer each stage's previous node: its checkpoint shards may be node-local
         previous_nodes = [getattr(w, "node_id", None) for w in coordinator._workers]
-        return create_stage_clients(model, plan, loss_fn, weights=weights,
-                                    prefer_nodes=previous_nodes)
+        return create_stage_clients(
+            model, plan, loss_fn, weights=weights, prefer_nodes=previous_nodes
+        )
 
     coordinator._rebuild = rebuild
     return coordinator
@@ -48,7 +60,8 @@ def _validate_config(config):
         return None
     if not isinstance(config, (dict, str)):
         raise ValidationError(
-            f"config must be an ordinary DeepSpeed config mapping or path, got {type(config)}")
+            f"config must be an ordinary DeepSpeed config mapping or path, got {type(config)}"
+        )
     if isinstance(config, str):
         # loaded here so planning sees the real settings (microbatches, batch size)
         try:
@@ -62,7 +75,8 @@ def _validate_config(config):
     if bad:
         raise ValidationError(
             f"config must remain an ordinary DeepSpeed configuration; "
-            f"external-runtime field(s) {sorted(bad)} belong in pipeline_config")
+            f"external-runtime field(s) {sorted(bad)} belong in pipeline_config"
+        )
     return config
 
 
@@ -73,8 +87,8 @@ def _validate_loss_fn(loss_fn):
         cloudpickle.dumps(loss_fn)
     except Exception as e:
         raise ValidationError(
-            f"loss_fn must be serializable (it is shipped to the terminal "
-            f"stage actor): {e}") from e
+            f"loss_fn must be serializable (it is shipped to the terminal stage actor): {e}"
+        ) from e
 
 
 def _check_model_parameters(model, model_parameters) -> None:
@@ -87,7 +101,8 @@ def _check_model_parameters(model, model_parameters) -> None:
     if any(isinstance(p, dict) for p in params):
         raise UnsupportedInV1(
             "parameter groups are not supported: each stage builds its optimizer "
-            "from the DeepSpeed config over its own parameters")
+            "from the DeepSpeed config over its own parameters"
+        )
     if not all(isinstance(p, torch.nn.Parameter) for p in params):
         raise ValidationError("model_parameters must contain torch.nn.Parameter objects")
     ids = [id(p) for p in params]
@@ -96,7 +111,8 @@ def _check_model_parameters(model, model_parameters) -> None:
     if set(ids) != {id(p) for p in model.parameters()}:
         raise UnsupportedInV1(
             "model_parameters must be None or all of model.parameters(): each "
-            "stage optimizes every parameter it owns, so subsets cannot be honoured")
+            "stage optimizes every parameter it owns, so subsets cannot be honoured"
+        )
 
 
 def initialize(
@@ -128,21 +144,25 @@ def initialize(
             "optimizer must be None in v1: a driver-side optimizer object "
             "cannot be rebound to stage-local parameters inside actors. "
             "Define the optimizer in the DeepSpeed config; each stage "
-            "constructs it locally via ordinary deepspeed.initialize()")
+            "constructs it locally via ordinary deepspeed.initialize()"
+        )
     if lr_scheduler is not None:
         raise UnsupportedInV1(
             "lr_scheduler must be None in v1: define the scheduler in the "
-            "DeepSpeed config; each stage constructs it locally")
+            "DeepSpeed config; each stage constructs it locally"
+        )
     if not isinstance(model, torch.nn.Module):
         raise ValidationError(f"model must be a torch.nn.Module, got {type(model)}")
     if not isinstance(pipeline_config, PipelineConfig):
         raise ValidationError(
-            f"pipeline_config must be a PipelineConfig, got {type(pipeline_config)}")
+            f"pipeline_config must be a PipelineConfig, got {type(pipeline_config)}"
+        )
     if pipeline_config.prefetch and training_data is not None:
         raise ValidationError(
             "prefetch needs the caller's iterator (train_batch(data_iter=...)): with "
             "training_data the engine counts batches for checkpoints, and the step "
-            "read ahead would be counted before it ran")
+            "read ahead would be counted before it ran"
+        )
 
     ds_config = _validate_config(config)
     _validate_loss_fn(loss_fn)
@@ -154,6 +174,7 @@ def initialize(
             global_microbatch_rows,
             resolve_microbatches,
         )
+
         conf = ds_config if isinstance(ds_config, dict) else None
         try:
             rows = global_microbatch_rows(conf, resolve_microbatches(pipeline_config, conf))

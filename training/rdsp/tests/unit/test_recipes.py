@@ -8,8 +8,11 @@ import shlex
 import pytest
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
-RECIPES = sorted(f for f in os.listdir(os.path.join(ROOT, "recipes")) if f.endswith(".sh")) \
-    if os.path.isdir(os.path.join(ROOT, "recipes")) else []
+RECIPES = (
+    sorted(f for f in os.listdir(os.path.join(ROOT, "recipes")) if f.endswith(".sh"))
+    if os.path.isdir(os.path.join(ROOT, "recipes"))
+    else []
+)
 
 
 def _parser(script: str):
@@ -23,16 +26,23 @@ def _command(text: str) -> tuple[str, list[str]]:
     """The script a recipe runs and the flags it passes (up to "$@")."""
     tokens = shlex.split(text.replace("\\\n", " "), comments=True)
     script = next(t for t in tokens if t.endswith(("train_vl.py", "train.py")))
-    args = tokens[tokens.index(script) + 1:]
-    return os.path.basename(script), args[:args.index("$@")] if "$@" in args else args
+    args = tokens[tokens.index(script) + 1 :]
+    return os.path.basename(script), args[: args.index("$@")] if "$@" in args else args
 
 
 def test_there_is_a_recipe_per_validated_layout():
-    assert RECIPES == ["qwen3-text-pp.sh", "qwen35-2b-tp2pp2dp2.sh",
-                       "qwen35-2b-vision1-tp2dp2.sh", "qwen35-4b-coloc-tp2pp2dp2.sh",
-                       "qwen35-4b-tp2pp2dp2.sh", "qwen35-4b-tp4pp2dp1.sh",
-                       "qwen35-4b-vision1-tp2dp2.sh", "qwen35-4b-vision1-tp2pp2.sh",
-                       "qwen35-4b-vision1-tp4.sh", "qwen35-4b-vision2-tp2dp2.sh"]
+    assert RECIPES == [
+        "qwen3-text-pp.sh",
+        "qwen35-2b-tp2pp2dp2.sh",
+        "qwen35-2b-vision1-tp2dp2.sh",
+        "qwen35-4b-coloc-tp2pp2dp2.sh",
+        "qwen35-4b-tp2pp2dp2.sh",
+        "qwen35-4b-tp4pp2dp1.sh",
+        "qwen35-4b-vision1-tp2dp2.sh",
+        "qwen35-4b-vision1-tp2pp2.sh",
+        "qwen35-4b-vision1-tp4.sh",
+        "qwen35-4b-vision2-tp2dp2.sh",
+    ]
 
 
 @pytest.mark.parametrize("recipe", RECIPES)

@@ -58,21 +58,33 @@ def test_equal_explicit_value_same_plan_hash():
 def test_simple_advanced_same_plan():
     # an advanced config that spells out the defaults lowers byte-identically
     simple = lower(ToyLM(), simple_config(), DS)
-    advanced = lower(ToyLM(), simple_config(
-        stage_overrides=(StageOverride(stage=0, num_gpus=1),
-                         StageOverride(stage=1, num_gpus=1)),
-        connection_overrides=(ConnectionOverride(source=0, dest=1),),
-    ), DS)
+    advanced = lower(
+        ToyLM(),
+        simple_config(
+            stage_overrides=(
+                StageOverride(stage=0, num_gpus=1),
+                StageOverride(stage=1, num_gpus=1),
+            ),
+            connection_overrides=(ConnectionOverride(source=0, dest=1),),
+        ),
+        DS,
+    )
     assert simple.canonical_json() == advanced.canonical_json()
     assert simple.plan_hash() == advanced.plan_hash()
 
 
 def test_heterogeneous_one_global_count():
     ds = {"train_batch_size": 16, "gradient_accumulation_steps": 4}  # 4 rows/mb
-    plan = lower(ToyLM(), simple_config(
-        stage_overrides=(StageOverride(stage=0, num_gpus=4, zero_stage=1),
-                         StageOverride(stage=1, num_gpus=2)),
-    ), ds)
+    plan = lower(
+        ToyLM(),
+        simple_config(
+            stage_overrides=(
+                StageOverride(stage=0, num_gpus=4, zero_stage=1),
+                StageOverride(stage=1, num_gpus=2),
+            ),
+        ),
+        ds,
+    )
     assert [s.num_gpus for s in plan.stages] == [4, 2]
     assert [s.rows_per_rank for s in plan.stages] == [1, 2]
     assert plan.connections[0].conversion == "shard-to-shard"
@@ -83,57 +95,84 @@ def test_heterogeneous_one_global_count():
 
 def test_unsupported_layout_rejected_before_ray():
     with pytest.raises(ValidationError, match="layouts require 'identity'"):
-        lower(ToyLM(), simple_config(
-            connection_overrides=(ConnectionOverride(source=0, dest=1,
-                                                     conversion="replicate-to-shard"),)), DS)
+        lower(
+            ToyLM(),
+            simple_config(
+                connection_overrides=(
+                    ConnectionOverride(source=0, dest=1, conversion="replicate-to-shard"),
+                )
+            ),
+            DS,
+        )
     with pytest.raises(ValidationError, match="adjacent"):
-        lower(ToyLM(), PipelineConfig(
-            stages=3, partition=UniformTransformerBlocks(),
-            connection_overrides=(ConnectionOverride(source=2, dest=3),)), DS)
+        lower(
+            ToyLM(),
+            PipelineConfig(
+                stages=3,
+                partition=UniformTransformerBlocks(),
+                connection_overrides=(ConnectionOverride(source=2, dest=3),),
+            ),
+            DS,
+        )
 
 
 def test_duplicate_stage_override_rejected():
     with pytest.raises(ValidationError, match="duplicate"):
-        lower(ToyLM(), simple_config(
-            stage_overrides=(StageOverride(stage=0), StageOverride(stage=0))), DS)
+        lower(
+            ToyLM(),
+            simple_config(stage_overrides=(StageOverride(stage=0), StageOverride(stage=0))),
+            DS,
+        )
 
 
 def test_plan_deterministic_across_model_instances():
     # partitioning is name-based, so two identically-shaped models lower to
     # the same plan hash (weights don't enter the plan)
-    assert lower(ToyLM(), simple_config(), DS).plan_hash() == \
+    assert (
         lower(ToyLM(), simple_config(), DS).plan_hash()
+        == lower(ToyLM(), simple_config(), DS).plan_hash()
+    )
 
 
 def test_per_stage_gradient_clipping_never_silently_on():
     plan = lower(ToyLM(), simple_config(), DS)
     # DeepSpeed's own default (1.0) would clip per stage: forced off
-    assert all(json.loads(st.ds_config_json)["gradient_clipping"] == 0.0
-               for st in plan.stages)
+    assert all(json.loads(st.ds_config_json)["gradient_clipping"] == 0.0 for st in plan.stages)
     with pytest.raises(ValidationError, match="global"):
         lower(ToyLM(), simple_config(), dict(DS, gradient_clipping=1.0))
 
 
 def test_optimizer_offload_only_on_the_stage_that_asks():
-    plan = lower(ToyLM(), simple_config(stage_overrides=(
-        StageOverride(stage=0, zero_stage=2, offload_optimizer=True),)), DS)
+    plan = lower(
+        ToyLM(),
+        simple_config(
+            stage_overrides=(StageOverride(stage=0, zero_stage=2, offload_optimizer=True),)
+        ),
+        DS,
+    )
     zero0 = json.loads(plan.stages[0].ds_config_json)["zero_optimization"]
     assert zero0["offload_optimizer"] == {"device": "cpu", "pin_memory": True}
     assert "offload_optimizer" not in json.loads(plan.stages[1].ds_config_json).get(
-        "zero_optimization", {})
+        "zero_optimization", {}
+    )
 
 
 def test_optimizer_offload_inherits_zero_from_the_config():
-    plan = lower(ToyLM(), simple_config(stage_overrides=(
-        StageOverride(stage=1, offload_optimizer=True),)),
-        {**DS, "zero_optimization": {"stage": 1}})
+    plan = lower(
+        ToyLM(),
+        simple_config(stage_overrides=(StageOverride(stage=1, offload_optimizer=True),)),
+        {**DS, "zero_optimization": {"stage": 1}},
+    )
     assert json.loads(plan.stages[1].ds_config_json)["zero_optimization"]["stage"] == 1
 
 
 def test_optimizer_offload_without_zero_rejected():
     with pytest.raises(ValidationError, match="ZeRO stage 1 or 2"):
-        lower(ToyLM(), simple_config(stage_overrides=(
-            StageOverride(stage=0, offload_optimizer=True),)), DS)
+        lower(
+            ToyLM(),
+            simple_config(stage_overrides=(StageOverride(stage=0, offload_optimizer=True),)),
+            DS,
+        )
 
 
 def test_balanced_cuts_give_a_multi_gpu_stage_more_blocks():
@@ -143,9 +182,15 @@ def test_balanced_cuts_give_a_multi_gpu_stage_more_blocks():
     spreads the rest most evenly. On single-GPU stages it would be 3|2|1."""
     from ray_deepspeed_pipeline.config import BalancedTransformerBlocks
 
-    plan = lower(ToyLM(n_blocks=6), PipelineConfig(
-        stages=3, partition=BalancedTransformerBlocks(),
-        stage_overrides=(StageOverride(stage=1, num_gpus=2),)), DS)
+    plan = lower(
+        ToyLM(n_blocks=6),
+        PipelineConfig(
+            stages=3,
+            partition=BalancedTransformerBlocks(),
+            stage_overrides=(StageOverride(stage=1, num_gpus=2),),
+        ),
+        DS,
+    )
     assert [(s.block_start, s.block_stop) for s in plan.stages] == [(0, 1), (1, 5), (5, 6)]
 
 
@@ -176,18 +221,25 @@ def test_settings_that_do_not_change_checkpoints_keep_the_plan_hash():
     """A checkpoint is bound to the plan hash; prefetch, recompute and
     compile change how steps run, not what a stage saves."""
     base = lower(ToyLM(), simple_config(), DS).plan_hash()
-    runtime = simple_config(prefetch=True, stage_overrides=(
-        StageOverride(stage=0, recompute=True, compile=True, compile_vision=True),))
+    runtime = simple_config(
+        prefetch=True,
+        stage_overrides=(
+            StageOverride(stage=0, recompute=True, compile=True, compile_vision=True),
+        ),
+    )
     assert lower(ToyLM(), runtime, DS).plan_hash() == base
     moved = PipelineConfig(stages=2, partition=ExplicitCuts((1,)))
     assert lower(ToyLM(), moved, DS).plan_hash() != base
 
 
 def test_recompute_blocks_reaches_the_stage_spec_and_excludes_recompute():
-    plan = lower(ToyLM(), simple_config(stage_overrides=(
-        StageOverride(stage=0, recompute_blocks=3),)), DS)
+    plan = lower(
+        ToyLM(), simple_config(stage_overrides=(StageOverride(stage=0, recompute_blocks=3),)), DS
+    )
     assert plan.stages[0].recompute_blocks == 3 and not plan.stages[0].recompute
-    for bad, match in ((dict(recompute=True, recompute_blocks=2), "set one"),
-                       (dict(recompute_blocks=-1), ">= 0")):
+    for bad, match in (
+        (dict(recompute=True, recompute_blocks=2), "set one"),
+        (dict(recompute_blocks=-1), ">= 0"),
+    ):
         with pytest.raises(ValidationError, match=match):
             lower(ToyLM(), simple_config(stage_overrides=(StageOverride(stage=0, **bad),)), DS)

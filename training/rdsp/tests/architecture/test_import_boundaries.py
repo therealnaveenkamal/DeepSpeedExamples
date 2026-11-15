@@ -15,6 +15,5 @@ SNIPPET = (
 
 
 def test_package_import_does_not_import_ray_or_deepspeed():
-    result = subprocess.run([sys.executable, "-c", SNIPPET],
-                            capture_output=True, text=True)
+    result = subprocess.run([sys.executable, "-c", SNIPPET], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
