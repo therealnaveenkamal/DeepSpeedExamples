@@ -1,0 +1,10 @@
+2.66 steps in the window; ms per step per process
+proc  kernels    idle dependency after sync     cpu   after-sync by call (ms)
+   1   240606    6666        224       2088    4354   cudaStreamSynchronize: 1964  cudaDeviceSynchronize: 124
+   0   240603   10662        159       2251    8251   cudaStreamSynchronize: 2081  cudaDeviceSynchronize: 170
+   7   240597    9719        185       2266    7267   cudaStreamSynchronize: 2099  cudaDeviceSynchronize: 167
+   3   240594   13687        120       2274   11293   cudaStreamSynchronize: 2106  cudaDeviceSynchronize: 168
+   2    77785    3762         99       1507    2156   cudaStreamSynchronize: 1070  cudaDeviceSynchronize: 437
+   4    77785    5114         76       1563    3475   cudaStreamSynchronize: 1094  cudaDeviceSynchronize: 468
+   6    77783    4650         81       1510    3059   cudaStreamSynchronize: 1070  cudaDeviceSynchronize: 440
+   5    77781    4932         72       1561    3299   cudaStreamSynchronize: 1101  cudaDeviceSynchronize: 460

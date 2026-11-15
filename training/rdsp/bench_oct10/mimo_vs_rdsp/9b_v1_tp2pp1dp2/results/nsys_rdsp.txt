@@ -1,0 +1,29 @@
+window 75.0 s = 6.25 steps of 12.00 s; all values ms per step
+gpu stage compute ncclonly   idle kernels   vis  loss copies  allreduce reducescat  allgather   sendrecv nccl-other        gdn  attention     matmul  optimizer       loss elementwise      other
+  0 first    4108     3003   4889  155454  1592     0     47        791          0         15       2199          0        261          3       1762         53          0       1940         89
+  1 first    4090     2872   5038  155148  1589     0     46        616          0         14       2244          0        260          3       1748         54          0       1938         89
+  2 first    3042     4747   4211   87615  1586     0     60          0          0          0       4747          0          0          0        712         11          0       1266       1053
+  3 first    1175     3837   6988   47763   682     0     16       1622          0         15       2201          0         84          0        603         54          0        423         11
+  4 first    1168     4035   6797   47647   680     0     16       1775          0         14       2246          0         84          0        597         54          0        423         11
+
+top 20 kernels, all GPUs (ms per step summed over GPUs, launches per step):
+   13637 ms     1074 x     sendrecv  ncclDevKernel_SendRecv
+    4432 ms    16071 x    allreduce  ncclDevKernel_AllReduce_Sum_bf16_RING_LL
+    2361 ms   171431 x  elementwise  vectorized_elementwise_kernel
+    2031 ms    20871 x       matmul  nvjet_sm90_tst_256x128_64x4_1x_35...
+    1274 ms    58899 x  elementwise  unrolled_elementwise_kernel
+    1247 ms    68854 x  elementwise  elementwise_kernel
+    1121 ms    14160 x       matmul  nvjet_sm90_tst_256x128_64x4_1x_12...
+    1012 ms    10461 x       matmul  nvjet_sm90_tst_256x128_64x4_1x_11...
+     695 ms     1529 x        other  cudnn_generated_fort_native_sd_9...
+     408 ms    24897 x  elementwise  reduce_kernel
+     372 ms      348 x    allreduce  ncclDevKernel_AllReduce_Sum_f32_RING_LL
+     307 ms      113 x       matmul  nvjet_sm90_tst_320x128_64x3_1x_43...
+     260 ms     1531 x        other  cudnn_generated_fort_native_sd_30...
+     254 ms     9072 x  elementwise  CatArrayBatchedCopy
+     225 ms      457 x    optimizer  multi_tensor_apply_kernel
+     163 ms     4087 x          gdn  chunk_gated_delta_rule_fwd_ker_14...
+     134 ms       57 x       matmul  nvjet_sm90_tst_320x128_64x3_1x_21...
+     106 ms     3695 x  elementwise  _rms_norm_backward_kernel
+     100 ms     1364 x          gdn  chunk_bwd_kernel_dqkwg
+      87 ms     1364 x          gdn  chunk_gated_delta_rule_bwd_ker_15...

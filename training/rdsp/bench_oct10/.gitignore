@@ -1,0 +1,5 @@
+# Nsight and torch traces are large: keep summaries in git, not raw traces
+*.nsys-rep
+*.sqlite
+*.qdrep
+*.pt.trace.json

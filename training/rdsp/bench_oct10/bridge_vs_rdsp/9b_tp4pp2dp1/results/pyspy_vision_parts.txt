@@ -1,0 +1,7 @@
+vision forward, s per step        Bridge    rdsp     gap
+attention: per-layer wait           1.43    0.79   +0.64
+attention: rotary embedding         1.01    0.41   +0.60
+attention: the rest                 2.44    1.10   +1.34
+MLP                                 1.28    0.54   +0.75
+outside the layers                  0.62    0.34   +0.28
+total                               6.79    3.18   +3.60

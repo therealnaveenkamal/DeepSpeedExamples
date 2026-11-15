@@ -1,0 +1,299 @@
+<title>rdsp Benchmark Results</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: one reading column; tables may run wider inside their own scroller. Answer first, evidence after. */
+:root {
+  --bg: #ffffff;
+  --fg: #1b2230;
+  --muted: #5b6475;
+  --line: #e2e5eb;
+  --soft: #f4f5f8;
+  --accent: #d4482a;      /* PyTorch-conference orange, used for rdsp only */
+  --accent-soft: #fbece7;
+  --win: #1f7a4d;  --win-soft: #e3f3ea;
+  --lose: #9a5b00; --lose-soft: #fbf0dc;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #12161d; --fg: #e6e9ef; --muted: #9aa3b2; --line: #2a313c; --soft: #1a1f28;
+  --accent: #ff7a57; --accent-soft: #2e1d18; --win: #5cc98f; --win-soft: #16291f; --lose: #e6a84b; --lose-soft: #2c2312;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #12161d; --fg: #e6e9ef; --muted: #9aa3b2; --line: #2a313c; --soft: #1a1f28;
+  --accent: #ff7a57; --accent-soft: #2e1d18; --win: #5cc98f; --win-soft: #16291f; --lose: #e6a84b; --lose-soft: #2c2312;
+  color-scheme: dark }
+
+body { background: var(--bg); color: var(--fg); font: 16px/1.6 var(--sans); }
+main { max-width: 1000px; margin: 0 auto; padding-block: 40px 72px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; flex-direction: column; gap: 48px; }
+section, header { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+h1 { font-size: 2rem; line-height: 1.15; margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+h2 { font-size: 1.35rem; line-height: 1.25; margin: 0; text-wrap: balance; }
+h3 { font-size: 1rem; margin: 0; }
+p, ul, ol { margin: 0; max-width: 70ch; }
+ul, ol { padding-left: 1.3em; display: flex; flex-direction: column; gap: 6px; }
+.sub { color: var(--muted); }
+.lead { font-size: 1.05rem; }
+.eyebrow { font: 600 0.75rem/1 var(--sans); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+code, .num { font-family: var(--mono); font-size: 0.9em; }
+b.r { color: var(--accent); }
+
+.answer { border: 1px solid var(--line); border-radius: 10px; padding: 20px 22px; display: flex; flex-direction: column; gap: 12px; background: var(--soft); }
+.answer ol { gap: 10px; }
+.answer li::marker { font-weight: 700; color: var(--accent); }
+
+.scroll { overflow-x: auto; min-width: 0; }
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; font-variant-numeric: tabular-nums; }
+caption { text-align: left; font-weight: 600; padding-bottom: 8px; }
+caption span { font-weight: 400; color: var(--muted); }
+th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; vertical-align: top; }
+th { font-size: 0.78rem; font-weight: 600; color: var(--muted); letter-spacing: 0.02em; }
+th.n, td.n { text-align: right; font-family: var(--mono); font-size: 0.86rem; }
+tr.rdsp td:first-child { color: var(--accent); font-weight: 600; }
+tr.best td { font-weight: 600; }
+td.note { white-space: normal; min-width: 14em; color: var(--muted); font-size: 0.86rem; }
+.group th { border-bottom: 0; padding-bottom: 0; }
+.chip { display: inline-block; font: 600 0.78rem/1.6 var(--mono); padding: 0 7px; border-radius: 4px; }
+.chip.win { background: var(--win-soft); color: var(--win); }
+.chip.lose { background: var(--lose-soft); color: var(--lose); }
+.foot { font-size: 0.86rem; color: var(--muted); max-width: 90ch; }
+
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+.two > div { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+details { border-top: 1px solid var(--line); padding-top: 10px; }
+details + details { margin-top: 4px; }
+summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+details > div { padding: 10px 0 6px; display: flex; flex-direction: column; gap: 10px; }
+.next { border-left: 3px solid var(--accent); padding: 10px 14px; background: var(--accent-soft); border-radius: 0 8px 8px 0; }
+.next p { max-width: none; }
+@media (max-width: 560px) { h1 { font-size: 1.6rem; } main { gap: 40px; } }
+</style>
+
+<main>
+<header>
+  <span class="eyebrow">DeepSpeed · Ray-based pipeline parallelism (rdsp)</span>
+  <h1>rdsp benchmark results</h1>
+  <p class="sub">rdsp against Megatron-Bridge 0.6.0, TorchTitan and Megatron-MIMO, training Qwen3.5 vision-language models on H100 80GB. Runs from Oct 17 to Oct 19, 2026. Every number below was recomputed from its run log.</p>
+</header>
+
+<section class="answer" aria-label="The answer">
+  <span class="eyebrow">The answer</span>
+  <ol>
+    <li><b>On receipts (image-heavy rows, 128 × 2,048 per step), rdsp is fastest.</b> 35B MoE on 2 nodes: 1.36× Megatron-Bridge, 1.43× TorchTitan. Dense 27B on 1 node: 1.28× and 1.18×.</li>
+    <li><b>On NVIDIA's own recipe shape (MedPix, light images, 32 × 4,096), Megatron-Bridge is faster.</b> 1.38× on the 35B, 1.09× on the 27B.</li>
+    <li><b>On Megatron-MIMO's own layout, the two are within 7%</b> (0.93× to 1.04×). MIMO does not run the 35B MoE.</li>
+  </ol>
+</section>
+
+<section id="slides">
+  <h2>The slide numbers</h2>
+  <p>These are slides 14 and 15 of the PyTorch Conference deck. Each competitor is at its fastest measured setting.</p>
+
+  <div class="scroll"><table>
+    <caption>Qwen3.5-27B, dense · 1 node, 8× H100 · 64 rows × 2,048 tokens per step</caption>
+    <thead>
+      <tr><th>System</th><th>Layout</th><th class="n">Step</th><th class="n">Tokens/s per GPU</th><th class="n">Tokens/s total</th><th class="n">Step ÷ fastest</th></tr>
+    </thead>
+    <tbody>
+      <tr class="rdsp best"><td>rdsp</td><td>PP8, cut measured</td><td class="n">11.19 s</td><td class="n">1,465</td><td class="n">11,716</td><td class="n"><span class="chip win">fastest</span></td></tr>
+      <tr><td>TorchTitan</td><td>FSDP over 8 GPUs, bf16 reduce</td><td class="n">13.16 s</td><td class="n">1,245</td><td class="n">9,961</td><td class="n">1.18×</td></tr>
+      <tr><td>Megatron-Bridge</td><td>PP8 at rdsp's cut</td><td class="n">14.34 s</td><td class="n">1,143</td><td class="n">9,141</td><td class="n">1.28×</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="scroll"><table>
+    <caption>Qwen3.5-35B-A3B, MoE · 2 nodes, 16× H100, EFA · 128 rows × 2,048 tokens per step</caption>
+    <thead>
+      <tr><th>System</th><th>Layout</th><th class="n">Step</th><th class="n">Tokens/s per GPU</th><th class="n">Tokens/s total</th><th class="n">Step ÷ fastest</th></tr>
+    </thead>
+    <tbody>
+      <tr class="rdsp best"><td>rdsp</td><td>vision 4 GPUs + 6 stages × 2</td><td class="n">6.38 s</td><td class="n">2,567</td><td class="n">41,076</td><td class="n"><span class="chip win">fastest</span></td></tr>
+      <tr><td>Megatron-Bridge</td><td>TP1 × PP2 × EP8 (NVIDIA's layout)</td><td class="n">8.67 s</td><td class="n">1,890</td><td class="n">30,236</td><td class="n">1.36×</td></tr>
+      <tr><td>TorchTitan</td><td>FSDP over 16 GPUs + EP8</td><td class="n">9.11 s</td><td class="n">1,798</td><td class="n">28,769</td><td class="n">1.43×</td></tr>
+      <tr class="rdsp"><td>rdsp</td><td>PP8 × DP2, cut measured</td><td class="n">9.60 s</td><td class="n">1,707</td><td class="n">27,305</td><td class="n">1.50×</td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot">Step time: median of steps 6–50 of one 50-step run. On the 27B all three recompute every layer. On the 35B, rdsp's first row recomputes every layer; Megatron-Bridge and TorchTitan recompute none.</p>
+</section>
+
+<section id="why-win">
+  <h2>Why rdsp wins on receipts</h2>
+  <ul>
+    <li>Receipts are image-heavy: 801 of each row's 1,016 tokens are image tokens (79%).</li>
+    <li>In a pipeline, the image encoder runs on the first stage. With 8 near-equal stages on the 35B, stage 0 takes <b>11.9 s</b> per step and the others 3.4–5.4 s. Every stage waits for stage 0.</li>
+    <li>rdsp times its stages for 3 steps, then gives the encoder its own stage of 4 GPUs. All stages then take 3.7–4.9 s and the step drops from 9.60 s to <b>6.38 s</b> (1.50×).</li>
+    <li>Megatron-Bridge and TorchTitan give every pipeline stage the same number of GPUs, so they cannot build that layout. Bridge's best instead uses 2 stages with the experts split over 8 GPUs.</li>
+    <li>On the 27B, Megatron-Bridge runs rdsp's exact cut and is still 1.28× slower. We have not profiled where Bridge spends that extra time.</li>
+  </ul>
+</section>
+
+<section id="why-lose">
+  <h2>Where rdsp loses</h2>
+  <p>NVIDIA's published fine-tuning setup for these models uses MedPix (medical images with short captions), 32 rows of 4,096 tokens per step. On that setup Megatron-Bridge wins both models.</p>
+
+  <div class="scroll"><table>
+    <caption>MedPix, NVIDIA's recipe shape · 32 rows × 4,096 tokens per step</caption>
+    <thead>
+      <tr><th>System</th><th>Layout</th><th class="n">Step</th><th class="n">Tokens/s per GPU</th><th class="n">Tokens/s total</th><th class="n">Step ÷ fastest</th></tr>
+    </thead>
+    <tbody>
+      <tr class="group"><th colspan="6">35B MoE · 2 nodes, 16× H100</th></tr>
+      <tr class="best"><td>Megatron-Bridge</td><td>TP1 × PP2 × EP8, no recompute</td><td class="n">2.53 s</td><td class="n">3,238</td><td class="n">51,807</td><td class="n"><span class="chip win">fastest</span></td></tr>
+      <tr><td>NVIDIA's published run</td><td>same layout, every layer recomputed</td><td class="n">3.27 s</td><td class="n">2,507</td><td class="n">~40,100</td><td class="n">1.29×</td></tr>
+      <tr class="rdsp"><td>rdsp</td><td>PP8 × DP2 (vision stage: same 3.50 s)</td><td class="n">3.50 s</td><td class="n">2,341</td><td class="n">37,449</td><td class="n"><span class="chip lose">1.38×</span></td></tr>
+      <tr><td>Megatron-Bridge</td><td>TP2 × EP16 (0.6.0 recipe default)</td><td class="n">3.84 s</td><td class="n">2,133</td><td class="n">34,133</td><td class="n">1.52×</td></tr>
+      <tr><td>TorchTitan</td><td>FSDP16 + EP8</td><td class="n" colspan="3">crashed at step 7 (about 5.9 s per step before that)</td><td class="n">–</td></tr>
+      <tr class="group"><th colspan="6">27B dense · 1 node, 8× H100</th></tr>
+      <tr class="best"><td>Megatron-Bridge</td><td>PP8 at rdsp's cut</td><td class="n">8.58 s</td><td class="n">1,910</td><td class="n">15,276</td><td class="n"><span class="chip win">fastest</span></td></tr>
+      <tr class="rdsp"><td>rdsp</td><td>PP8, cut measured</td><td class="n">9.34 s</td><td class="n">1,754</td><td class="n">14,033</td><td class="n"><span class="chip lose">1.09×</span></td></tr>
+      <tr><td>TorchTitan</td><td>FSDP over 8 GPUs</td><td class="n">9.39 s</td><td class="n">1,745</td><td class="n">13,959</td><td class="n">1.09×</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>What changes between receipts and MedPix</h3>
+  <ul>
+    <li><b>Lighter images.</b> MedPix rows carry 250 image tokens against 801 for receipts. Bridge's first stage is no longer overloaded, and its tokens/s per GPU rise from 1,890 to 3,238. rdsp's move from 2,567 to 2,341.</li>
+    <li><b>Fewer, longer rows.</b> 32 rows give rdsp's 8-stage pipeline 16 microbatches per step instead of 64, so GPUs idle longer while the pipeline fills and drains. Bridge's 2-stage pipeline barely notices.</li>
+    <li><b>Recompute.</b> At 4,096 tokens per row, rdsp's 35B ran out of memory without recompute, so it recomputes every layer. Bridge does not need to.</li>
+    <li><b>rdsp's image encoder is slow per image.</b> Even with MedPix's small images, its first stage spent about 2.6 s of each 35B step in the encoder (4.16 s against about 1.5 s for the other stages at an even cut).</li>
+  </ul>
+  <p>The first two changed at the same time. One control run would separate them: receipts in MedPix's exact shape (32 × 4,096). It has not been run.</p>
+
+  <h3>Other places rdsp does not win</h3>
+  <ul>
+    <li>Megatron-MIMO's 27B layout (vision 1 GPU + TP4 × PP2): MIMO is 1.08× faster. rdsp's two TP4 language stages take about 30 s each.</li>
+    <li>Without a pipeline: on the 27B, TorchTitan's full sharding is 1.37× faster than DeepSpeed ZeRO-3, and Bridge's TP4 × DP2 is 1.09× faster than rdsp on that same layout.</li>
+    <li>Dense 27B on 2 nodes: rdsp's separate vision stage was 16% slower than 8 equal stages (12.06 s against 10.19 s), because the dense language stages became the slowest.</li>
+  </ul>
+</section>
+
+<section id="mimo">
+  <h2>Megatron-MIMO on its own layout</h2>
+  <p>Megatron-MIMO also puts the vision encoder on GPUs of its own. Slide 16.</p>
+  <div class="scroll"><table>
+    <caption>Tokens/s per GPU</caption>
+    <thead><tr><th>Model · GPUs</th><th>Layout</th><th class="n">Megatron-MIMO</th><th class="n">rdsp</th><th class="n">rdsp ÷ MIMO</th></tr></thead>
+    <tbody>
+      <tr><td>Qwen3.5-9B · 5 GPUs</td><td>vision 1 GPU + TP2 × PP2</td><td class="n">2,680</td><td class="n">2,798</td><td class="n"><span class="chip win">1.04×</span></td></tr>
+      <tr><td>Qwen3.5-9B · 5 GPUs</td><td>vision 1 GPU + TP2 × DP2</td><td class="n">3,331</td><td class="n">3,124</td><td class="n"><span class="chip lose">0.94×</span></td></tr>
+      <tr><td>Qwen3.5-27B · 9 GPUs</td><td>vision 1 GPU + TP4 × PP2</td><td class="n">994</td><td class="n">921</td><td class="n"><span class="chip lose">0.93×</span></td></tr>
+      <tr><td>Qwen3.5-35B-A3B · 16 GPUs</td><td>vision on GPUs of its own</td><td class="n">does not run</td><td class="n">2,567</td><td class="n">–</td></tr>
+    </tbody>
+  </table></div>
+  <p class="foot">Step times: 9B MIMO 9.78 / 7.87 s against rdsp 9.37 / 8.39 s; 27B MIMO 29.31 s against rdsp 31.63 s. 9B: MIMO's fixed settings on both (fp32 gradients and master weights, no recompute), 64 × 2,048 per step, median of steps 6–50. 27B: two nodes, 128 × 2,048 per step, 10 steps each, median of steps 4–10. MIMO as shipped runs out of memory at 27B, so both used bf16 gradients and a 2-byte master copy (a patched copy of MIMO's example script; MIMO's own code unchanged). Losses match: 0.724 at step 1 on both. 35B: no released NeMo container converts this model for MIMO, and its script has no expert splitting or recompute.</p>
+</section>
+
+<section id="fair">
+  <h2>Is 128 × 2,048 a fair setup?</h2>
+  <ul>
+    <li><b>It is not NVIDIA's shape.</b> Megatron-Bridge's own Qwen3.5-VL recipes (27B and 35B) all use 32 rows × 4,096 tokens. MIMO's example defaults to 4,096 tokens.</li>
+    <li><b>2,048 fits the data.</b> Receipt rows average 1,016 tokens and none is longer than 2,048. At 4,096, three quarters of every row would be padding.</li>
+    <li><b>The batch was not tuned for rdsp.</b> 64 rows per node came from the first rdsp vs MIMO comparison (Oct 5) and was kept for every run since.</li>
+    <li><b>It does favor rdsp.</b> More rows per step give the pipeline more microbatches, and receipts are image-heavy. The MedPix table above is the other side, and the slides should say so in a footnote.</li>
+  </ul>
+</section>
+
+<section id="equal">
+  <h2>How every run was made equal</h2>
+  <ul>
+    <li>Same rows in the same order: exported once from Megatron-Bridge's data loader and read by every system.</li>
+    <li>Every row padded to the full length (2,048 or 4,096), as Megatron-Bridge does whenever it pipelines or splits experts.</li>
+    <li>Loss averaged over every supervised token (per microbatch in the MIMO comparisons, as MIMO does). AdamW at a constant 1e-5, betas 0.9 / 0.95.</li>
+    <li>bf16 gradients and a 2-byte master copy on rdsp and Megatron-Bridge; TorchTitan reduces gradients in bf16.</li>
+    <li>Losses match across systems. MedPix 35B, steps 1 → 50: Bridge 2.245 → 1.122, rdsp 2.248 → 1.128.</li>
+  </ul>
+</section>
+
+<section id="all-runs">
+  <h2>Every run</h2>
+  <p>Each competitor's slide row is the fastest of these. Medians of steps 6–50 unless noted.</p>
+
+  <details>
+    <summary>27B dense · 1 node · 64 × 2,048 (receipts)</summary>
+    <div class="scroll"><table>
+      <thead><tr><th>System</th><th>Layout</th><th class="n">Step</th><th>Note</th></tr></thead>
+      <tbody>
+        <tr class="rdsp"><td>rdsp</td><td>PP8, cut measured</td><td class="n">11.19 s</td><td class="note">slide row (11.14 s recomputing 8 blocks per stage)</td></tr>
+        <tr class="rdsp"><td>rdsp</td><td>TP2 × PP2 × DP2, recompute</td><td class="n">17.70 s</td><td class="note">Oct 17</td></tr>
+        <tr class="rdsp"><td>rdsp</td><td>TP2 × PP4, recompute</td><td class="n">22.65 s</td><td class="note">Oct 17</td></tr>
+        <tr class="rdsp"><td>rdsp</td><td>TP4 × PP2</td><td class="n">22.78 s</td><td class="note">Oct 17</td></tr>
+        <tr class="rdsp"><td>rdsp</td><td>TP4 × DP2, recompute</td><td class="n">29.26 s</td><td class="note">Oct 17</td></tr>
+        <tr class="rdsp"><td>rdsp</td><td>vision 1 GPU + TP4 | TP2 | TP1</td><td class="n">29.73 s</td><td class="note">Oct 17, recompute</td></tr>
+        <tr><td>Megatron-Bridge</td><td>PP8 at rdsp's cut, NVIDIA's speed settings</td><td class="n">14.34 s</td><td class="note">slide row</td></tr>
+        <tr><td>Megatron-Bridge</td><td>PP8, its own cut 3 | 9×6 | 7</td><td class="n">16.51 s</td><td class="note">old slide row</td></tr>
+        <tr><td>Megatron-Bridge</td><td>PP8, 2 interleaved virtual stages</td><td class="n">16.77 s</td><td class="note"></td></tr>
+        <tr><td>Megatron-Bridge</td><td>TP2 × PP2 × DP2, recompute</td><td class="n">17.47 s</td><td class="note">Oct 17</td></tr>
+        <tr><td>Megatron-Bridge</td><td>TP2 × PP4, recompute</td><td class="n">24.70 s</td><td class="note">Oct 17</td></tr>
+        <tr><td>Megatron-Bridge</td><td>TP4 × PP2</td><td class="n">25.31 s</td><td class="note">Oct 17</td></tr>
+        <tr><td>Megatron-Bridge</td><td>TP4 × DP2, recompute</td><td class="n">26.95 s</td><td class="note">Oct 17</td></tr>
+        <tr><td>Megatron-Bridge</td><td>PP8, even split; vision alone on stage 0</td><td class="n">–</td><td class="note">out of memory; NCCL error</td></tr>
+        <tr><td>TorchTitan</td><td>FSDP8, recompute, bf16 reduce</td><td class="n">13.16 s</td><td class="note">slide row</td></tr>
+        <tr><td>TorchTitan</td><td>FSDP8, recompute, fp32 reduce</td><td class="n">14.15 s</td><td class="note">old slide setting (14.22 s on Oct 18)</td></tr>
+        <tr><td>TorchTitan</td><td>TP4 × FSDP2</td><td class="n">38.16 s</td><td class="note"></td></tr>
+        <tr><td>TorchTitan</td><td>TP4 × DP2, recompute</td><td class="n">56.65 s</td><td class="note"></td></tr>
+        <tr><td>TorchTitan</td><td>TP4 × PP2, recompute</td><td class="n">65.99 s</td><td class="note"></td></tr>
+        <tr><td>TorchTitan</td><td>FSDP8 with region recompute; PP8</td><td class="n">–</td><td class="note">out of memory at step 2</td></tr>
+        <tr><td>Megatron-MIMO</td><td>vision 1 GPU + TP4</td><td class="n">–</td><td class="note">out of memory in step 1</td></tr>
+      </tbody>
+    </table></div>
+  </details>
+
+  <details>
+    <summary>35B MoE · 2 nodes · 128 × 2,048 (receipts)</summary>
+    <div class="scroll"><table>
+      <thead><tr><th>System</th><th>Layout</th><th class="n">Step</th><th>Note</th></tr></thead>
+      <tbody>
+        <tr class="rdsp"><td>rdsp</td><td>vision 4 GPUs + 6 stages × 2, recompute</td><td class="n">6.38 s</td><td class="note">slide row</td></tr>
+        <tr class="rdsp"><td>rdsp</td><td>PP8 × DP2, cut measured</td><td class="n">9.60 s</td><td class="note">slide row</td></tr>
+        <tr class="rdsp"><td>rdsp</td><td>PP16</td><td class="n">18.24 s</td><td class="note"></td></tr>
+        <tr class="rdsp"><td>rdsp</td><td>ZeRO-3 over 16 GPUs, recompute</td><td class="n">18.33 s</td><td class="note">no pipeline</td></tr>
+        <tr><td>Megatron-Bridge</td><td>TP1 × PP2 × EP8, 17 | 23 layers, fused cross-entropy</td><td class="n">8.67 s</td><td class="note">slide row; NVIDIA's published layout</td></tr>
+        <tr><td>Megatron-Bridge</td><td>TP1 × PP2 × EP8, even split</td><td class="n">9.28 s</td><td class="note"></td></tr>
+        <tr><td>Megatron-Bridge</td><td>TP1 × EP8 × DP16, recompute</td><td class="n">10.68 s</td><td class="note">out of memory without recompute</td></tr>
+        <tr><td>Megatron-Bridge</td><td>TP2 × EP16</td><td class="n">14.94 s</td><td class="note">0.6.0 recipe default; old slide row</td></tr>
+        <tr><td>Megatron-Bridge</td><td>PP8 × DP2 at rdsp's cut, no expert split</td><td class="n">20.27 s</td><td class="note"></td></tr>
+        <tr><td>TorchTitan</td><td>FSDP16 + EP8, bf16 reduce</td><td class="n">9.11 s</td><td class="note">slide row</td></tr>
+        <tr><td>TorchTitan</td><td>FSDP16 + EP8, fp32 reduce</td><td class="n">9.23 s</td><td class="note"></td></tr>
+        <tr><td>TorchTitan</td><td>FSDP16</td><td class="n">11.84 s</td><td class="note">old slide row</td></tr>
+      </tbody>
+    </table></div>
+  </details>
+
+  <details>
+    <summary>27B dense · 2 nodes · 128 × 2,048 (receipts)</summary>
+    <div class="scroll"><table>
+      <thead><tr><th>System</th><th>Layout</th><th class="n">Step</th><th>Note</th></tr></thead>
+      <tbody>
+        <tr class="rdsp"><td>rdsp</td><td>PP8 × DP2, cut measured</td><td class="n">10.19 s</td><td class="note"></td></tr>
+        <tr class="rdsp"><td>rdsp</td><td>vision 4 GPUs + 6 stages × 2</td><td class="n">12.06 s</td><td class="note">16% slower than PP8 × DP2</td></tr>
+        <tr class="rdsp"><td>rdsp</td><td>vision 1 GPU + TP4 × PP2 (9 GPUs)</td><td class="n">31.63 s</td><td class="note">10 steps, median of 4–10</td></tr>
+        <tr><td>Megatron-MIMO</td><td>vision 1 GPU + TP4 × PP2 (9 GPUs), our memory settings</td><td class="n">29.31 s</td><td class="note">10 steps; 28.54 s over a 50-step run</td></tr>
+        <tr><td>Megatron-MIMO</td><td>same, as shipped</td><td class="n">–</td><td class="note">out of memory</td></tr>
+      </tbody>
+    </table></div>
+  </details>
+</section>
+
+<section id="open">
+  <h2>Still open</h2>
+  <ol>
+    <li><b>MedPix footnote</b> on slides 14 and 15. Draft: "On NVIDIA's recipe shape (MedPix, 32 × 4,096, light images) Megatron-Bridge is 1.38× faster; rdsp's lead needs image-heavy rows and enough rows per step."</li>
+    <li><b>Slide 7</b> still says "13–28% faster than Megatron", from the older 2B/4B runs on PCIe GPUs.</li>
+    <li><b>Control run</b>: receipts at 32 × 4,096 on 2 nodes, about 45 minutes. It shows whether image share or batch shape flips the MedPix result.</li>
+    <li><b>rdsp bug</b>: after a stage runs out of memory, rdsp hangs until the run's timeout instead of exiting (40 minutes lost on Oct 19).</li>
+    <li><b>rdsp tensor parallelism</b> leaves Qwen3.5's linear-attention projections unsplit, a likely reason its TP4 stages are slow (not profiled).</li>
+  </ol>
+  <p class="foot">Did not run: Megatron-MIMO on its 17-GPU tutorial layout (it needs the same GPU count on every node); rdsp on 17 GPUs (failed at startup with the 1-GPU box); TorchTitan on the 35B MedPix setup (crashed at step 7).</p>
+</section>
+
+<section class="next" aria-label="Next action">
+  <p><b>Next action:</b> add the MedPix footnote to slides 14 and 15.</p>
+</section>
+
+<p class="foot">Logs: <code>rdsp/bench_oct10/gap_round/box_logs_20261019/</code> and <code>rdsp/bench_oct10/two_node_35b/box_logs_20261018/</code>. Medians: <code>gap_round/scripts/medians.py</code>. Versions: Megatron-Bridge 0.6.0 (NeMo 26.08), TorchTitan 3c36a77, DeepSpeed 53a2ac4, transformers 5.17.0.</p>
+</main>

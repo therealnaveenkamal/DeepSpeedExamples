@@ -183,6 +183,18 @@ class PipelineCoordinator:
             if result is False:
                 raise CheckpointError(f"stage {s} failed checkpoint {what}")
 
+    def set_profile(self, on: bool) -> None:
+        for w in self._workers:
+            w.set_profile(on)
+
+    def profile_records(self) -> list[list[dict]]:
+        """Per stage, each rank's phase records and GPU memory (set_profile)."""
+        return [w.profile_records() for w in self._workers]
+
+    def shutdown(self) -> None:
+        self._drop_read_ahead()
+        self._shutdown_workers()
+
     def _all_alive(self) -> bool:
         return all(getattr(w, "alive", lambda: True)() for w in self._workers)
 

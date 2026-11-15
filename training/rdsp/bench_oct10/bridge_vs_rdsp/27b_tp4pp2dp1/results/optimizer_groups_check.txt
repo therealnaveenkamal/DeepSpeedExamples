@@ -1,0 +1,3 @@
+one group: DeepSpeedZeroOptimizer, 1 group(s), loss step 1 0.003532 step 20 0.000479
+groups of <= 70,000: DeepSpeedZeroOptimizer, 6 groups, loss step 20 0.000479, max weight difference from one group 0
+groups of <= 140,000: DeepSpeedZeroOptimizer, 3 groups, loss step 20 0.000479, max weight difference from one group 0

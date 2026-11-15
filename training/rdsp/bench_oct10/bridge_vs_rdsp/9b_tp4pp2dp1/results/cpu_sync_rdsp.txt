@@ -1,0 +1,17 @@
+2.44 steps in the window; per step, per CPU thread that launches kernels
+  launches   119932  cudaDeviceSynchronize: 67x 32 ms  cudaEventQuery: 67x 0 ms  cudaStreamSynchronize: 7067x 429 ms
+  launches   260086  cudaStreamSynchronize: 66x 517 ms
+  launches   121528  cudaDeviceSynchronize: 67x 32 ms  cudaEventQuery: 715x 2 ms  cudaStreamSynchronize: 7084x 216 ms
+  launches   260236  cudaStreamSynchronize: 66x 103 ms
+  launches    56437  cudaDeviceSynchronize: 66x 13238 ms  cudaEventQuery: 202x 1 ms  cudaStreamSynchronize: 204x 378 ms
+  launches   123149  
+  launches    56418  cudaDeviceSynchronize: 66x 13328 ms  cudaEventQuery: 202x 1 ms  cudaStreamSynchronize: 204x 225 ms
+  launches   123149  
+  launches    57070  cudaDeviceSynchronize: 66x 13285 ms  cudaEventQuery: 415x 1 ms  cudaStreamSynchronize: 207x 338 ms
+  launches   123149  
+  launches   119932  cudaDeviceSynchronize: 67x 32 ms  cudaEventQuery: 67x 0 ms  cudaStreamSynchronize: 7067x 117 ms
+  launches   260102  cudaStreamSynchronize: 66x 65 ms
+  launches   119932  cudaDeviceSynchronize: 67x 32 ms  cudaEventQuery: 67x 0 ms  cudaStreamSynchronize: 7067x 430 ms
+  launches   260208  cudaStreamSynchronize: 66x 402 ms
+  launches    56436  cudaDeviceSynchronize: 66x 13450 ms  cudaEventQuery: 202x 1 ms  cudaStreamSynchronize: 204x 368 ms
+  launches   123149  

@@ -1,0 +1,31 @@
+mimo: median step 9.52 s (unprofiled run)
+rdsp: median step 9.11 s (unprofiled run)
+
+== vision GPU process (mean of MIMO 1, rdsp 1 processes), seconds per step
+                                             MIMO   rdsp  MIMO-rdsp
+  forward: wait for the GPU, once per layer   0.15   0.27      -0.12
+  forward: rotary embedding                  0.84   0.37      +0.47
+  forward: attention, the rest               2.01   0.81      +1.21
+  forward: MLP                               1.08   0.27      +0.81
+  forward: outside the layers                0.60   0.35      +0.25
+  forward                                    0.22   0.26      -0.04
+  backward                                   3.56   6.49      -2.93
+  other                                      0.06   0.04      +0.02
+  waiting                                    0.99   0.25      +0.74
+  busy (all but waiting)                     8.54   8.86      -0.33
+
+== first GPU process (mean of MIMO 2, rdsp 2 processes), seconds per step
+                                             MIMO   rdsp  MIMO-rdsp
+  forward                                    3.73   3.35      +0.37
+  backward                                   3.48   5.07      -1.59
+  other                                      0.05   0.06      -0.01
+  waiting                                    2.27   0.64      +1.63
+  busy (all but waiting)                     7.26   8.47      -1.22
+
+== last GPU process (mean of MIMO 2, rdsp 2 processes), seconds per step
+                                             MIMO   rdsp  MIMO-rdsp
+  forward                                    3.32   3.07      +0.25
+  backward                                   2.93   4.02      -1.09
+  other                                      0.05   0.02      +0.03
+  waiting                                    3.22   2.00      +1.22
+  busy (all but waiting)                     6.30   7.12      -0.81

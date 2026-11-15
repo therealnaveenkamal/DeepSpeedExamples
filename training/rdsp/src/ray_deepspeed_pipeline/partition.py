@@ -163,11 +163,12 @@ def vision_token_ratio(hf_config, sample) -> float:
 
 
 def _balanced_cuts(costs: tuple, stages: int, min_first: int,
-                   stage_gpus: tuple[int, ...]) -> list[int]:
+                   stage_gpus: tuple[int, ...], extra=None, fits=None) -> list[int]:
     """Contiguous split minimising the most expensive stage, a stage's cost
     divided by its GPU count; then, among splits that achieve it, the sum of
     squared stage costs (so no stage is left nearly idle). Ties go to splits
-    whose earlier stages take more."""
+    whose earlier stages take more. extra: a fixed cost per stage, added to
+    its blocks'. fits(s, j, i): whether stage s may hold blocks j..i-1."""
     pre, per_block, post = costs
     n = len(per_block)
     if n - (stages - 1) < max(min_first, 1):
@@ -180,7 +181,10 @@ def _balanced_cuts(costs: tuple, stages: int, min_first: int,
 
     def stage_cost(s, j, i):
         return (total[i] - total[j] + (pre if s == 0 else 0)
-                + (post if s == stages - 1 else 0)) / stage_gpus[s]
+                + (post if s == stages - 1 else 0) + (extra[s] if extra else 0)) / stage_gpus[s]
+
+    def allowed(s, j, i, limit):
+        return stage_cost(s, j, i) <= limit and (fits is None or fits(s, j, i))
 
     def solve(score, limit):
         # best[s][i]: score of blocks[:i] on stages 0..s; back: where stage s starts
@@ -188,12 +192,12 @@ def _balanced_cuts(costs: tuple, stages: int, min_first: int,
         best = [[inf] * (n + 1) for _ in range(stages)]
         back = [[0] * (n + 1) for _ in range(stages)]
         for i in range(max(min_first, 1), n + 1):
-            if stage_cost(0, 0, i) <= limit:
+            if allowed(0, 0, i, limit):
                 best[0][i] = score(0, stage_cost(0, 0, i))
         for s in range(1, stages):
             for i in range(s + 1, n + 1):
                 for j in range(i - 1, s - 1, -1):
-                    if best[s - 1][j] == inf or stage_cost(s, j, i) > limit:
+                    if best[s - 1][j] == inf or not allowed(s, j, i, limit):
                         continue
                     value = score(best[s - 1][j], stage_cost(s, j, i))
                     if value < best[s][i]:
@@ -201,12 +205,90 @@ def _balanced_cuts(costs: tuple, stages: int, min_first: int,
         return best[stages - 1][n], back
 
     slowest, _ = solve(max, float("inf"))
+    if slowest == float("inf"):
+        raise ValidationError(f"no cut of {n} blocks into {stages} stages fits every "
+                              f"stage's memory")
     _, back = solve(lambda acc, c: acc + c * c, slowest)
     cuts, i = [], n
     for s in range(stages - 1, 0, -1):
         i = back[s][i]
         cuts.append(i)
     return cuts[::-1]
+
+
+def _measured_extras(costs: tuple, stage_gpus: tuple[int, ...], measured) -> list[float]:
+    """Each stage's measured time beyond its blocks', in the blocks' cost
+    units (parameters): BalancedTransformerBlocks.measured."""
+    _, per_block, post = costs
+    n = len(measured.seconds)
+    bounds = [0, *measured.cuts, len(per_block)]
+    if any(a >= b for a, b in zip(bounds, bounds[1:])) or n != len(stage_gpus):
+        raise ValidationError(f"measured cuts {measured.cuts} do not fit {len(per_block)} "
+                              f"blocks on {len(stage_gpus)} stages")
+    blocks = [sum(per_block[a:b]) for a, b in zip(bounds, bounds[1:])]
+    middle = range(1, n - 1)
+    if middle:  # stages holding blocks only
+        rate = (sum(measured.seconds[s] for s in middle)
+                / sum(blocks[s] / stage_gpus[s] for s in middle))
+    else:  # the last stage, its head and loss at their parameter-count estimate
+        rate = measured.seconds[-1] / ((blocks[-1] + post) / stage_gpus[-1])
+    return [max(0.0, measured.seconds[s] * stage_gpus[s] / rate - blocks[s]) for s in range(n)]
+
+
+def _measured_cuts(costs: tuple, stage_gpus: tuple[int, ...], min_first: int,
+                   measured) -> list[int]:
+    """The balanced cut with measured fixed costs per stage, and memory: a
+    stage gaining blocks gains their weights, gradients and optimizer state."""
+    extra = _measured_extras(costs, stage_gpus, measured)  # checks the measured cuts
+    _, per_block, _ = costs
+    total = [0]
+    for c in per_block:
+        total.append(total[-1] + c)
+    bounds = [0, *measured.cuts, len(per_block)]
+    held = [total[b] - total[a] for a, b in zip(bounds, bounds[1:])]
+
+    def fits(s, j, i):
+        gained = total[i] - total[j] - held[s]
+        return gained <= 0 or (measured.peak_gib[s] + gained * measured.bytes_per_param[s]
+                               / 2**30 <= measured.limit_gib)
+
+    return _balanced_cuts((0, per_block, 0), len(stage_gpus), min_first, stage_gpus,
+                          extra=extra, fits=fits)
+
+
+def _decoder_stages(measured):
+    """A vision-only first stage's measurements left out: the decoder stages' own, for
+    re-cutting the decoder alone. The vision stage keeps its GPUs and its cut at 0."""
+    import dataclasses
+
+    if not measured.cuts or measured.cuts[0] != 0:
+        raise ValidationError("vision_stage measurements must come from a run with the vision "
+                              f"encoder alone on stage 0 (first cut at 0), got cuts {measured.cuts}")
+    return dataclasses.replace(measured, cuts=measured.cuts[1:], seconds=measured.seconds[1:],
+                               peak_gib=measured.peak_gib[1:],
+                               bytes_per_param=measured.bytes_per_param[1:])
+
+
+def static_bytes_per_param(ds_config: dict, tp: int, dp: int) -> float:
+    """Weights, gradients and optimizer state per GPU per parameter of a stage
+    of tp x dp GPUs under its DeepSpeed config: bf16 weights; bf16 gradients,
+    or an fp32 accumulation buffer; master weights, fp32 or 2 bytes (bf16, or
+    rdsp's remainder); AdamW's two moments, fp32 or bf16. ZeRO 1 and 2 split
+    the optimizer state over dp, ZeRO 2 the gradients too; under offload the
+    optimizer state is in host memory. TP splits all of it."""
+    bf16 = ds_config.get("bf16") or {}
+    zero = ds_config.get("zero_optimization") or {}
+    stage = int(zero.get("stage", 0) or 0)
+    grads = 4.0 if (ds_config.get("data_types") or {}).get("grad_accum_dtype") == "fp32" else 2.0
+    remainder = ds_config.get("rdsp_master_weights") == "remainder"
+    master = 2.0 if remainder or bf16.get("bf16_master_weights_and_grads") else 4.0
+    moments = 4.0 if bf16.get("bf16_optimizer_states") and not remainder else 8.0
+    optimizer = 0.0 if zero.get("offload_optimizer") else master + moments
+    if stage >= 1:
+        optimizer /= dp
+    if stage >= 2:
+        grads /= dp
+    return (2.0 + grads + optimizer) / tp
 
 
 def _under(name: str, module: str | None) -> bool:
@@ -234,7 +316,14 @@ def partition_parameters(model: nn.Module, policy, stages: int,
                     "vision_stage puts the vision encoder alone on the first stage: it needs "
                     "a model with a vision encoder whose output enters only the input "
                     "embeddings, not colocated vision")
-            cuts = [0] + _balanced_cuts((0, per_block, post), stages - 1, 0, gpus[1:])
+            if policy.measured is not None:
+                cuts = [0] + _measured_cuts((0, per_block, post), gpus[1:], 0,
+                                            _decoder_stages(policy.measured))
+            else:
+                cuts = [0] + _balanced_cuts((0, per_block, post), stages - 1, 0, gpus[1:])
+        elif policy.measured is not None:
+            cuts = _measured_cuts((pre, per_block, post), gpus, vision_injection_depth(model),
+                                  policy.measured)
         else:
             # what precedes the blocks, embeddings aside, is the vision encoder
             pre *= policy.vision_token_ratio
@@ -323,12 +412,20 @@ def _checkpointed(forward, *args, **kwargs):
     return torch.utils.checkpoint.checkpoint(forward, *args, use_reentrant=False, **kwargs)
 
 
-def recompute_blocks(stage: nn.Module) -> None:
+def recompute_blocks(stage: nn.Module, first: int | None = None) -> None:
     """Keep only each of the stage's own blocks' inputs for backward and
     recompute the rest there. Wraps each block's forward, not the block, so
     parameter names (checkpoints, weight files) stay the same, and module
-    hooks still run once, outside the recomputed part."""
-    for block in stage.local_blocks():
+    hooks still run once, outside the recomputed part. first: only the first
+    `first` of the stage's pipeline blocks, as Megatron's block method; the
+    blocks of an encoder the stage holds always (little compute for the
+    activations they keep)."""
+    blocks = stage.local_blocks()
+    if first is not None:
+        encoder = stage.encoder_blocks() if hasattr(stage, "encoder_blocks") else []
+        own = [b for b in blocks if not any(b is e for e in encoder)]
+        blocks = own[:first] + encoder
+    for block in blocks:
         block.forward = functools.partial(_checkpointed, block.forward)
 
 

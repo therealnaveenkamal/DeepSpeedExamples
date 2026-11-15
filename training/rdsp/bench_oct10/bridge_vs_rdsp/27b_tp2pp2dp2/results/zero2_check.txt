@@ -1,0 +1,1 @@
+ZeRO-1 DeepSpeedZeroOptimizer vs ZeRO-2 DeepSpeedZeroOptimizer, 4 microbatches x 10 steps: weights moved up to 0.00977 from the start; max ZeRO-1 / ZeRO-2 difference 0 (one process: DP1)

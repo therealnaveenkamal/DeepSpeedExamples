@@ -1,0 +1,118 @@
+bridge: wall-clock share of the training thread per process (py-spy, 25 Hz, 40 s while steady)
+
+pyspy-bridge-nov11-225000.txt stage 0  sync  0.0%  p2p  0.1%  backward 62.1%  forward 37.6%  other  0.3%
+                                     forward = vision 31.1%  data  3.8%  checks  0.0%  language  1.5%  rest  1.1%
+pyspy-bridge-nov11-225001.txt stage 1  sync  0.0%  p2p  0.3%  backward 29.1%  forward 70.7%  other  0.0%
+                                     forward = vision  0.0%  data 59.0%  checks  0.0%  language 10.7%  rest  1.0%
+pyspy-bridge-nov11-225002.txt stage 1  sync  0.0%  p2p  0.4%  backward 30.9%  forward 68.6%  other  0.1%
+                                     forward = vision  0.0%  data 53.5%  checks  0.0%  language 13.1%  rest  1.9%
+pyspy-bridge-nov11-225003.txt stage 1  sync  0.0%  p2p  0.2%  backward 26.8%  forward 72.8%  other  0.1%
+                                     forward = vision  0.0%  data 59.2%  checks  0.0%  language 12.5%  rest  1.2%
+pyspy-bridge-nov11-225004.txt stage 1  sync  0.0%  p2p  0.3%  backward 28.4%  forward 71.2%  other  0.1%
+                                     forward = vision  0.0%  data 59.4%  checks  0.0%  language 10.5%  rest  1.3%
+pyspy-bridge-nov11-225005.txt stage 1  sync  0.0%  p2p  0.2%  backward 31.1%  forward 68.6%  other  0.1%
+                                     forward = vision  0.0%  data 54.2%  checks  0.0%  language 13.2%  rest  1.2%
+pyspy-bridge-nov11-225006.txt stage 1  sync  0.0%  p2p  0.3%  backward 26.0%  forward 73.6%  other  0.1%
+                                     forward = vision  0.0%  data 58.8%  checks  0.0%  language 13.4%  rest  1.4%
+pyspy-bridge-nov11-225007.txt stage 1  sync  0.0%  p2p  0.2%  backward 21.8%  forward 78.0%  other  0.1%
+                                     forward = vision  0.0%  data 65.4%  checks  0.0%  language 10.2%  rest  2.3%
+
+== stage 0, all its processes: sync 0.0%  p2p 0.1%  backward 62.1%  forward 37.6%  other 0.3%
+  forward = vision 31.1%  data 3.8%  checks 0.0%  language 1.5%  rest 1.1%
+  top functions on the stack (inclusive share):
+    100.0%  main (run_recipe.py:518)
+    100.0%  _pretrain (pretrain.py:150)
+    100.0%  run_config (recipe_runner.py:512)
+    100.0%  nvtx_decorator.<locals>.decorator.<locals>.wrapper (utils.py:2808)
+    100.0%  <module> (run_recipe.py:529)
+    100.0%  pretrain (pretrain.py:105)
+    100.0%  finetune (finetune.py:54)
+    100.0%  train (train.py:483)
+    100.0%  train_step (train.py:915)
+    100.0%  experimental_fn.<locals>.wrapper (decorators.py:39)
+     62.0%  backward_step (schedules.py:572)
+     62.0%  custom_backward (schedules.py:220)
+     55.1%  forward_backward_pipelining_without_interleaving (schedules.py:2402)
+     37.5%  forward_step (schedules.py:509)
+     33.6%  Module._wrapped_call_impl (module.py:1778)
+     33.6%  forward_step (qwen3_vl_step.py:347)
+     33.6%  _BaseDataParallel.forward (data_parallel_base.py:22)
+     33.6%  Module._call_impl (module.py:1789)
+     33.6%  Float16Module.forward (module.py:513)
+     33.0%  forward_backward_pipelining_without_interleaving (schedules.py:2356)
+     31.3%  Qwen3VLModel.forward (model.py:658)
+     29.6%  TransformerBlock.__call__ (transformer_block.py:484)
+     29.6%  Function.apply (function.py:625)
+     29.6%  GraphableMegatronModule.__call__ (module.py:376)
+     29.3%  checkpoint (random.py:675)
+     28.2%  CheckpointFunction.forward (random.py:607)
+     28.0%  Qwen3VLVisionModel.forward (vision_model.py:354)
+     28.0%  Qwen3VLVisionTransformerBlock.forward (transformer_block.py:320)
+     27.8%  Qwen3VLVisionTransformerBlock._checkpointed_forward.<locals>.checkpoint_handler (transformer_block.py:173)
+     27.8%  Qwen3VLVisionTransformerBlock._checkpointed_forward (transformer_block.py:192)
+  top innermost frames (where the thread actually was):
+     62.0%  custom_backward (schedules.py:220)
+      3.3%  general_gemm (gemm.py:212)
+      1.8%  get_batch_from_iterator (qwen3_vl_step.py:89)
+      1.6%  get_batch_from_iterator (qwen3_vl_step.py:90)
+      1.4%  fused_attn_fwd (fused_attn.py:307)
+      1.3%  apply_normalization (_common.py:66)
+      1.1%  AttentionParams.__eq__ (utils.py:320)
+      1.0%  _rotate_half (rope_utils.py:84)
+      0.7%  _apply_rotary_pos_emb_bshd (rope_utils.py:134)
+      0.7%  _apply_rotary_pos_emb_bshd (rope_utils.py:133)
+      0.7%  _apply_rotary_pos_emb_bshd (rope_utils.py:136)
+      0.6%  Qwen3VLVisionModel.fast_pos_embed_interpolate (vision_model.py:267)
+      0.6%  Function.apply (function.py:625)
+      0.5%  Qwen3VLVisionModel.fast_pos_embed_interpolate (vision_model.py:234)
+      0.5%  get_qkv_layout (utils.py:2442)
+
+== stage 1, all its processes: sync 0.0%  p2p 0.3%  backward 27.7%  forward 71.9%  other 0.1%
+  forward = vision 0.0%  data 58.5%  checks 0.0%  language 11.9%  rest 1.5%
+  top functions on the stack (inclusive share):
+    100.0%  main (run_recipe.py:518)
+    100.0%  _pretrain (pretrain.py:150)
+    100.0%  train (train.py:483)
+    100.0%  <module> (run_recipe.py:529)
+    100.0%  pretrain (pretrain.py:105)
+    100.0%  train_step (train.py:915)
+    100.0%  nvtx_decorator.<locals>.decorator.<locals>.wrapper (utils.py:2808)
+    100.0%  experimental_fn.<locals>.wrapper (decorators.py:39)
+    100.0%  finetune (finetune.py:54)
+    100.0%  run_config (recipe_runner.py:512)
+     71.8%  forward_step (schedules.py:509)
+     69.2%  forward_backward_pipelining_without_interleaving (schedules.py:2356)
+     57.9%  forward_step (qwen3_vl_step.py:249)
+     57.9%  get_batch (qwen3_vl_step.py:129)
+     56.2%  get_batch_from_iterator (qwen3_vl_step.py:90)
+     27.7%  backward_step (schedules.py:572)
+     27.7%  custom_backward (schedules.py:220)
+     26.0%  forward_backward_pipelining_without_interleaving (schedules.py:2402)
+     13.5%  forward_step (qwen3_vl_step.py:347)
+     13.5%  Module._wrapped_call_impl (module.py:1778)
+     13.5%  _BaseDataParallel.forward (data_parallel_base.py:22)
+     13.5%  Module._call_impl (module.py:1789)
+     13.5%  Float16Module.forward (module.py:513)
+     12.5%  Qwen3VLModel.forward (model.py:910)
+     12.3%  Qwen3VLGPTModel.forward (text_model.py:206)
+     12.3%  TransformerBlock.__call__ (transformer_block.py:484)
+     12.3%  Function.apply (function.py:625)
+     12.3%  GraphableMegatronModule.__call__ (module.py:376)
+     12.3%  Qwen3VLTransformerBlock.forward (transformer_block.py:726)
+     12.2%  Qwen3VLTransformerBlock._checkpointed_forward (transformer_block.py:595)
+  top innermost frames (where the thread actually was):
+     56.2%  get_batch_from_iterator (qwen3_vl_step.py:90)
+     27.7%  custom_backward (schedules.py:220)
+      1.5%  get_batch_from_iterator (qwen3_vl_step.py:89)
+      1.1%  general_gemm (gemm.py:212)
+      0.4%  CudaLauncher.__call__ (driver.py:328)
+      0.3%  apply_normalization (_common.py:66)
+      0.3%  RMSNorm.op_forward (rmsnorm.py:187)
+      0.3%  Function.apply (function.py:625)
+      0.2%  launcher (<string>:5)
+      0.2%  _TorchDynamoContext.__call__.<locals>.compile_wrapper (eval_frame.py:1095)
+      0.2%  _apply_rotary_pos_emb_bshd (rope_utils.py:133)
+      0.2%  Module._call_impl (module.py:1789)
+      0.2%  _bias_dropout_add_func (fused_bias_dropout.py:58)
+      0.1%  _linear_forward_impl (linear.py:542)
+      0.1%  _disable_dynamo.<locals>.inner (_compile.py:54)

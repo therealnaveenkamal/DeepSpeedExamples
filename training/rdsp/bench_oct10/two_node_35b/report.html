@@ -1,0 +1,221 @@
+<title>rdsp on Two Nodes</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap">
+<style>
+/* Layout: one reading column, answer first; wide tables scroll inside their own box. Same look as "Where rdsp Wins". */
+:root {
+  --bg: #f6f7f8;
+  --surface: #ffffff;
+  --fg: #1b2127;
+  --muted: #5b6672;
+  --rule: #d9dee3;
+  --accent: #1f5f8b;
+  --rdsp: #1769aa;
+  --other: #a9b3bd;
+  --win: #e3f0e6;
+  --win-fg: #1d5a2c;
+  --lose: #f3e9e6;
+  --lose-fg: #8a3b26;
+  --font-display: "Newsreader", Georgia, "Times New Roman", serif;
+  --font-body: "IBM Plex Sans", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12161a; --surface: #1a2026; --fg: #e4e8ec; --muted: #9aa5b1; --rule: #2c353e;
+    --accent: #7db7e0; --rdsp: #5fa8de; --other: #4a5560;
+    --win: #183524; --win-fg: #9fdcb0; --lose: #3a221b; --lose-fg: #f0a990;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12161a; --surface: #1a2026; --fg: #e4e8ec; --muted: #9aa5b1; --rule: #2c353e;
+  --accent: #7db7e0; --rdsp: #5fa8de; --other: #4a5560;
+  --win: #183524; --win-fg: #9fdcb0; --lose: #3a221b; --lose-fg: #f0a990;
+  color-scheme: dark;
+}
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15.5px; line-height: 1.6; }
+.page { max-width: 48rem; margin: 0 auto; padding-left: max(20px, env(safe-area-inset-left, 0px)); padding-right: max(20px, env(safe-area-inset-right, 0px)); padding-block: 40px 64px; display: grid; gap: 38px; }
+header { display: grid; gap: 10px; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--font-display); font-weight: 600; font-size: clamp(30px, 6vw, 42px); line-height: 1.12; margin: 0; text-wrap: balance; }
+h2 { font-family: var(--font-display); font-weight: 600; font-size: 23px; line-height: 1.25; margin: 0; text-wrap: balance; }
+h3 { font-size: 15px; font-weight: 600; margin: 0; }
+p { margin: 0; max-width: 66ch; }
+.lede { font-size: 18px; }
+.lede strong { color: var(--accent); }
+section { display: grid; gap: 14px; min-width: 0; }
+.table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; }
+table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 14px; }
+th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--rule); vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+th { font-weight: 600; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+td.n, th.n { text-align: right; white-space: nowrap; }
+td.n { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+td.win { background: var(--win); color: var(--win-fg); font-weight: 500; }
+td.no { color: var(--lose-fg); }
+td .note { display: block; font-family: var(--font-body); font-size: 12px; color: var(--muted); font-weight: 400; white-space: normal; }
+.layout { font-family: var(--font-mono); white-space: nowrap; }
+.caption { font-size: 13px; color: var(--muted); max-width: 66ch; }
+.bars { display: grid; gap: 10px; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 16px; }
+.bar-row { display: grid; grid-template-columns: minmax(7.5rem, 12rem) 1fr; gap: 12px; align-items: center; }
+.bar-label { font-size: 14px; min-width: 0; }
+.bar-label .sub { display: block; font-size: 12px; color: var(--muted); }
+.bar-track { position: relative; height: 26px; }
+.bar { height: 100%; background: var(--other); border-radius: 0 4px 4px 0; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; min-width: 3.5rem; }
+.bar.rdsp { background: var(--rdsp); }
+.bar span { font-family: var(--font-mono); font-size: 13px; color: var(--bg); font-weight: 500; }
+.bar:not(.rdsp) span { color: var(--fg); }
+.bar-none { font-size: 13px; color: var(--lose-fg); }
+ol.points { margin: 0; padding-left: 1.3em; display: grid; gap: 12px; max-width: 66ch; }
+ol.points li::marker { font-family: var(--font-mono); color: var(--muted); }
+.rule-box { border-left: 3px solid var(--accent); padding: 4px 0 4px 16px; display: grid; gap: 6px; }
+.rule-box p { font-size: 16px; }
+ul.plain { margin: 0; padding-left: 1.1em; display: grid; gap: 6px; max-width: 66ch; font-size: 14px; color: var(--muted); }
+dl.terms { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-size: 14px; max-width: 66ch; }
+dl.terms dt { font-weight: 600; }
+dl.terms dd { margin: 0; color: var(--muted); min-width: 0; }
+@media (max-width: 480px) { .bar-row { grid-template-columns: 1fr; gap: 4px; } dl.terms { grid-template-columns: 1fr; } dl.terms dd { margin-bottom: 6px; } }
+</style>
+
+<div class="page">
+  <header>
+    <div class="eyebrow">Qwen3.5-35B-A3B vision-language training · two nodes of 8× H100 · EFA network · Oct 18, 2026</div>
+    <h1>rdsp on Two Nodes</h1>
+    <p class="lede">On 16 GPUs across two nodes, rdsp trains the sparse Qwen3.5-35B-A3B at <strong>1,273 real tokens per second per GPU</strong>: 1.86× TorchTitan's best (686) and 2.3× Megatron-Bridge's own recipe (544). MegatronMIMO cannot train this model. rdsp wins by giving the vision encoder GPUs of its own, which only pays off when the language model is sparse.</p>
+  </header>
+
+  <section>
+    <h2>Four terms used below</h2>
+    <dl class="terms">
+      <dt>Sparse model</dt><dd>A mixture-of-experts model: each layer holds 256 small "expert" blocks and each token goes through 8 of them. The 35B-A3B has 35 billion parameters but uses about 3 billion per token. The 27B is dense: every token uses all of it.</dd>
+      <dt>Pipeline stage</dt><dd>A slice of the model's layers on its own GPUs. Stages hand their activations to the next stage.</dd>
+      <dt>Vision stage</dt><dd>A first stage that holds only the vision encoder (the part that reads images), with its own number of GPUs. Only rdsp can give one stage more GPUs than the others.</dd>
+      <dt>Real tokens</dt><dd>Tokens that are not padding: 129,997 per step on average, the same 128 rows of 2,048 for every system.</dd>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Each system at its best</h2>
+    <div class="bars" role="img" aria-label="Real tokens per second per GPU on Qwen3.5-35B-A3B: rdsp 1,273, TorchTitan 686, Megatron-Bridge 544; MegatronMIMO cannot train this model">
+      <div class="bar-row"><div class="bar-label">rdsp<span class="sub">vision stage of 4 GPUs + 6 language stages</span></div><div class="bar-track"><div class="bar rdsp" style="width:100%"><span>1,273</span></div></div></div>
+      <div class="bar-row"><div class="bar-label">TorchTitan<span class="sub">fully sharded over 16 GPUs</span></div><div class="bar-track"><div class="bar" style="width:53.9%"><span>686</span></div></div></div>
+      <div class="bar-row"><div class="bar-label">Megatron-Bridge<span class="sub">its own two-node recipe</span></div><div class="bar-track"><div class="bar" style="width:42.7%"><span>544</span></div></div></div>
+      <div class="bar-row"><div class="bar-label">MegatronMIMO<span class="sub">vision on GPUs of its own</span></div><div class="bar-track bar-none">cannot train this model (below)</div></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>System</th><th>Its fastest setting that ran</th><th class="n">Seconds per step</th><th class="n">Real tokens/s per GPU</th><th class="n">Real tokens/s, 16 GPUs</th></tr></thead>
+        <tbody>
+          <tr><td>rdsp</td><td>vision encoder alone on <span class="layout">4 GPUs</span>, language as <span class="layout">6 stages × 2 GPUs</span>; GPU count and layer cut chosen by rdsp from measured stage times<span class="note">every layer recomputed: out of memory without</span></td><td class="n win">6.38</td><td class="n win">1,273</td><td class="n win">20,369</td></tr>
+          <tr><td>TorchTitan</td><td>fully sharded data parallel over 16 GPUs</td><td class="n">11.84</td><td class="n">686</td><td class="n">10,983</td></tr>
+          <tr><td>Megatron-Bridge</td><td>NVIDIA's recipe for this model: tensor parallel 2, experts split over all 16 GPUs<span class="note">the only setting in this comparison that splits experts across GPUs; without that, Bridge's best was 8 stages × 2 at 396–401 per GPU</span></td><td class="n">14.94</td><td class="n">544</td><td class="n">8,701</td></tr>
+          <tr><td>MegatronMIMO</td><td>no layout runs (below)</td><td class="n no">–</td><td class="n no">–</td><td class="n no">–</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="caption">Median of steps 6–50. Per GPU = real tokens per step ÷ seconds per step ÷ 16. On one node with the dense 27B the order was the same: rdsp 725, TorchTitan 571, Megatron-Bridge 492.</p>
+  </section>
+
+  <section>
+    <h2>The same layout, head to head</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Layout</th><th class="n">rdsp</th><th class="n">Other</th><th>Faster</th></tr></thead>
+        <tbody>
+          <tr><td>8 pipeline stages × 2 copies, same layer cut (1 | 6 ×6 | 3)<span class="note">Bridge's two pipelines each inside one node; rdsp's pipeline across both nodes</span></td><td class="n win">9.60<span class="note">846 per GPU</span></td><td class="n">20.50<span class="note">Megatron-Bridge · 396 per GPU</span></td><td>rdsp, 2.1×</td></tr>
+          <tr><td>Fully sharded over 16 GPUs<span class="note">TorchTitan's home ground; rdsp needed every layer recomputed</span></td><td class="n">18.33<span class="note">443 per GPU</span></td><td class="n win">11.84<span class="note">TorchTitan · 686 per GPU</span></td><td>TorchTitan, 55%</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="caption">Seconds per step. On one node with the 27B: the same pipeline layout went to rdsp by 1.47×, and fully sharded went to TorchTitan by 27%. Both gaps grew at two nodes. Megatron-Bridge's pipeline across the two nodes deadlocked over EFA; over TCP it ran at 20.27 s, the same as inside a node.</p>
+  </section>
+
+  <section>
+    <h2>Why: in a sparse model the vision encoder is the bottleneck</h2>
+    <p>rdsp times every stage before it cuts the model. With 5 layers on each of 8 stages, the stage that also holds the vision encoder took <strong>11.9 s</strong> per step and the next stage <strong>3.4 s</strong>. 79% of real tokens are image tokens, and the 35B's vision encoder is as large as a dense model's, while each language token touches only about 3B parameters. Moving layers off that stage helps only until it holds the encoder alone; after that, step time follows the number of GPUs the encoder gets:</p>
+    <div class="bars" role="img" aria-label="Seconds per step by GPUs given to the vision encoder: 1 GPU 18.24 s, 2 GPUs 9.60 s, 4 GPUs 6.38 s">
+      <div class="bar-row"><div class="bar-label">1 GPU<span class="sub">16 stages × 1 GPU</span></div><div class="bar-track"><div class="bar" style="width:100%"><span>18.24 s</span></div></div></div>
+      <div class="bar-row"><div class="bar-label">2 GPUs<span class="sub">8 stages × 2 GPUs</span></div><div class="bar-track"><div class="bar" style="width:52.6%"><span>9.60 s</span></div></div></div>
+      <div class="bar-row"><div class="bar-label">4 GPUs<span class="sub">vision stage of 4</span></div><div class="bar-track"><div class="bar rdsp" style="width:35.0%"><span>6.38 s</span></div></div></div>
+    </div>
+    <p class="caption">rdsp, Qwen3.5-35B-A3B, seconds per step (shorter is faster). In the vision-stage layout the stages are close to even: vision 4.6 s, language 3.7–4.9 s of busy time per step. Megatron-Bridge and TorchTitan give every pipeline stage the same number of GPUs, so they cannot build this layout.</p>
+  </section>
+
+  <section>
+    <h2>Only for sparse models</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>rdsp, 16 GPUs</th><th class="n">Dense 27B</th><th class="n">Sparse 35B-A3B</th></tr></thead>
+        <tbody>
+          <tr><td>8 stages × 2 GPUs, cut measured</td><td class="n win">10.19<span class="note">798 per GPU</span></td><td class="n">9.60<span class="note">846 per GPU</span></td></tr>
+          <tr><td>Vision stage of 4 GPUs + 6 language stages</td><td class="n">12.06<span class="note">674 per GPU</span></td><td class="n win">6.38<span class="note">1,273 per GPU</span></td></tr>
+          <tr><td>Vision stage against 8 stages</td><td class="n no">16% slower</td><td class="n win">50% faster</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Same layouts, same nodes, same rows. The dense 27B's language layers do about nine times the work per token. Taking 4 GPUs for vision leaves its language model 12 GPUs, at 8.3–9.6 s per stage, and that sets the pace. On the sparse model the language stages stay at 3.7–4.9 s. A vision stage of its own pays off where the language model is light per token and the vision encoder is not.</p>
+  </section>
+
+  <section>
+    <h2>Where TorchTitan's step goes</h2>
+    <p>An Nsight Systems profile of TorchTitan's 8 GPUs on the first node, 36 seconds of steady training: each GPU ran communication kernels for <strong>29–30 s</strong> (about 83%) and matrix multiplies for <strong>2.2 s</strong> (6%). Fully sharded training gathers every layer's full weights onto every GPU for every microbatch: all 35B parameters, including all 256 experts, while each token uses 8 experts. rdsp's pipeline keeps each stage's weights on its own GPUs and sends only activations between stages. TorchTitan's own log reports 2.7% of the GPUs' peak math rate.</p>
+  </section>
+
+  <section>
+    <h2>What the one-node results said, and what held</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Claim from one node (27B, 8 GPUs)</th><th>Two nodes, 35B-A3B</th></tr></thead>
+        <tbody>
+          <tr><td>rdsp's best beats TorchTitan's best and Megatron-Bridge's best</td><td>Held, by more: 1,273 against 686 and 544 per GPU (one node: 725, 571, 492)</td></tr>
+          <tr><td>At the same pipeline layout rdsp beats Megatron-Bridge (1.47×)</td><td>Held, by more: 2.1×</td></tr>
+          <tr><td>TorchTitan wins on its home ground (27% over rdsp)</td><td>Held, by more: 55%</td></tr>
+          <tr><td>The stage holding the vision encoder sets the pace; rdsp's measured cut takes layers off it</td><td>Held, and stronger: the cut alone was not enough; a vision stage of its own gave +50%</td></tr>
+          <tr><td>Megatron-Bridge wins with tensor + data parallel (8%)</td><td>Not tested: neither system runs that layout on this model (below)</td></tr>
+          <tr><td>MegatronMIMO's vision-on-its-own-GPUs layout matches rdsp (9B: within 4–6%)</td><td>MIMO cannot train the 35B, nor the 27B on two nodes (below)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>What did not run, and why</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Run</th><th>What happened</th></tr></thead>
+        <tbody>
+          <tr><td>MegatronMIMO, 35B-A3B</td><td>No released NeMo container converts this model's checkpoint for MIMO (fixed after the 26.08 release; the fix is only in source). Even with the fix, MIMO's training script fixes 32-bit gradients and master weights, has no recompute and no way to split experts: about 630 GB of training state for the language model, more than 80 GB per GPU in every layout that leaves GPUs for the images.</td></tr>
+          <tr><td>MegatronMIMO, dense 27B, two nodes<span class="note">language on node 1, images on 8 GPUs of node 2</span></td><td>Out of memory on the first language stage before step 1 finished. On one node it did not fit either.</td></tr>
+          <tr><td>Megatron-Bridge, 8 stages across the two nodes, over EFA</td><td>Deadlocked twice in Megatron's grouped send and receive at the node boundary. Over TCP the same layout ran at 20.27 s. No published fix found; a similar open report: Megatron-Bridge issue 5006.</td></tr>
+          <tr><td>Megatron-Bridge, tensor 4 × data 4, experts not split</td><td>Transformer Engine's limit of 20,321 tensors: every GPU holds all 256 experts of all 40 layers as separate tensors. Bridge runs this model only with its experts split.</td></tr>
+          <tr><td>rdsp, tensor 4 × data 4</td><td>Not run: rdsp's tensor parallelism leaves the experts whole, so each GPU would hold all 32B expert parameters.</td></tr>
+          <tr><td>rdsp with experts split across both nodes</td><td>Failed in DeepSpeed's first expert exchange. Out of scope: no run in this comparison splits experts except Megatron-Bridge's own recipe.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>How the runs were set up</h2>
+    <ul class="plain">
+      <li>Two AWS p5.48xlarge (8× H100 80 GB each), one placement group, EFA between the nodes: all-reduce of 1 GiB over all 16 GPUs at 435 GB/s.</li>
+      <li>Equal work: the same 128 rows of 2,048 tokens per step (Megatron-Bridge's rows, exported once), loss averaged over every token of the step, AdamW at a constant learning rate of 1e-5, bf16 weights and gradients, 32-bit master weights stored in 2 bytes where the system supports it, 50 steps, median of steps 6–50. No router load-balancing loss on any system; the extra prediction layer off.</li>
+      <li>Same work checked: rdsp and TorchTitan losses agree to within 0.2% over the first steps (0.732, 0.404, 0.176). Megatron-Bridge reports its loss only to TensorBoard, so it is not compared.</li>
+      <li>Recompute only when a run ran out of memory without it, the same rule for every system.</li>
+      <li>NeMo 26.08 container for Megatron-Bridge and MIMO (Megatron-Bridge 0.6.0), TorchTitan at 3c36a77, DeepSpeed at 53a2ac4, transformers 5.17.0.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Limits</h2>
+    <ul class="plain">
+      <li>One run per setting. Step times within a run vary by about 2%.</li>
+      <li>rdsp picks the vision stage's GPU count from measured time only, not memory. For the dense 27B it chose the vision stage, which needed full recompute and lost to 8 stages.</li>
+      <li>A slower network than EFA (plain TCP) was not tested for rdsp or TorchTitan.</li>
+      <li>Megatron-Bridge's best number comes from splitting the experts across GPUs, which no other row does. A first run of it, with our earlier docker settings that dropped a CUDA library from the container's path, took 15.72 s; the 14.94 s above is the rerun with those settings fixed.</li>
+    </ul>
+  </section>
+</div>

@@ -20,12 +20,14 @@ import transformers
 import ray_deepspeed_pipeline as rdsp
 from ray_deepspeed_pipeline.config import StageOverride
 
-_STAGE_KEYS = {"gpus": "num_gpus", "zero": "zero_stage", "tp": "tp", "sp": "sp", "ep": "ep"}
+_STAGE_KEYS = {"gpus": "num_gpus", "zero": "zero_stage", "tp": "tp", "sp": "sp", "ep": "ep",
+               "recompute_blocks": "recompute_blocks"}
 
 
 def parse_stage(spec: str) -> StageOverride:
     """'1:gpus=2,tp=2' -> StageOverride(stage=1, num_gpus=2, tp=2). Keys: gpus,
-    zero, tp, sp, ep, fold, recompute, offload, compile, compile_vision."""
+    zero, tp, sp, ep, fold, recompute, offload, compile, compile_vision,
+    recompute_blocks."""
     index, _, fields = spec.partition(":")
     kwargs = {"stage": int(index)}
     for field in filter(None, fields.split(",")):

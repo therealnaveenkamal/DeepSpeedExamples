@@ -19,6 +19,31 @@ class UniformSequential:
 
 
 @dataclass(frozen=True)
+class MeasuredStages:
+    """What profiled steps measured on each stage of a pipeline, for
+    BalancedTransformerBlocks(measured=...). cuts: the cut they ran with.
+    seconds: each stage's forward and backward time per step (its slowest
+    rank). peak_gib: each stage's peak allocated memory (its fullest rank).
+    bytes_per_param: each stage's weights, gradients and optimizer state per
+    GPU per parameter of the stage (partition.static_bytes_per_param).
+    limit_gib: the most memory a stage may be cut to need."""
+
+    cuts: tuple[int, ...]
+    seconds: tuple[float, ...]
+    peak_gib: tuple[float, ...]
+    bytes_per_param: tuple[float, ...]
+    limit_gib: float
+
+    def __post_init__(self):
+        for name in ("cuts", "seconds", "peak_gib", "bytes_per_param"):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+        n = len(self.seconds)
+        if len(self.cuts) != n - 1 or len(self.peak_gib) != n or len(self.bytes_per_param) != n:
+            raise ValidationError("MeasuredStages: one cut fewer than stages, and one time, "
+                                  "peak and bytes per parameter per stage")
+
+
+@dataclass(frozen=True)
 class BalancedTransformerBlocks:
     """Cut so the most expensive stage is as cheap as possible. A block's cost
     is estimated by its parameter count (compute per token scales with it);
@@ -32,10 +57,19 @@ class BalancedTransformerBlocks:
     computed, weighted for the encoder's attention over each image.
 
     vision_stage: put the vision encoder alone on the first stage (as a
-    first cut at 0 does) and balance the decoder blocks over the others."""
+    first cut at 0 does) and balance the decoder blocks over the others.
+
+    measured: stage times and memory from profiled steps (MeasuredStages).
+    The blocks keep their parameter-count costs, scaled to seconds by the
+    stages that hold blocks only (or the last stage with its head's
+    estimate); each stage's remaining time (vision encoder, embeddings,
+    head and loss, kernel launches) becomes a fixed cost of that stage. No
+    stage is cut to need more than limit_gib, counting the weights,
+    gradients and optimizer state of the blocks it gains."""
 
     vision_token_ratio: float = 1.0
     vision_stage: bool = False
+    measured: MeasuredStages | None = None
 
 
 @dataclass(frozen=True)
@@ -65,7 +99,10 @@ class StageOverride:
     and Adam moments) in host memory and step it on the CPU (ZeRO-Offload;
     needs ZeRO stage 1 or 2). compile: torch.compile each of the stage's
     blocks (shapes dynamic), compiled by each rank on its first step;
-    compile_vision: only the blocks of the vision encoder on this stage."""
+    compile_vision: only the blocks of the vision encoder on this stage.
+    recompute_blocks: recompute only the first N of the stage's blocks (and
+    the blocks of the vision encoder the stage holds) instead of all of them;
+    excludes recompute."""
 
     stage: int
     num_gpus: int = 1
@@ -78,6 +115,7 @@ class StageOverride:
     offload_optimizer: bool = False
     compile: bool = False
     compile_vision: bool = False
+    recompute_blocks: int | None = None
 
 
 @dataclass(frozen=True)

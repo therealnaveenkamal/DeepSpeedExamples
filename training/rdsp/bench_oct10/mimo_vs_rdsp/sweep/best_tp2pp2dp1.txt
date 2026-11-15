@@ -1,0 +1,3 @@
+9b_v1_tp2pp2dp1 10.00
+9b_vtp2_tp2pp2dp1 11.32
+9b_vtp4_tp2pp2dp1 12.59

@@ -18,6 +18,7 @@ built by the model's own processor; the loss covers the caption tokens only.
 """
 
 import argparse
+import dataclasses
 import glob
 import itertools
 import json
@@ -190,6 +191,20 @@ def apply_liger(model):
                                     cross_entropy=False, fused_linear_cross_entropy=False)
 
 
+def restore_hf_experts(model) -> int:
+    """Undo Liger's fused mixture-of-experts kernel (LigerExperts) on the routed experts, so
+    they run Hugging Face's own implementation (grouped matmuls on GPU) again. Liger binds
+    its forward onto each module instance; removing that binding restores the class's.
+    Returns how many modules were restored."""
+    restored = 0
+    for module in model.modules():
+        name = module.__dict__.get("_get_name")
+        if "forward" in module.__dict__ and name is not None and name() == "LigerExperts":
+            del module.__dict__["forward"], module.__dict__["_get_name"]
+            restored += 1
+    return restored
+
+
 def token_count(labels) -> int:
     return int((labels[:, 1:] != -100).sum())
 
@@ -205,14 +220,38 @@ LOSSES = {
 
 def partition_policy(cuts: str, ratio):
     """--cuts as a partition policy. ratio() measures the vision encoder's cost
-    per text token from the first step; only 'balanced' needs it."""
-    if cuts == "balanced":
+    per text token from the first step; only 'balanced' (and 'measured',
+    whose calibration runs with the balanced cut) need it."""
+    if cuts in ("balanced", "measured"):
         return rdsp.BalancedTransformerBlocks(vision_token_ratio=ratio())
-    if cuts == "0,balanced":  # encoder alone on stage 0, decoder balanced over the rest
+    if cuts in ("0,balanced", "0,measured"):  # encoder alone on stage 0, decoder over the rest
         return rdsp.BalancedTransformerBlocks(vision_stage=True)
     if cuts == "even":
         return rdsp.UniformTransformerBlocks()
     return rdsp.ExplicitCuts(tuple(int(c) for c in cuts.split(",")))
+
+
+def calibrated_policy(args, engine, data, estimate):
+    """--cuts measured: profile --calibration-steps steps of `engine` (built
+    with the balanced cut and a learning rate of 0, so the weights stay as
+    loaded), shut it down, and return the balanced policy re-cut by what the
+    stages measured (BalancedTransformerBlocks.measured). The steps read
+    their own copy of the run's first batches."""
+    steps = args.calibration_steps
+
+    def batches():
+        for _ in range(steps + 1):  # one more: prefetch reads a step ahead
+            entries = [next(data) for _ in range(args.microbatches)]
+            if args.drop_padding_mask:
+                entries = [(drop_padding_mask(x), y) for x, y in entries]
+            yield from entries
+
+    try:
+        measured = engine.measure_stages(batches(), steps=steps, skip=1)
+    finally:
+        engine.shutdown()
+    print(f"measured: {measured}", flush=True)
+    return dataclasses.replace(estimate, measured=measured)
 
 
 def loss_function(args):
@@ -244,7 +283,7 @@ def unsplit_loss(weights: str, batches) -> float:
     return sum(sums) / sum(counts)
 
 
-def ds_config(args) -> dict:
+def ds_config(args, lr: float | None = None) -> dict:
     offload = any(o.offload_optimizer for o in args.stage)
     beta1, beta2 = (float(b) for b in args.betas.split(","))
     conf = {
@@ -259,8 +298,11 @@ def ds_config(args) -> dict:
         "gradient_clipping": 0.0,
         # DeepSpeed's CPU Adam under optimizer offload, PyTorch's AdamW otherwise
         "optimizer": {"type": "AdamW", "params": {
-            "lr": args.lr, "betas": [beta1, beta2], "eps": args.eps,
-            "weight_decay": args.weight_decay, "torch_adam": not offload}},
+            "lr": args.lr if lr is None else lr, "betas": [beta1, beta2], "eps": args.eps,
+            "weight_decay": args.weight_decay, "torch_adam": not offload,
+            # one kernel per step; the default foreach AdamW also allocates a
+            # temporary as large as the fp32 master weights
+            **({"fused": True} if args.fused_adam else {})}},
         "steps_per_print": 10**9,
     }
     if args.grad_dtype == "fp32":
@@ -268,7 +310,62 @@ def ds_config(args) -> dict:
         # grad_reduce_in_fp32 with fp32 main grads)
         conf["data_types"] = {"grad_accum_dtype": "fp32"}
         conf["communication_data_type"] = "fp32"
+    if args.optimizer_group_numel:
+        conf["rdsp_optimizer_group_numel"] = args.optimizer_group_numel
+    if args.master_dtype == "bf16":
+        # DeepSpeed's low-precision model states: the ZeRO optimizer keeps its
+        # master weights, gradients and Adam's two moments in bf16, about 10-12
+        # bytes per parameter instead of 18
+        conf["bf16"].update(bf16_master_weights_and_grads=True, bf16_optimizer_states=True)
+    if args.master_dtype == "remainder":
+        # exact fp32 master weights at 2 bytes per parameter: the bf16 weights
+        # plus a 16-bit remainder (the stage adapter swaps in RemainderAdamW)
+        conf["rdsp_master_weights"] = "remainder"
     return conf
+
+
+# what rdsp's actors read from the environment: rdsp's own switches, NCCL and its network
+# plugin, the Hugging Face cache, the CUDA allocator, DeepSpeed's op builds
+_WORKER_ENV_PREFIXES = ("RDSP_", "NCCL_", "FI_", "HF_", "PYTORCH_", "TORCH_", "DS_")
+_WORKER_ENV_NAMES = ("CUDA_HOME", "LD_LIBRARY_PATH", "TRANSFORMERS_OFFLINE")
+
+
+def worker_env(environ=None) -> dict:
+    """The driver's settings rdsp's actors read, for Ray to give every worker of this job.
+    A cluster started with `ray start` (two nodes) runs workers in that command's
+    environment, not the driver's; a cluster ray.init() starts here already has it. Ray
+    sets CUDA_VISIBLE_DEVICES per actor itself, so it is never passed."""
+    environ = os.environ if environ is None else environ
+    return {k: v for k, v in environ.items()
+            if k.startswith(_WORKER_ENV_PREFIXES) or k in _WORKER_ENV_NAMES}
+
+
+def optimizer_problem(args) -> str | None:
+    """Why --master-dtype bf16/remainder or --fused-adam cannot apply as asked,
+    or None. DeepSpeed reads the bf16 states only in its ZeRO-1/2 optimizer,
+    which it picks for bf16 gradient accumulation; elsewhere the keys are
+    ignored and the states stay fp32 without a word. The remainder master
+    lives in that same optimizer. Under offload the optimizer is DeepSpeed's
+    CPU Adam, which has no fused option."""
+    overrides = {o.stage: o for o in args.stage}
+    offloaded = [s for s, o in sorted(overrides.items()) if o.offload_optimizer]
+    if args.fused_adam and offloaded:
+        return f"--fused-adam is PyTorch's AdamW; stage {offloaded[0]} offloads to CPU Adam"
+    if args.master_dtype == "fp32":
+        return None
+    flag = f"--master-dtype {args.master_dtype}"
+    if args.grad_dtype != "bf16":
+        return f"{flag} needs --grad-dtype bf16"
+    if args.colocated_vision:
+        return f"{flag}: the replicated encoder keeps fp32 states"
+    for s in range(args.stages):
+        o = overrides.get(s)
+        zero = o.zero_stage if o is not None and o.zero_stage is not None else args.zero
+        if zero not in (1, 2):
+            return f"{flag} needs ZeRO 1 or 2 on every stage; stage {s} has {zero}"
+        if o is not None and o.offload_optimizer:
+            return f"{flag} is not supported with offload (stage {s})"
+    return None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -276,8 +373,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", default="Qwen/Qwen3-VL-2B-Instruct")
     p.add_argument("--stages", type=int, default=2)
     p.add_argument("--cuts", default="balanced",
-                   help="'balanced', '0,balanced' (vision encoder alone on stage 0), "
-                        "'even', or e.g. 9,18")
+                   help="'balanced', 'measured' (balanced, then re-cut by the stage "
+                        "times and memory --calibration-steps profiled steps measure), "
+                        "'0,balanced' (vision encoder alone on stage 0), '0,measured' (that, "
+                        "the decoder stages then re-cut as measured does), 'even', or e.g. 9,18")
+    p.add_argument("--calibration-steps", type=int, default=3,
+                   help="--cuts measured: steps profiled at learning rate 0, the first "
+                        "not counted")
     p.add_argument("--stage", type=parse_stage, action="append", default=[],
                    help="per-stage layout, as in train.py")
     p.add_argument("--microbatches", type=int, default=8)
@@ -291,6 +393,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "token mean either way")
     p.add_argument("--liger", action="store_true",
                    help="Liger fused RMSNorm/SwiGLU kernels and cross entropy")
+    p.add_argument("--moe-experts", choices=("liger", "hf"), default="liger",
+                   help="mixture-of-experts models under --liger: the routed experts in Liger's "
+                        "fused kernel (liger) or Hugging Face's grouped matmuls (hf)")
     p.add_argument("--pad-multiple", type=int, default=0,
                    help="exported data: trim each step's padding to its longest row, "
                    "rounded up to this multiple (0 keeps the exported length); with "
@@ -300,8 +405,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--weight-decay", type=float, default=0.0)
     p.add_argument("--grad-dtype", choices=("bf16", "fp32"), default="fp32",
                    help="gradient accumulation and reduction dtype")
+    p.add_argument("--master-dtype", choices=("bf16", "fp32", "remainder"), default="fp32",
+                   help="dtype of the optimizer's master weights and Adam's moments; "
+                        "remainder: fp32 master weights stored as the bf16 weights plus a "
+                        "16-bit remainder (2 bytes per parameter instead of 4, same math), "
+                        "fp32 moments; bf16 and remainder need --grad-dtype bf16 and ZeRO 1 "
+                        "or 2 on every stage")
+    p.add_argument("--optimizer-group-numel", type=int, default=0,
+                   help="split each stage's parameters into optimizer groups of at most "
+                        "this many elements (0: one group); DeepSpeed's ZeRO step then "
+                        "copies one group's gradients at a time: less peak memory, same math")
+    p.add_argument("--fused-adam", action="store_true",
+                   help="PyTorch's fused AdamW instead of its default foreach AdamW, "
+                        "which needs a temporary as large as the fp32 master weights")
     p.add_argument("--attn", default="sdpa", help="attention implementation (sdpa, "
                    "flash_attention_2, ...)")
+    p.add_argument("--vision-attn", choices=("same", "varlen"), default="same",
+                   help="vision encoder attention: same as --attn, or varlen: PyTorch's "
+                        "variable-length flash attention, one kernel per layer for all "
+                        "images and no host sync per layer (CUDA)")
     p.add_argument("--max-pixels", type=int, default=512 * 512,
                    help="cord-v2: scale images down to at most this many pixels")
     p.add_argument("--untie-embeddings", action="store_true",
@@ -342,7 +464,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if problem := optimizer_problem(args):
+        parser.error(problem)
 
     import accelerate
     import huggingface_hub
@@ -352,14 +477,18 @@ def main(argv=None):
     weights = huggingface_hub.snapshot_download(
         args.model, allow_patterns=["*.json", "*.safetensors", "*.txt", "*.jinja"])
     processor = transformers.AutoProcessor.from_pretrained(weights)
-    if args.dataset.startswith("exported:"):
-        data = exported_microbatches(args.dataset.split(":", 1)[1], args.rows,
-                                     args.pad_multiple, args.pad_per_microbatch)
-    else:
+
+    def new_data():
+        """The run's microbatches from the start (a calibration reads its own)."""
+        if args.dataset.startswith("exported:"):
+            return exported_microbatches(args.dataset.split(":", 1)[1], args.rows,
+                                         args.pad_multiple, args.pad_per_microbatch)
         source = (cord_rows(args.max_pixels, args.seed) if args.dataset == "cord-v2"
                   else synthetic_rows(args.image_size, args.seed))
-        data = microbatches(processor, args.rows, args.seq, source,
+        return microbatches(processor, args.rows, args.seq, source,
                             args.pad_multiple if args.pad_per_microbatch else 0)
+
+    data = new_data()
     first = [next(data) for _ in range(args.microbatches)]
 
     reference = unsplit_loss(weights, first) if args.check else None
@@ -371,6 +500,9 @@ def main(argv=None):
     with accelerate.init_empty_weights():
         skeleton = transformers.AutoModelForImageTextToText.from_config(config,
                                                                          dtype=torch.bfloat16)
+    if args.vision_attn == "varlen":
+        from ray_deepspeed_pipeline.varlen_attention import use_varlen_vision_attention
+        use_varlen_vision_attention(skeleton)
     from ray_deepspeed_pipeline.partition import vision_token_ratio
     partition = partition_policy(args.cuts, ratio=lambda: vision_token_ratio(config, first))
 
@@ -379,18 +511,27 @@ def main(argv=None):
     loss_fn = loss_function(args)
     if args.liger:
         apply_liger(skeleton)
-    ray.init(ignore_reinit_error=True)
-    pipeline_config = rdsp.PipelineConfig(
-        stages=args.stages, partition=partition, stage_overrides=tuple(args.stage),
-        colocated_vision=(rdsp.ColocatedVision(recompute=args.vision_recompute,
-                                               compile=args.vision_compile,
-                                               encode_per_microbatch=args.vision_per_microbatch)
-                          if args.colocated_vision else None),
-        prefetch=args.prefetch)
-    engine, _, _, _ = rdsp.initialize(
-        model=skeleton, config=ds_config(args), loss_fn=loss_fn, weights=weights,
-        pipeline_config=pipeline_config)
-    print(f"stages (blocks): {engine.stage_blocks}", flush=True)
+        if args.moe_experts == "hf":
+            restore_hf_experts(skeleton)
+    ray.init(ignore_reinit_error=True, runtime_env={"env_vars": worker_env()})
+
+    def build(partition, conf):
+        pipeline_config = rdsp.PipelineConfig(
+            stages=args.stages, partition=partition, stage_overrides=tuple(args.stage),
+            colocated_vision=(rdsp.ColocatedVision(
+                recompute=args.vision_recompute, compile=args.vision_compile,
+                encode_per_microbatch=args.vision_per_microbatch)
+                if args.colocated_vision else None),
+            prefetch=args.prefetch)
+        engine, _, _, _ = rdsp.initialize(model=skeleton, config=conf, loss_fn=loss_fn,
+                                          weights=weights, pipeline_config=pipeline_config)
+        print(f"stages (blocks): {engine.stage_blocks}", flush=True)
+        return engine
+
+    if args.cuts in ("measured", "0,measured"):
+        partition = calibrated_policy(args, build(partition, ds_config(args, lr=0.0)),
+                                      new_data(), partition)
+    engine = build(partition, ds_config(args))
 
     if reference is not None:
         piped = float(engine.eval_batch(data_iter=iter(first)))

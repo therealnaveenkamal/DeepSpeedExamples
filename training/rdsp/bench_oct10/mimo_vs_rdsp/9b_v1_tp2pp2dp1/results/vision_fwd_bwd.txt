@@ -1,0 +1,21 @@
+== Vision GPU, per microbatch, median over the traced window (ms)
+   MIMO: 323 forward passes, 307 backward passes; rdsp: 275 and 275
+                                         MIMO    rdsp
+   forward                               84.4    40.2
+   backward, as measured                 77.1   138.1
+     of which waiting for the gradient       0    64.3
+     backward work (measured - wait)     77.1    73.9
+
+== What one forward pass launches (per microbatch: totals / (attention kernels / 27))
+   cudaLaunchKernel calls from the forward thread: MIMO 1027, rdsp 693
+   kernel type                             MIMO n  rdsp n  MIMO ms  rdsp ms
+   conv (patch embedding)                       1       1      0.6      0.9
+   attention (cuDNN fused)                     27      27      4.8      4.7
+   attention setup (TE: seeds, seqlens, TMA)     108       0      0.2      0.0
+   matmul                                     110     110      4.0      4.2
+   NCCL send (GPU time includes waiting for the receiver)       2       0     16.1      0.0
+   layer norm                                  55      55      0.7      0.6
+   concat / copy                              109      63      1.6      1.0
+   elementwise                                825     548      7.2      5.3
+   other small kernels                         13      28      0.1      0.1
+   total                                     1249     832     35.2     16.8

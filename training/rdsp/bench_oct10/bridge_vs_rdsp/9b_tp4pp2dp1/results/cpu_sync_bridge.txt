@@ -1,0 +1,17 @@
+2.66 steps in the window; per step, per CPU thread that launches kernels
+  launches   104271  cudaDeviceSynchronize: 57x 167 ms  cudaEventQuery: 328x 2 ms  cudaStreamSynchronize: 7762x 635 ms
+  launches   136355  cudaEventQuery: 67489x 171 ms  cudaStreamSynchronize: 3037x 824 ms
+  launches   104277  cudaDeviceSynchronize: 57x 143 ms  cudaEventQuery: 311x 2 ms  cudaStreamSynchronize: 7762x 583 ms
+  launches   136317  cudaEventQuery: 37116x 125 ms  cudaStreamSynchronize: 3037x 165 ms
+  launches   104280  cudaDeviceSynchronize: 57x 365 ms  cudaEventQuery: 402x 2 ms  cudaStreamSynchronize: 7762x 1087 ms
+  launches   136378  cudaEventQuery: 82787x 184 ms  cudaStreamSynchronize: 3037x 1302 ms
+  launches   104277  cudaDeviceSynchronize: 57x 144 ms  cudaEventQuery: 329x 3 ms  cudaStreamSynchronize: 7762x 448 ms
+  launches   136361  cudaEventQuery: 67553x 166 ms  cudaStreamSynchronize: 3037x 814 ms
+  launches    33961  cudaDeviceSynchronize: 56x 12131 ms  cudaEventQuery: 651x 3 ms  cudaStreamSynchronize: 827x 478 ms
+  launches    43820  cudaEventQuery: 28593x 69 ms
+  launches    33963  cudaDeviceSynchronize: 56x 12055 ms  cudaEventQuery: 518x 2 ms  cudaStreamSynchronize: 827x 763 ms
+  launches    43820  cudaEventQuery: 19075x 54 ms
+  launches    34007  cudaDeviceSynchronize: 56x 12036 ms  cudaEventQuery: 589x 3 ms  cudaStreamSynchronize: 827x 557 ms
+  launches    43820  cudaEventQuery: 25624x 65 ms
+  launches    34000  cudaDeviceSynchronize: 56x 12206 ms  cudaEventQuery: 716x 3 ms  cudaStreamSynchronize: 829x 842 ms
+  launches    43820  cudaEventQuery: 29435x 70 ms

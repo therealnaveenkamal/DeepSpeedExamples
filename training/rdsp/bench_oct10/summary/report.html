@@ -1,0 +1,160 @@
+<title>9B Benchmark Summary</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@600&family=IBM+Plex+Sans:wght@400;600&display=swap">
+<style>
+/* Layout: one reading column, figures full width of it, evidence in reading order */
+:root {
+  --bg: #f6f7f8; --surface: #ffffff; --fg: #1d232b; --muted: #5b6672; --line: #d9dee3;
+  --bridge: #b5651d; --rdsp: #1f6f8b; --hot: #c9302c;
+  --compute: #2b8a6e; --nccl: #7b62b8; --idle: #ffffff;
+  --p0: #c9302c; --p1: #3e7fb0; --p2: #d39a2c; --p3: #8a5cc2; --p4: #8c96a1; --p5: #c5ccd3;
+  --font-body: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+  --font-head: "IBM Plex Sans Condensed", "Arial Narrow", Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #12161b; --surface: #1a2027; --fg: #e4e8ec; --muted: #9aa5b1; --line: #2c343d;
+  --bridge: #e39a55; --rdsp: #5fb3d3; --hot: #ff6b63; --compute: #4cc29d; --nccl: #a58be0; --idle: #1a2027;
+  --p0: #ff6b63; --p1: #6aa9dc; --p2: #e8b54d; --p3: #b08ee6; --p4: #7d8894; --p5: #4a535d;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #12161b; --surface: #1a2027; --fg: #e4e8ec; --muted: #9aa5b1; --line: #2c343d;
+  --bridge: #e39a55; --rdsp: #5fb3d3; --hot: #ff6b63; --compute: #4cc29d; --nccl: #a58be0; --idle: #1a2027;
+  --p0: #ff6b63; --p1: #6aa9dc; --p2: #e8b54d; --p3: #b08ee6; --p4: #7d8894; --p5: #4a535d;
+  color-scheme: dark; }
+body { background: var(--bg); color: var(--fg); font: 16px/1.55 var(--font-body); }
+main { max-width: 820px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 64px; display: grid; gap: 28px; }
+h1, h2 { font-family: var(--font-head); font-weight: 600; text-wrap: balance; margin: 0; line-height: 1.15; }
+h1 { font-size: 2.1rem; } h2 { font-size: 1.45rem; }
+p, li { max-width: 68ch; margin: 0; } ul, ol { margin: 0; padding-left: 1.3em; display: grid; gap: 4px; }
+section { display: grid; gap: 12px; min-width: 0; }
+.eyebrow { font: 600 0.78rem/1 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.muted { color: var(--muted); }
+figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px; display: grid; gap: 10px; min-width: 0; }
+figure .chart { overflow-x: auto; } figure svg { display: block; width: 100%; min-width: 560px; height: auto; }
+figcaption { font-size: 0.92rem; color: var(--muted); max-width: 72ch; }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { font: 600 0.8rem var(--font-mono); text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+td.num, th.num { text-align: right; }
+tr.total td { font-weight: 600; border-bottom: none; }
+.b { color: var(--bridge); font-weight: 600; } .r { color: var(--rdsp); font-weight: 600; }
+.hotword { color: var(--hot); font-weight: 600; }
+pre { margin: 0; overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; font: 0.84rem/1.5 var(--font-mono); }
+pre .hl { color: var(--hot); font-weight: 600; }
+code { font-family: var(--font-mono); font-size: 0.9em; }
+.headline { font-size: 1.15rem; }
+svg text { fill: var(--fg); font-family: var(--font-body); }
+svg .axis { fill: var(--muted); font-size: 12px; font-family: var(--font-mono); }
+svg .rowlabel { font-size: 13px; font-weight: 600; }
+svg .legend { font-size: 12.5px; }
+svg .grid { stroke: var(--line); stroke-width: 1; }
+svg .line { fill: none; stroke-width: 2; } svg .line.bridge { stroke: var(--bridge); } svg .line.rdsp { stroke: var(--rdsp); }
+svg .median { stroke-width: 1; stroke-dasharray: 4 4; } svg .median.bridge { stroke: var(--bridge); } svg .median.rdsp { stroke: var(--rdsp); }
+svg .label { font-size: 13px; font-weight: 600; } svg .label.bridge { fill: var(--bridge); } svg .label.rdsp { fill: var(--rdsp); }
+svg .p0 { fill: var(--p0); } svg .p1 { fill: var(--p1); } svg .p2 { fill: var(--p2); } svg .p3 { fill: var(--p3); } svg .p4 { fill: var(--p4); } svg .p5 { fill: var(--p5); }
+svg .inbar { fill: #fff; font-size: 12px; font-weight: 600; font-family: var(--font-mono); }
+.shot { display: block; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.shot img { display: block; width: 100%; height: auto; }
+.nums { display: flex; flex-wrap: wrap; gap: 12px 32px; }
+.nums div { display: grid; gap: 2px; }
+.big { font: 600 2rem/1 var(--font-head); font-variant-numeric: tabular-nums; }
+ol.answer { gap: 10px; } ol.answer li { padding-left: 4px; }
+h3 { font-family: var(--font-head); font-weight: 600; font-size: 1.15rem; margin: 8px 0 0; }
+@media (max-width: 480px) { h1 { font-size: 1.7rem; } }
+
+:root { --meg: #b5651d; --rd: #1769aa; --diff-bg: #fbeedd; --diff-line: #c98a4a; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --meg: #c97a35; --rd: #2f8fd0; --diff-bg: #33271a; --diff-line: #a8743c; } }
+:root[data-theme="dark"] { --meg: #c97a35; --rd: #2f8fd0; --diff-bg: #33271a; --diff-line: #a8743c; }
+svg .bar.meg { fill: var(--meg); } svg .bar.rd { fill: var(--rd); }
+.key { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 0.92rem; }
+.key span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.key .meg::before { background: var(--meg); } .key .rd::before { background: var(--rd); }
+th[colspan] { text-align: center; border-bottom: none; }
+.big { font: 600 2rem/1 var(--font-head); }
+table.settings td { white-space: normal; vertical-align: top; }
+table.settings td:first-child { width: 22%; font-weight: 600; }
+table.settings tr.grp th { text-transform: none; letter-spacing: 0; font: 600 0.95rem var(--font-head); color: var(--fg); padding-top: 16px; }
+table.settings tr.flag td { background: var(--diff-bg); }
+.tag { display: inline-block; margin-top: 3px; font: 600 0.7rem/1.4 var(--font-mono); text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--diff-line); color: var(--fg); background: var(--surface); }
+details pre { margin-top: 8px; }
+summary { cursor: pointer; font-weight: 600; }
+</style>
+<main>
+<header style="display:grid;gap:12px">
+  <p class="eyebrow">Qwen3.5-9B · H100 SXM · 2026-10-11</p>
+  <h1>rdsp vs Megatron on 9B: all results</h1>
+  <p class="headline"><span class="big">4 of 5</span> layouts: rdsp is faster. In the other one it is about even.</p>
+  <p class="muted">Every run does the same work on both systems: same model, same rows, 64 rows per step, every row padded to 2,048 tokens. Step time is the median of steps 6–50.</p>
+</header>
+
+<section id="results">
+  <h2>Results</h2>
+  <div class="tablewrap"><table>
+    <tr><th rowspan="2">Run</th><th rowspan="2" class="num">GPUs</th><th colspan="2" class="num">Step time, s</th><th colspan="2" class="num">Real tokens/s per GPU</th><th rowspan="2">Result</th></tr>
+    <tr><th class="num">Megatron</th><th class="num">rdsp</th><th class="num">Megatron</th><th class="num">rdsp</th></tr>
+    <tr><td>Bridge · TP4 × PP2 × DP1</td><td class="num">8</td><td class="num">18.24</td><td class="num">14.63</td><td class="num">445</td><td class="num">555</td><td>rdsp 20% faster</td></tr><tr><td>Bridge · TP2 × PP2 × DP2</td><td class="num">8</td><td class="num">9.09</td><td class="num">7.62</td><td class="num">894</td><td class="num">1,065</td><td>rdsp 16% faster</td></tr><tr><td>Bridge · TP2 × DP4, no pipeline</td><td class="num">8</td><td class="num">6.45</td><td class="num">5.84</td><td class="num">1,258</td><td class="num">1,390</td><td>rdsp 10% faster</td></tr><tr><td>MIMO · vision 1 GPU + TP2 × PP2</td><td class="num">5</td><td class="num">9.52</td><td class="num">9.11</td><td class="num">1,364</td><td class="num">1,426</td><td>rdsp 4% faster</td></tr><tr><td>MIMO · vision 1 GPU + TP2 × DP2</td><td class="num">5</td><td class="num">8.11</td><td class="num">8.22</td><td class="num">1,603</td><td class="num">1,580</td><td>about even</td></tr>
+  </table></div>
+  <p class="muted">Real tokens/s per GPU = real (non-padding) tokens trained per second, divided by the GPUs the run used. Both systems train on the same rows, so they process the same real tokens: on average 64,974 per step out of 131,072 padded.</p>
+  <h3 style="font-family:var(--font-head);margin:6px 0 0">Why, per run</h3>
+  <ul><li><b>Bridge · TP4 × PP2 × DP1:</b> Bridge&#x27;s vision encoder is 3.6 s per step slower. Profiled. <a href="https://claude.ai/artifact/Paf5zLXpjbUUMJJBEXNqyv">Analysis →</a></li><li><b>Bridge · TP2 × PP2 × DP2:</b> Not profiled.</li><li><b>Bridge · TP2 × DP4, no pipeline:</b> Not profiled. No pipeline, so this compares the model code: Megatron + Transformer Engine vs Hugging Face + DeepSpeed.</li><li><b>MIMO · vision 1 GPU + TP2 × PP2:</b> MIMO is held back by its vision GPU: slower vision encoder and a hand-off that blocks. Profiled. <a href="https://claude.ai/artifact/E7zBPxyi8oz5n92VAmXpjM">Analysis →</a></li><li><b>MIMO · vision 1 GPU + TP2 × DP2:</b> Both are held back by their language GPUs, which run at about the same speed. Profiled. <a href="https://claude.ai/artifact/E7zBPxyi8oz5n92VAmXpjM">Analysis →</a></li></ul>
+
+</section>
+
+<section id="throughput">
+  <h2>Per-GPU throughput</h2>
+  <div class="key"><span class="meg">Megatron (Bridge or MIMO)</span><span class="rd">rdsp</span></div>
+  <figure><div class="chart"><svg viewBox="0 0 760 306" role="img" aria-label="Real tokens per second per GPU, each run, both systems"><line class="grid" x1="230.0" x2="230.0" y1="0" y2="282"/><text class="axis" x="230.0" y="298" text-anchor="middle">0</text><line class="grid" x1="345.0" x2="345.0" y1="0" y2="282"/><text class="axis" x="345.0" y="298" text-anchor="middle">500</text><line class="grid" x1="460.0" x2="460.0" y1="0" y2="282"/><text class="axis" x="460.0" y="298" text-anchor="middle">1,000</text><line class="grid" x1="575.0" x2="575.0" y1="0" y2="282"/><text class="axis" x="575.0" y="298" text-anchor="middle">1,500</text><line class="grid" x1="690.0" x2="690.0" y1="0" y2="282"/><text class="axis" x="690.0" y="298" text-anchor="middle">2,000</text><text class="rowlabel" x="220" y="20" text-anchor="end">Bridge: TP4 × PP2 × DP1</text><text class="axis" x="220" y="37" text-anchor="end">8 GPUs</text><g><title>Bridge: TP4 × PP2 × DP1. Bridge: 445 real tokens/s per GPU</title><path class="bar meg" d="M230,4 h98.4 a4,4 0 0 1 4,4 v8 a4,4 0 0 1 -4,4 h-98.4 z"/><text class="axis" x="338.4" y="16">445</text></g><g><title>Bridge: TP4 × PP2 × DP1. rdsp: 555 real tokens/s per GPU</title><path class="bar rd" d="M230,22 h123.7 a4,4 0 0 1 4,4 v8 a4,4 0 0 1 -4,4 h-123.7 z"/><text class="axis" x="363.7" y="34">555</text></g><text class="rowlabel" x="220" y="76" text-anchor="end">Bridge: TP2 × PP2 × DP2</text><text class="axis" x="220" y="93" text-anchor="end">8 GPUs</text><g><title>Bridge: TP2 × PP2 × DP2. Bridge: 894 real tokens/s per GPU</title><path class="bar meg" d="M230,60 h201.5 a4,4 0 0 1 4,4 v8 a4,4 0 0 1 -4,4 h-201.5 z"/><text class="axis" x="441.5" y="72">894</text></g><g><title>Bridge: TP2 × PP2 × DP2. rdsp: 1,065 real tokens/s per GPU</title><path class="bar rd" d="M230,78 h241.0 a4,4 0 0 1 4,4 v8 a4,4 0 0 1 -4,4 h-241.0 z"/><text class="axis" x="481.0" y="90">1,065</text></g><text class="rowlabel" x="220" y="132" text-anchor="end">Bridge: TP2 × DP4, no pipeline</text><text class="axis" x="220" y="149" text-anchor="end">8 GPUs</text><g><title>Bridge: TP2 × DP4, no pipeline. Bridge: 1,258 real tokens/s per GPU</title><path class="bar meg" d="M230,116 h285.4 a4,4 0 0 1 4,4 v8 a4,4 0 0 1 -4,4 h-285.4 z"/><text class="axis" x="525.4" y="128">1,258</text></g><g><title>Bridge: TP2 × DP4, no pipeline. rdsp: 1,390 real tokens/s per GPU</title><path class="bar rd" d="M230,134 h315.8 a4,4 0 0 1 4,4 v8 a4,4 0 0 1 -4,4 h-315.8 z"/><text class="axis" x="555.8" y="146">1,390</text></g><text class="rowlabel" x="220" y="188" text-anchor="end">MIMO: vision 1 GPU + TP2 × PP2</text><text class="axis" x="220" y="205" text-anchor="end">5 GPUs</text><g><title>MIMO: vision 1 GPU + TP2 × PP2. MIMO: 1,364 real tokens/s per GPU</title><path class="bar meg" d="M230,172 h309.8 a4,4 0 0 1 4,4 v8 a4,4 0 0 1 -4,4 h-309.8 z"/><text class="axis" x="549.8" y="184">1,364</text></g><g><title>MIMO: vision 1 GPU + TP2 × PP2. rdsp: 1,426 real tokens/s per GPU</title><path class="bar rd" d="M230,190 h323.9 a4,4 0 0 1 4,4 v8 a4,4 0 0 1 -4,4 h-323.9 z"/><text class="axis" x="563.9" y="202">1,426</text></g><text class="rowlabel" x="220" y="244" text-anchor="end">MIMO: vision 1 GPU + TP2 × DP2</text><text class="axis" x="220" y="261" text-anchor="end">5 GPUs</text><g><title>MIMO: vision 1 GPU + TP2 × DP2. MIMO: 1,603 real tokens/s per GPU</title><path class="bar meg" d="M230,228 h364.7 a4,4 0 0 1 4,4 v8 a4,4 0 0 1 -4,4 h-364.7 z"/><text class="axis" x="604.7" y="240">1,603</text></g><g><title>MIMO: vision 1 GPU + TP2 × DP2. rdsp: 1,580 real tokens/s per GPU</title><path class="bar rd" d="M230,246 h359.4 a4,4 0 0 1 4,4 v8 a4,4 0 0 1 -4,4 h-359.4 z"/><text class="axis" x="599.4" y="258">1,580</text></g></svg></div>
+  <figcaption>Real tokens per second per GPU. Longer is better. The MIMO runs use 5 GPUs, the Bridge runs 8.</figcaption></figure>
+</section>
+
+<section id="reports">
+  <h2>The analyses</h2>
+  <ul>
+    <li><a href="https://claude.ai/artifact/Paf5zLXpjbUUMJJBEXNqyv"><b>Bridge vs rdsp, TP4 × PP2 × DP1</b></a>: why rdsp is 20% faster. Nsight timelines, py-spy flame graphs, the code behind it.</li>
+    <li><a href="https://claude.ai/artifact/E7zBPxyi8oz5n92VAmXpjM"><b>MIMO vs rdsp, both layouts</b></a>: why rdsp is 4% faster in one layout and even in the other, and why more vision GPUs made MIMO slower.</li>
+  </ul>
+</section>
+
+<section id="same">
+  <h2>Exact settings, side by side</h2>
+  <p>Every setting that could change speed or the result, 30 in all. Shaded rows: 6 differ by design (what the comparison measures), 3 differ because each system keeps its own default, 5 are not confirmed equal (MIMO's log does not print them, or the numbers differ slightly). The other 16 are held equal.</p>
+  <div class="tablewrap"><table class="settings">
+    <tr><th>Setting</th><th>Megatron (Bridge or MIMO)</th><th>rdsp</th></tr>
+    <tr class="grp"><th colspan="3">Hardware and model</th></tr><tr><td>Hardware</td><td>8× H100 SXM 80 GB, NVLink, one AWS p5.48xlarge</td><td>Same machine, same session</td></tr><tr><td>Model</td><td>Qwen/Qwen3.5-9B from Hugging Face, converted to Megatron format</td><td>Qwen/Qwen3.5-9B from Hugging Face, used as is</td></tr><tr><td>Trained parts</td><td>Vision encoder, projection, language model</td><td>Same</td></tr><tr class="flag"><td>Output layer, MTP head<br><span class="tag">not confirmed equal</span></td><td>Own output weight (not tied). MTP head: off in Bridge (<code>mtp_num_layers=null</code>); not printed by MIMO</td><td>Own output weight; no MTP head</td></tr><tr class="grp"><th colspan="3">Data and batch</th></tr><tr><td>Dataset</td><td>CORD-v2 receipts</td><td>Same</td></tr><tr class="flag"><td>Which rows, in what order<br><span class="tag">not confirmed equal</span></td><td>Bridge: its own sampler. MIMO: its own CORD-v2 loader</td><td>Replays the rows Bridge exported: same rows, order and microbatch groups as Bridge</td></tr><tr><td>Rows per step</td><td>64</td><td>64</td></tr><tr><td>Microbatches per step</td><td>64 ÷ DP: 64 (DP1), 32 (DP2), 16 (DP4); 1 row per DP copy</td><td>Same</td></tr><tr><td>Sequence length and padding</td><td>2,048; every row padded to 2,048 (Bridge forces it under PP and was told to for TP2 × DP4; MIMO's default)</td><td>2,048; every row padded to 2,048 (<code>--pad-multiple 0</code>)</td></tr><tr class="grp"><th colspan="3">Parallel layout</th></tr><tr><td>TP / PP / DP grid</td><td>As listed for each run</td><td>Same grid in each run</td></tr><tr class="flag"><td>Language layers per stage<br><span class="tag">differs by design</span></td><td>Bridge: even, 16 | 16. MIMO: not printed (Megatron's default is even)</td><td>Picks its own (<code>--cuts balanced</code>): 16 | 16 in the Bridge runs, 18 | 14 in MIMO layout a</td></tr><tr><td>Vision encoder placement</td><td>Bridge: on stage 0, split with the language TP. MIMO: on its own GPU</td><td>Same as the opponent in each run</td></tr><tr class="flag"><td>Tensor-parallel details<br><span class="tag">not confirmed equal</span></td><td>Bridge: no sequence parallel, no TP communication overlap. MIMO: not printed (Megatron's defaults are off)</td><td>No sequence parallel</td></tr><tr><td>Embedding and output layer</td><td>Split by vocabulary over TP</td><td>Same</td></tr><tr><td>GDN (linear attention) layers</td><td>Split by heads over TP, FLA kernels</td><td>Same</td></tr><tr class="grp"><th colspan="3">Training math</th></tr><tr><td>Loss averaging</td><td>Bridge: mean over tokens. MIMO: mean per microbatch</td><td>Matches each opponent: <code>--loss token-mean</code> vs Bridge, <code>--loss microbatch-mean</code> vs MIMO</td></tr><tr class="flag"><td>Step-1 loss<br><span class="tag">not confirmed equal</span></td><td>Bridge 0.8412–0.8413. MIMO 0.8413 (a), 0.8412 (b)</td><td>0.8412–0.8413 vs Bridge; 0.8408 vs MIMO</td></tr><tr><td>Optimizer</td><td>AdamW: lr 1e-5 constant, betas 0.9 / 0.95, eps 1e-8, weight decay 0, no clipping, no warm-up</td><td>Same</td></tr><tr><td>Precision</td><td>bf16 weights; fp32 master weights, gradients and gradient reduce</td><td>bf16 weights; fp32 master weights and gradients (<code>--grad-dtype fp32</code>)</td></tr><tr><td>Optimizer state</td><td>Split over DP (distributed optimizer)</td><td>Split over DP (ZeRO-1)</td></tr><tr class="flag"><td>Recompute, CUDA graphs<br><span class="tag">not confirmed equal</span></td><td>Bridge: off, off. MIMO: not printed (Megatron's defaults are off)</td><td>Off, off</td></tr><tr><td>Steps and timing</td><td>50 steps; median step time of steps 6–50</td><td>Same</td></tr><tr class="grp"><th colspan="3">Differs by design: what the comparison measures</th></tr><tr class="flag"><td>Model code<br><span class="tag">differs by design</span></td><td>Megatron modules and Transformer Engine layers; fused cross entropy; fp32 gradient accumulation fused into the matrix multiply</td><td>Hugging Face modules; Liger norm and SwiGLU kernels; loss split by vocabulary; fp32 accumulation as a separate add</td></tr><tr class="flag"><td>Attention kernel<br><span class="tag">differs by design</span></td><td>Transformer Engine, <code>auto</code> backend</td><td>PyTorch SDPA (flash), no padding mask</td></tr><tr class="flag"><td>Vision encoder code<br><span class="tag">differs by design</span></td><td>Megatron / Transformer Engine layers</td><td>Hugging Face blocks, eager: no <code>torch.compile</code> (it crashed compiled under TP4)</td></tr><tr class="flag"><td>Processes<br><span class="tag">differs by design</span></td><td>One process per GPU (torchrun)</td><td>One Ray actor per GPU, plus a CPU driver</td></tr><tr class="flag"><td>Sends between stages<br><span class="tag">differs by design</span></td><td>Bridge: the CPU waits after every send and receive. MIMO: each vision-language hand-off first reads the tensor's shape back to the CPU</td><td>Asynchronous; waited for at the end of the step</td></tr><tr class="grp"><th colspan="3">Differs as a side effect: each system&#x27;s own default</th></tr><tr class="flag"><td>Data loading<br><span class="tag">differs: default</span></td><td>Tokenizes text and processes images in its data loader during training</td><td>Loads already-processed rows; the next step's rows are sent during this step (<code>--prefetch</code>)</td></tr><tr class="flag"><td>NaN check<br><span class="tag">differs: default</span></td><td>Scans gradients every step (on in both Bridge and MIMO)</td><td>None</td></tr><tr class="flag"><td>Python garbage collector<br><span class="tag">differs: default</span></td><td>Bridge: automatic collection off, one collection every 100 steps (none within these 50). MIMO: not checked</td><td>Automatic collection on</td></tr>
+  </table></div>
+  <details><summary>Exact commands</summary>
+  <pre>Megatron-Bridge (NeMo container 26.08, Bridge r0.6.0), 8 GPUs:
+torchrun --nproc_per_node=8 scripts/training/run_recipe.py   --recipe qwen35_vl_9b_sft_4gpu_h100_bf16_config --step_func qwen3_vl_step   model.seq_length=2048 dataset.seq_length=2048 dataset.source.dataset_name=cord_v2   dataset.dataloader_type=single train.global_batch_size=64 train.micro_batch_size=1   train.train_iters=50 model.mtp_num_layers=null model.calculate_per_token_loss=true   model.recompute_granularity=null optimizer.lr=1e-5 optimizer.min_lr=1e-5   optimizer.adam_beta1=0.9 optimizer.adam_beta2=0.95 optimizer.adam_eps=1e-8   optimizer.weight_decay=0.0 optimizer.clip_grad=0.0 scheduler.lr_warmup_iters=0   scheduler.lr_decay_style=constant ddp.grad_reduce_in_fp32=true   ddp.use_distributed_optimizer=true ddp.average_in_collective=false   model.tensor_model_parallel_size=TP model.pipeline_model_parallel_size=PP
+  (TP2 × DP4 also: dataset.pad_to_max_length=true)
+
+MegatronMIMO (same container), 5 GPUs, layout a (b: --micro-batch-size 2, language pp=1,dp=2):
+torchrun --nproc_per_node=5 examples/megatron_mimo/qwen35_vl/finetune_qwen35_vl.py   --hf-model Qwen/Qwen3.5-9B --dataset-name cord_v2 --seq-length 2048   --global-batch-size 64 --micro-batch-size 1 --train-iters 50 --dataloader-type single   --lr 1e-5 --min-lr 1e-5 --adam-beta1 0.9 --adam-beta2 0.95 --weight-decay 0.0   --start-weight-decay 0.0 --end-weight-decay 0.0 --clip-grad 0.0 --lr-warmup-iters 0   --component language=tp=2,pp=2,dp=1,rank_offset=0 --component images=tp=1,pp=1,dp=1,rank_offset=4
+
+rdsp, e.g. TP4 × PP2 × DP1:
+python train_vl.py --model Qwen/Qwen3.5-9B --dataset exported:&lt;Bridge's rows&gt;   --stages 2 --cuts balanced --stage 0:gpus=4,tp=4,zero=1 --stage 1:gpus=4,tp=4,zero=1   --rows 1 --microbatches 64 --seq 2048 --pad-multiple 0 --steps 50   --lr 1e-5 --betas 0.9,0.95 --eps 1e-8 --weight-decay 0.0 --grad-dtype fp32   --loss token-mean --liger --prefetch --sharded-loss --drop-padding-mask
+rdsp vs MIMO layout a: --stages 3 --cuts 0,balanced --stage 0:gpus=1,zero=1   --stage 1:gpus=2,tp=2,zero=1 --stage 2:gpus=2,tp=2,zero=1 --loss microbatch-mean</pre>
+  <p class="muted">Every run's script is in its folder under <code>rdsp/bench_oct10/</code> (<code>scripts/</code>).</p>
+  </details>
+  <h3 style="font-family:var(--font-head);margin:6px 0 0">Per-run details</h3>
+  <div class="tablewrap"><table>
+    <tr><th rowspan="2">Run</th><th colspan="2" class="num">Padded tokens/s per GPU</th><th colspan="2">Layer split</th><th rowspan="2" class="num">Loss diff</th></tr>
+    <tr><th class="num">Megatron</th><th class="num">rdsp</th><th>Megatron</th><th>rdsp</th></tr>
+    <tr><td>Bridge · TP4 × PP2 × DP1</td><td class="num">898</td><td class="num">1,120</td><td>16 | 16</td><td>16 | 16</td><td class="num">-0.0024</td></tr><tr><td>Bridge · TP2 × PP2 × DP2</td><td class="num">1,803</td><td class="num">2,149</td><td>16 | 16</td><td>16 | 16</td><td class="num">+0.0004</td></tr><tr><td>Bridge · TP2 × DP4, no pipeline</td><td class="num">2,539</td><td class="num">2,805</td><td>one stage</td><td>one stage</td><td class="num">+0.0028</td></tr><tr><td>MIMO · vision 1 GPU + TP2 × PP2</td><td class="num">2,753</td><td class="num">2,876</td><td>not printed</td><td>18 | 14</td><td class="num">-0.0020</td></tr><tr><td>MIMO · vision 1 GPU + TP2 × DP2</td><td class="num">3,234</td><td class="num">3,188</td><td>one stage</td><td>one stage</td><td class="num">-0.0038</td></tr>
+  </table></div>
+  <p class="muted">Layer split = language layers per pipeline stage. Loss diff = mean of rdsp minus Megatron over steps 2–50.</p>
+</section>
+
+<section id="limits">
+  <h2>Limits</h2>
+  <ul>
+    <li>One run per system per layout. No repeats.</li>
+    <li>3 of the 5 comparisons were profiled: Bridge TP4 × PP2 × DP1 and both MIMO layouts. The other two have step times only.</li>
+    <li>The MIMO layouts use 5 of the 8 GPUs; per-GPU numbers make them comparable to the 8-GPU runs.</li>
+    <li>Not run: 27B (fits only with full recompute on both systems) and the planned 4B layouts.</li>
+  </ul>
+  <p class="muted">Files: <code>rdsp/bench_oct10/</code> (<code>bridge_vs_rdsp/</code>, <code>mimo_vs_rdsp/</code>, one folder per run). This page: <code>summary/scripts/make_report.py</code>.</p>
+</section>
+</main>

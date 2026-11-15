@@ -1,0 +1,37 @@
+
+== layout a, MIMO, one cycle 30.7694-30.9550 s (185.6 ms)
+  vision main (pid 1088, thread 1088) busy: ['30.7715-30.7745 s (2.9 ms)', '30.7768-30.8342 s (57.4 ms)', '30.8364-30.8710 s (34.6 ms)', '30.9531-30.9558 s (2.8 ms)']
+  vision autograd (pid 1088, thread 10581) busy: ['30.8719-30.9523 s (80.4 ms)']
+  first language main (pid 1084, thread 1084) busy: ['30.8200-30.9421 s (122.1 ms)']
+  first language main long call: cudaMemcpyAsync_v3020 on thread 1084: 30.8225-30.8703 s (47.8 ms)
+  vision GPU computing: 49.7 ms of 185.6 ms
+
+== layout a, rdsp, one cycle 30.7854-30.9694 s (184.0 ms)
+  vision main (pid 470178, thread 470178) busy: ['30.7858-30.8277 s (42.0 ms)', '30.9657-30.9694 s (3.7 ms)']
+  vision autograd (pid 470178, thread 482020) busy: ['30.8281-30.9653 s (137.1 ms)']
+  first language main (pid 470179, thread 470179) busy: ['30.8855-30.9546 s (69.1 ms)']
+  vision main long call: cudaStreamSynchronize_v3020 on thread 482020: 30.8284-30.8937 s (65.3 ms)
+  first language main long call: cudaDeviceSynchronize_v3020 on thread 470179: 30.8874-30.8936 s (6.1 ms)
+  vision GPU computing: 66.1 ms of 184.0 ms
+
+== 9b_v1_tp2pp2dp1 mimo: vision pid 1088, 6.31 traced steps of 11.9 s; per traced step:
+  thread 1088 (main): cudaMemcpyAsync_v3020 7978x, 0.56 s
+  thread 1088 (main): cudaStreamSynchronize_v3020 7379x, 0.39 s
+  vision GPU computing: 3.36 s
+
+== 9b_v1_tp2pp2dp1 rdsp: vision pid 470178, 5.86 traced steps of 12.8 s; per traced step:
+  thread 470178 (main): cudaMemcpyAsync_v3020 8341x, 0.40 s
+  thread 482020 (other, e.g. autograd): cudaStreamSynchronize_v3020 55x, 3.42 s
+  vision GPU computing: 3.16 s
+
+== 9b_v1_tp2pp1dp2 mimo: vision pid 1089, 7.81 traced steps of 9.6 s; per traced step:
+  thread 1089 (main): cudaMemcpyAsync_v3020 4883x, 3.03 s
+  thread 1089 (main): cudaStreamSynchronize_v3020 4639x, 0.22 s
+  thread 11057 (other, e.g. autograd): cudaStreamSynchronize_v3020 1652x, 0.22 s
+  vision GPU computing: 3.54 s
+
+== 9b_v1_tp2pp1dp2 rdsp: vision pid 521894, 6.25 traced steps of 12.0 s; per traced step:
+  thread 521894 (main): cudaMemcpyAsync_v3020 3781x, 0.60 s
+  thread 521894 (main): cudaStreamSynchronize_v3020 3234x, 0.26 s
+  thread 533768 (other, e.g. autograd): cudaStreamSynchronize_v3020 28x, 4.36 s
+  vision GPU computing: 3.04 s

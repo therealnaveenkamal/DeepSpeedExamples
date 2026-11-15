@@ -1,0 +1,118 @@
+rdsp: wall-clock share of the training thread per process (py-spy, 25 Hz, 40 s while steady)
+
+pyspy-rdsp-266531.txt        stage 0  sync  0.0%  p2p  0.4%  backward 56.7%  forward 42.3%  other  0.6%
+                                     forward = vision 23.1%  data  1.7%  checks  0.0%  language 15.6%  rest  1.8%
+pyspy-rdsp-266532.txt        stage 0  sync  0.1%  p2p  0.3%  backward 57.5%  forward 41.2%  other  0.8%
+                                     forward = vision 22.2%  data  0.7%  checks  0.0%  language 16.4%  rest  1.9%
+pyspy-rdsp-266533.txt        stage 1  sync 50.6%  p2p  2.4%  backward 27.3%  forward 19.7%  other  0.1%
+                                     forward = vision  0.0%  data  0.0%  checks  0.0%  language 16.0%  rest  3.6%
+pyspy-rdsp-266536.txt        stage 1  sync 48.9%  p2p  1.6%  backward 28.3%  forward 20.3%  other  0.8%
+                                     forward = vision  0.0%  data  0.0%  checks  0.0%  language 16.1%  rest  4.2%
+pyspy-rdsp-266538.txt        stage 1  sync 50.1%  p2p  1.5%  backward 28.2%  forward 20.0%  other  0.2%
+                                     forward = vision  0.0%  data  0.0%  checks  0.0%  language 14.9%  rest  5.1%
+pyspy-rdsp-266539.txt        stage 1  sync 51.2%  p2p  1.9%  backward 28.0%  forward 18.7%  other  0.2%
+                                     forward = vision  0.0%  data  0.0%  checks  0.0%  language 14.6%  rest  4.1%
+pyspy-rdsp-266540.txt        stage 0  sync  0.0%  p2p  0.5%  backward 56.8%  forward 42.3%  other  0.3%
+                                     forward = vision 21.7%  data  1.7%  checks  0.0%  language 17.0%  rest  1.8%
+pyspy-rdsp-266541.txt        stage 0  sync  0.0%  p2p  0.1%  backward 57.8%  forward 41.7%  other  0.4%
+                                     forward = vision 19.9%  data  2.0%  checks  0.0%  language 17.9%  rest  1.9%
+
+== stage 0, all its processes: sync 0.0%  p2p 0.3%  backward 57.2%  forward 41.9%  other 0.5%
+  forward = vision 21.7%  data 1.6%  checks 0.0%  language 16.7%  rest 1.9%
+  top functions on the stack (inclusive share):
+    100.0%  run_step (stage_worker.py:276)
+    100.0%  <module> (default_worker.py:323)
+    100.0%  _resume_span (tracing_helper.py:487)
+    100.0%  actor_method_executor (function_manager.py:740)
+    100.0%  main_loop (worker.py:1069)
+     97.5%  wrapped_fn (nvtx.py:33)
+     57.7%  _run_step (stage_worker.py:358)
+     57.2%  backward (deepspeed_adapter.py:453)
+     57.1%  backward (engine.py:3098)
+     57.1%  backward (__init__.py:395)
+     57.1%  backward (_tensor.py:623)
+     57.0%  _engine_run_backward (graph.py:979)
+     41.9%  _forward (stage_worker.py:181)
+     41.9%  _run_step (stage_worker.py:342)
+     40.4%  forward (deepspeed_adapter.py:393)
+     40.4%  _call (deepspeed_adapter.py:379)
+     40.4%  _call_impl (module.py:1789)
+     40.4%  _wrapped_call_impl (module.py:1778)
+     39.7%  forward (engine.py:2696)
+     39.7%  _call_impl (module.py:1884)
+     39.7%  inner (module.py:1832)
+     39.7%  forward (hf_stage.py:277)
+     39.7%  forward (modeling_qwen3_5.py:1855)
+     39.7%  wrapper (generic.py:939)
+     38.7%  wrapper (output_capturing.py:286)
+     38.7%  wrapper (generic.py:1068)
+     36.8%  __call__ (modeling_layers.py:109)
+     21.8%  forward (modeling_qwen3_5.py:1616)
+     21.7%  wrapper (generic.py:993)
+     21.6%  get_image_features (modeling_qwen3_5.py:1493)
+  top innermost frames (where the thread actually was):
+     57.0%  _engine_run_backward (graph.py:979)
+      5.1%  forward (modeling_qwen3_5.py:1070)
+      3.2%  all_reduce (distributed_c10d.py:3245)
+      2.2%  apply (function.py:625)
+      2.0%  sdpa_attention_forward (sdpa_attention.py:158)
+      1.6%  _to_device (deepspeed_adapter.py:269)
+      1.4%  forward (layers.py:598)
+      1.2%  forward (layers.py:696)
+      1.0%  forward (linear.py:134)
+      1.0%  rotate_half (modeling_qwen3_5.py:670)
+      0.8%  add_bias (layers.py:133)
+      0.7%  get_vision_interpolation_indices_and_weights (vision_utils.py:276)
+      0.6%  layer_norm (functional.py:2988)
+      0.6%  __dir__ (module.py:3019)
+      0.6%  forward (layers.py:1255)
+
+== stage 1, all its processes: sync 50.2%  p2p 1.9%  backward 27.9%  forward 19.7%  other 0.3%
+  forward = vision 0.0%  data 0.0%  checks 0.0%  language 15.4%  rest 4.2%
+  top functions on the stack (inclusive share):
+    100.0%  run_step (stage_worker.py:276)
+    100.0%  <module> (default_worker.py:323)
+    100.0%  _resume_span (tracing_helper.py:487)
+    100.0%  actor_method_executor (function_manager.py:740)
+    100.0%  main_loop (worker.py:1069)
+     94.3%  wrapped_fn (nvtx.py:33)
+     69.8%  _forward (stage_worker.py:181)
+     69.8%  _run_step (stage_worker.py:342)
+     66.4%  _call_impl (module.py:1789)
+     66.4%  _call (deepspeed_adapter.py:380)
+     66.4%  _wrapped_call_impl (module.py:1778)
+     66.4%  forward (deepspeed_adapter.py:393)
+     66.0%  forward (engine.py:2696)
+     66.0%  _call_impl (module.py:1884)
+     50.3%  inner (module.py:1811)
+     50.2%  _module_forward_pre_hook (engine.py:2579)
+     50.2%  synchronize (__init__.py:1219)
+     50.2%  synchronize (cuda_accelerator.py:89)
+     50.2%  start (timer.py:238)
+     50.2%  _forward_prologue (engine.py:2635)
+     28.3%  _run_step (stage_worker.py:358)
+     27.9%  backward (deepspeed_adapter.py:449)
+     27.9%  backward (engine.py:3098)
+     27.9%  backward (_tensor.py:623)
+     27.9%  backward (__init__.py:395)
+     27.9%  _engine_run_backward (graph.py:979)
+     15.8%  wrapper (output_capturing.py:286)
+     15.8%  forward (modeling_qwen3_5.py:1648)
+     15.8%  forward (modeling_qwen3_5.py:1855)
+     15.8%  wrapper (generic.py:1068)
+  top innermost frames (where the thread actually was):
+     50.2%  synchronize (__init__.py:1219)
+     27.9%  _engine_run_backward (graph.py:979)
+      2.3%  forward (deepspeed_adapter.py:397)
+      1.6%  recv (p2p.py:139)
+      1.0%  forward (linear.py:134)
+      0.9%  forward (deepspeed_adapter.py:399)
+      0.9%  apply (function.py:625)
+      0.8%  forward (layers.py:696)
+      0.7%  __call__ (driver.py:330)
+      0.7%  all_reduce (distributed_c10d.py:3245)
+      0.5%  forward (modeling_qwen3_5.py:230)
+      0.5%  forward (modeling_qwen3_5.py:619)
+      0.5%  forward (layers.py:598)
+      0.3%  _run_step (stage_worker.py:358)
+      0.3%  __dir__ (module.py:3019)

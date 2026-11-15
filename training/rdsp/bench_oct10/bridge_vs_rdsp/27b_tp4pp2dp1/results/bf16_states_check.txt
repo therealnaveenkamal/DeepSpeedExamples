@@ -1,0 +1,32 @@
+fp32 optimizer: BF16_Optimizer | AdamW fused: None
+  master dtype: torch.float32
+  step   1 loss 0.284157
+  step  10 loss 0.313942
+  step 100 loss 0.196814
+  adam moments: torch.float32 torch.float32
+  distance weights moved: 1.002e-01
+  weights changed after 100 lr=1e-5 steps: 213876/262656 = 81.4%
+bf16grads optimizer: DeepSpeedZeroOptimizer | AdamW fused: None
+  master dtype: torch.float32
+  step   1 loss 0.284157
+  step  10 loss 0.313942
+  step 100 loss 0.196814
+  adam moments: torch.float32 torch.float32
+  distance weights moved: 1.002e-01
+  weights changed after 100 lr=1e-5 steps: 213876/262656 = 81.4%
+bf16grads_fused optimizer: DeepSpeedZeroOptimizer | AdamW fused: True
+  master dtype: torch.float32
+  step   1 loss 0.284157
+  step  10 loss 0.313942
+  step 100 loss 0.196814
+  adam moments: torch.float32 torch.float32
+  distance weights moved: 1.002e-01
+  weights changed after 100 lr=1e-5 steps: 213876/262656 = 81.4%
+bf16 optimizer: DeepSpeedZeroOptimizer | AdamW fused: None
+  master dtype: torch.bfloat16
+  step   1 loss 0.284157
+  step  10 loss 0.316495
+  step 100 loss 0.221062
+  adam moments: torch.bfloat16 torch.bfloat16
+  distance weights moved: 2.729e-02
+  weights changed after 100 lr=1e-5 steps: 39871/262656 = 15.2%

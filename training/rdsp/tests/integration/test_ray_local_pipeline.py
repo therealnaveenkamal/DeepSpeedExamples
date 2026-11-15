@@ -239,3 +239,35 @@ def test_too_few_gpus_fails_before_any_actor_starts(ray_ctx):
                              use_gpu=True)
     if actors_before is not None:
         assert len(ray.util.list_named_actors(all_namespaces=True)) == actors_before
+
+
+def test_measure_stages_then_shutdown(runtime):
+    """measure_stages() times every stage over real actors and reads back a
+    MeasuredStages for the plan; shutdown() stops the actors."""
+    _, plan, clients, _, engine = runtime
+    ids, labels = make_data()
+    steps = (entry for _ in range(3) for entry in microbatches(ids, labels))
+    measured = engine.measure_stages(steps, steps=3, skip=1)
+    assert measured.cuts == (plan.stages[1].block_start,)
+    assert len(measured.seconds) == 2 and all(s > 0 for s in measured.seconds)
+    assert measured.limit_gib == float("inf")  # CPU: no GPU memory to limit
+    # profiling is off again: later steps keep no records
+    engine.train_batch(data_iter=iter(microbatches(ids, labels)))
+    assert all(not rank["records"] for stage in clients for rank in stage.profile_records())
+    engine.shutdown()
+    import time
+    deadline = time.monotonic() + 30  # ray.kill takes effect asynchronously
+    while any(client.alive(timeout=5) for client in clients) and time.monotonic() < deadline:
+        time.sleep(0.5)
+    assert not any(client.alive(timeout=5) for client in clients)
+
+    # the measured cut builds a new pipeline in the same Ray session, which trains
+    model = ToyLM()
+    policy = rdsp.BalancedTransformerBlocks(measured=measured)
+    cfg = rdsp.PipelineConfig(stages=2, partition=policy)
+    replan = lower(model, cfg, DS)
+    coordinator = PipelineCoordinator(replan, create_stage_clients(
+        model, replan, loss_fn, engine_factory=stub_engine_factory, use_gpu=False))
+    loss = RayPipelineEngine(coordinator).train_batch(data_iter=iter(microbatches(ids, labels)))
+    assert torch.isfinite(loss)
+    coordinator.shutdown()
