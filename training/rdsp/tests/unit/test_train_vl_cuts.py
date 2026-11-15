@@ -24,11 +24,14 @@ def test_zero_then_balanced_gives_the_encoder_its_own_stage(cuts):
     assert policy == rdsp.BalancedTransformerBlocks(vision_stage=True)
 
 
-@pytest.mark.parametrize("cuts,policy", [
-    ("even", rdsp.UniformTransformerBlocks()),
-    ("0,16", rdsp.ExplicitCuts((0, 16))),
-    ("13", rdsp.ExplicitCuts((13,))),
-])
+@pytest.mark.parametrize(
+    "cuts,policy",
+    [
+        ("even", rdsp.UniformTransformerBlocks()),
+        ("0,16", rdsp.ExplicitCuts((0, 16))),
+        ("13", rdsp.ExplicitCuts((13,))),
+    ],
+)
 def test_even_and_explicit_cuts(cuts, policy):
     assert train_vl.partition_policy(cuts, ratio=lambda: 1 / 0) == policy
 
@@ -42,13 +45,22 @@ def test_calibration_measures_at_learning_rate_zero_and_shuts_down():
     """calibrated_policy: profiled steps on the run's own first batches, the
     engine shut down after, the estimate re-cut by what it measured."""
     args = train_vl.build_parser().parse_args(
-        ["--cuts", "measured", "--calibration-steps", "3", "--microbatches", "2",
-         "--drop-padding-mask"])
+        [
+            "--cuts",
+            "measured",
+            "--calibration-steps",
+            "3",
+            "--microbatches",
+            "2",
+            "--drop-padding-mask",
+        ]
+    )
     assert train_vl.ds_config(args, lr=0.0)["optimizer"]["params"]["lr"] == 0.0
     assert train_vl.ds_config(args)["optimizer"]["params"]["lr"] == args.lr
 
-    measured = rdsp.MeasuredStages(cuts=(3,), seconds=(2.0, 1.0), peak_gib=(1, 1),
-                                   bytes_per_param=(1, 1), limit_gib=70)
+    measured = rdsp.MeasuredStages(
+        cuts=(3,), seconds=(2.0, 1.0), peak_gib=(1, 1), bytes_per_param=(1, 1), limit_gib=70
+    )
 
     class Engine:
         shut = False
@@ -61,8 +73,13 @@ def test_calibration_measures_at_learning_rate_zero_and_shuts_down():
             self.shut = True
 
     import torch
-    data = iter([({"input_ids": torch.ones(1, 4), "attention_mask": torch.ones(1, 4)}, i)
-                 for i in range(100)])
+
+    data = iter(
+        [
+            ({"input_ids": torch.ones(1, 4), "attention_mask": torch.ones(1, 4)}, i)
+            for i in range(100)
+        ]
+    )
     engine = Engine()
     estimate = rdsp.BalancedTransformerBlocks(vision_token_ratio=2.5)
     policy = train_vl.calibrated_policy(args, engine, data, estimate)

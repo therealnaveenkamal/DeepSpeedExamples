@@ -36,19 +36,28 @@ def main(argv=None) -> None:
     steps = (hi - lo) / 1e6 / a.step_ms
     procs = [r[0] for r in db.execute("SELECT DISTINCT globalPid FROM CUPTI_ACTIVITY_KIND_KERNEL")]
     print(f"{steps:.2f} steps in the window; ms per step per process")
-    print(f"{'proc':>4} {'kernels':>8} {'idle':>7} {'dependency':>10} {'after sync':>10} "
-          f"{'cpu':>7}   after-sync by call (ms)")
+    print(
+        f"{'proc':>4} {'kernels':>8} {'idle':>7} {'dependency':>10} {'after sync':>10} "
+        f"{'cpu':>7}   after-sync by call (ms)"
+    )
     rows = []
     for pid in procs:
         kernels = db.execute(
             "SELECT start, end, correlationId FROM CUPTI_ACTIVITY_KIND_KERNEL "
-            "WHERE globalPid = ? ORDER BY start", (pid,)).fetchall()
+            "WHERE globalPid = ? ORDER BY start",
+            (pid,),
+        ).fetchall()
         calls = db.execute(
             "SELECT start, end, correlationId, nameId, globalTid FROM CUPTI_ACTIVITY_KIND_RUNTIME "
-            "WHERE (globalTid & ?) = ?", (PID_MASK, pid & PID_MASK)).fetchall()
+            "WHERE (globalTid & ?) = ?",
+            (PID_MASK, pid & PID_MASK),
+        ).fetchall()
         launch = {c: (s, e) for s, e, c, _, _ in calls}
-        syncs = sorted((e, names.get(n, "?").split("_v")[0])
-                       for s, e, _, n, _ in calls if "Synchronize" in names.get(n, ""))
+        syncs = sorted(
+            (e, names.get(n, "?").split("_v")[0])
+            for s, e, _, n, _ in calls
+            if "Synchronize" in names.get(n, "")
+        )
         sync_ends = [e for e, _ in syncs]
         totals = collections.Counter()
         by_call = collections.Counter()
@@ -72,9 +81,11 @@ def main(argv=None) -> None:
         ms = lambda ns: ns / 1e6 / steps  # noqa: E731
         rows.append((len(kernels) / steps, totals, by_call, ms))
     for i, (n, t, c, ms) in sorted(enumerate(rows), key=lambda r: -r[1][0]):
-        print(f"{i:>4} {n:>8.0f} {ms(t['idle']):>7.0f} {ms(t['dependency']):>10.0f} "
-              f"{ms(t['after sync']):>10.0f} {ms(t['cpu']):>7.0f}   "
-              + "  ".join(f"{k}: {ms(v):.0f}" for k, v in c.most_common(3)))
+        print(
+            f"{i:>4} {n:>8.0f} {ms(t['idle']):>7.0f} {ms(t['dependency']):>10.0f} "
+            f"{ms(t['after sync']):>10.0f} {ms(t['cpu']):>7.0f}   "
+            + "  ".join(f"{k}: {ms(v):.0f}" for k, v in c.most_common(3))
+        )
     db.close()
 
 

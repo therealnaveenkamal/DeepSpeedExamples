@@ -19,15 +19,19 @@ def trace(path, kernels):
     """A minimal nsys SQLite export: kernels as (device, start ms, end ms, name)."""
     db = sqlite3.connect(path)
     db.execute("CREATE TABLE StringIds (id INTEGER PRIMARY KEY, value TEXT)")
-    db.execute("CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL "
-               "(start INTEGER, end INTEGER, deviceId INTEGER, shortName INTEGER)")
+    db.execute(
+        "CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL "
+        "(start INTEGER, end INTEGER, deviceId INTEGER, shortName INTEGER)"
+    )
     names = {}
     for device, start, end, name in kernels:
         if name not in names:
             names[name] = len(names) + 1
             db.execute("INSERT INTO StringIds VALUES (?, ?)", (names[name], name))
-        db.execute("INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (?, ?, ?, ?)",
-                   (start * MS, end * MS, device, names[name]))
+        db.execute(
+            "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (?, ?, ?, ?)",
+            (start * MS, end * MS, device, names[name]),
+        )
     db.commit()
     db.close()
 
@@ -38,14 +42,17 @@ def two_gpus(tmp_path):
     attention kernel): 40 ms matmul, 20 ms linear attention, 30 ms TP
     all-reduce overlapping 10 ms of the matmul. GPU 1 (vision): 50 ms matmul."""
     path = str(tmp_path / "run.sqlite")
-    trace(path, [
-        (0, 0, 40, "sm90_xmma_gemm_bf16bf16_bf16f32"),
-        (0, 30, 60, "ncclDevKernel_AllReduce_Sum_bf16_RING_LL"),
-        (0, 60, 80, "chunk_gated_delta_rule_fwd_kernel_h"),
-        (0, 199, 200, "vectorized_elementwise_kernel"),
-        (1, 0, 50, "nvjet_tst_128x256_64x4_1x2_h_bz_coopB_NNT"),
-        (1, 150, 150, "vectorized_elementwise_kernel"),
-    ])
+    trace(
+        path,
+        [
+            (0, 0, 40, "sm90_xmma_gemm_bf16bf16_bf16f32"),
+            (0, 30, 60, "ncclDevKernel_AllReduce_Sum_bf16_RING_LL"),
+            (0, 60, 80, "chunk_gated_delta_rule_fwd_kernel_h"),
+            (0, 199, 200, "vectorized_elementwise_kernel"),
+            (1, 0, 50, "nvjet_tst_128x256_64x4_1x2_h_bz_coopB_NNT"),
+            (1, 150, 150, "vectorized_elementwise_kernel"),
+        ],
+    )
     return path
 
 

@@ -49,12 +49,14 @@ class RayPipelineEngine:
                 raise ValidationError(
                     "this engine owns the dataloader built from training_data; "
                     "a call-specific data_iter is only accepted when "
-                    "training_data=None was passed to initialize()")
+                    "training_data=None was passed to initialize()"
+                )
             return data_iter
         if self._training_dataloader is None:
             raise ValidationError(
                 "no data source: initialize() received training_data=None, so "
-                "train_batch/eval_batch require an explicit data_iter argument")
+                "train_batch/eval_batch require an explicit data_iter argument"
+            )
         if self._owned_iter is None:
             self._owned_iter = CountingIterator(iter(self._training_dataloader))
         return self._owned_iter
@@ -76,8 +78,7 @@ class RayPipelineEngine:
         source = self._data_iter(data_iter)
         return _public_loss(resolve(self._coordinator.eval_batch(source)))
 
-    def save_checkpoint(self, save_dir, tag=None, client_state=None,
-                        save_latest=True) -> bool:
+    def save_checkpoint(self, save_dir, tag=None, client_state=None, save_latest=True) -> bool:
         """Save every stage plus global step and the owned loader's position.
 
         Returns True once the manifest is committed; a failed save raises
@@ -86,29 +87,46 @@ class RayPipelineEngine:
         if self._training_dataloader is not None:
             consumed = self._owned_iter.consumed if self._owned_iter else 0
             position = data_position(self._training_dataloader, consumed)
-        return bool(resolve(self._coordinator.save_checkpoint(
-            save_dir, tag, client_state=client_state, data_position=position,
-            save_latest=save_latest)))
+        return bool(
+            resolve(
+                self._coordinator.save_checkpoint(
+                    save_dir,
+                    tag,
+                    client_state=client_state,
+                    data_position=position,
+                    save_latest=save_latest,
+                )
+            )
+        )
 
-    def load_checkpoint(self, load_dir, tag=None, load_optimizer_states=True,
-                        load_lr_scheduler_states=True):
+    def load_checkpoint(
+        self, load_dir, tag=None, load_optimizer_states=True, load_lr_scheduler_states=True
+    ):
         """Restore the whole pipeline; returns (load_path, client_state) like
         DeepSpeed. Clears a poisoned pipeline."""
-        result = resolve(self._coordinator.load_checkpoint(
-            load_dir, tag, load_optimizer_states=load_optimizer_states,
-            load_lr_scheduler_states=load_lr_scheduler_states))
+        result = resolve(
+            self._coordinator.load_checkpoint(
+                load_dir,
+                tag,
+                load_optimizer_states=load_optimizer_states,
+                load_lr_scheduler_states=load_lr_scheduler_states,
+            )
+        )
         position = result.get("data_position") or {"owner": "caller"}
         if position.get("owner") == "engine":
             if self._training_dataloader is None:
                 raise ValidationError(
                     "checkpoint records an engine-owned data position but this "
-                    "engine was initialized with training_data=None")
+                    "engine was initialized with training_data=None"
+                )
             self._owned_iter = resume_loader_iter(
-                self._training_dataloader, position["entries_consumed"])
+                self._training_dataloader, position["entries_consumed"]
+            )
         return result["path"], result["client_state"]
 
-    def measure_stages(self, data_iter=None, steps: int = 3, skip: int = 1,
-                       reserve_gib: float = 5.0):
+    def measure_stages(
+        self, data_iter=None, steps: int = 3, skip: int = 1, reserve_gib: float = 5.0
+    ):
         """Run `steps` training steps with every stage's phase timer on and
         return what they measured (config.MeasuredStages), from the steps
         after the first `skip` (allocation, compilation): each stage's
@@ -119,8 +137,7 @@ class RayPipelineEngine:
         context, NCCL buffers, fragmentation). The steps update the weights
         as any step does (a learning rate of 0 leaves them)."""
         if steps <= skip:
-            raise ValidationError(f"measure_stages: {steps} steps leave none after "
-                                  f"skipping {skip}")
+            raise ValidationError(f"measure_stages: {steps} steps leave none after skipping {skip}")
         self._coordinator.set_profile(True)
         try:
             for _ in range(steps):
@@ -168,20 +185,22 @@ def measured_stages(plan, records, skip: int, reserve_gib: float):
 
     seconds, peaks, totals = [], [], []
     for stage in records:
-        steps = [[r for r in rank["records"] if r.get("kind") == "step"][skip:]
-                 for rank in stage]
+        steps = [[r for r in rank["records"] if r.get("kind") == "step"][skip:] for rank in stage]
         if not all(steps):
             raise ValidationError("measure_stages: a rank recorded no step to measure")
-        per_step = [max(sum(r.get(k, 0.0) for k in _BUSY) for r in at)
-                    for at in zip(*steps)]
+        per_step = [max(sum(r.get(k, 0.0) for k in _BUSY) for r in at) for at in zip(*steps)]
         seconds.append(sum(per_step) / len(per_step) / 1e3)
-        peaks.append(max((r.get("peak_gb", 0.0) for rank in stage for r in rank["records"]),
-                         default=0.0))
+        peaks.append(
+            max((r.get("peak_gb", 0.0) for rank in stage for r in rank["records"]), default=0.0)
+        )
         totals += [rank["total_gib"] for rank in stage if rank["total_gib"] is not None]
     limit = (min(totals) if totals else float("inf")) - reserve_gib
     return MeasuredStages(
-        cuts=tuple(s.block_start for s in plan.stages[1:]), seconds=tuple(seconds),
+        cuts=tuple(s.block_start for s in plan.stages[1:]),
+        seconds=tuple(seconds),
         peak_gib=tuple(peaks),
-        bytes_per_param=tuple(static_bytes_per_param(json.loads(s.ds_config_json), s.tp, s.dp)
-                              for s in plan.stages),
-        limit_gib=limit)
+        bytes_per_param=tuple(
+            static_bytes_per_param(json.loads(s.ds_config_json), s.tp, s.dp) for s in plan.stages
+        ),
+        limit_gib=limit,
+    )

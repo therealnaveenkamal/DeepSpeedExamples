@@ -1,12 +1,15 @@
 """Inside the vision encoder's forward: top inclusive and innermost frames, as a share
 of all of the process's training-step samples."""
+
 import collections
 import re
 import sys
 
 pat = re.compile(sys.argv[1])
 STEP = re.compile(r"forward_backward_pipelining|_run_step \(.*stage_worker")
-BWD = re.compile(r"backward \(|run_backward|_engine_run_backward")  # not "autograd": forward runs through autograd.Function too
+BWD = re.compile(
+    r"backward \(|run_backward|_engine_run_backward"
+)  # not "autograd": forward runs through autograd.Function too
 inc, leaf, total, vis = collections.Counter(), collections.Counter(), 0, 0
 for path in sys.argv[2:]:
     for line in open(path):

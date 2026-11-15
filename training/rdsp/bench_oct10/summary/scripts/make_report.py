@@ -25,52 +25,247 @@ MIMO_URL = "https://claude.ai/artifact/E7zBPxyi8oz5n92VAmXpjM"
 PADDED = 64 * 2048  # tokens per step, every row padded to 2,048 on both systems
 
 RUNS = (  # system, layout, directory, Megatron log, rdsp log, GPUs, layer split (Megatron, rdsp), why, link
-    ("Megatron-Bridge", "TP4 × PP2 × DP1", "bridge_vs_rdsp/9b_tp4pp2dp1", "bridge.log", "rdsp-equal.log", 8,
-     ("16 | 16", "16 | 16"), "Bridge's vision encoder is 3.6 s per step slower. Profiled.", BRIDGE_URL),
-    ("Megatron-Bridge", "TP2 × PP2 × DP2", "bridge_vs_rdsp/9b_tp2pp2dp2", "bridge.log", "rdsp.log", 8,
-     ("16 | 16", "16 | 16"), "Not profiled.", None),
-    ("Megatron-Bridge", "TP2 × DP4, no pipeline", "bridge_vs_rdsp/9b_tp2pp1dp4", "bridge.log", "rdsp.log", 8,
-     ("one stage", "one stage"), "Not profiled. No pipeline, so this compares the model code: Megatron + Transformer Engine vs Hugging Face + DeepSpeed.", None),
-    ("MegatronMIMO", "vision 1 GPU + TP2 × PP2", "mimo_vs_rdsp/9b_v1_tp2pp2dp1", "mimo.log", "rdsp.log", 5,
-     ("not printed", "18 | 14"), "MIMO is held back by its vision GPU: slower vision encoder and a hand-off that blocks. Profiled.", MIMO_URL),
-    ("MegatronMIMO", "vision 1 GPU + TP2 × DP2", "mimo_vs_rdsp/9b_v1_tp2pp1dp2", "mimo.log", "rdsp.log", 5,
-     ("one stage", "one stage"), "Both are held back by their language GPUs, which run at about the same speed. Profiled.", MIMO_URL),
+    (
+        "Megatron-Bridge",
+        "TP4 × PP2 × DP1",
+        "bridge_vs_rdsp/9b_tp4pp2dp1",
+        "bridge.log",
+        "rdsp-equal.log",
+        8,
+        ("16 | 16", "16 | 16"),
+        "Bridge's vision encoder is 3.6 s per step slower. Profiled.",
+        BRIDGE_URL,
+    ),
+    (
+        "Megatron-Bridge",
+        "TP2 × PP2 × DP2",
+        "bridge_vs_rdsp/9b_tp2pp2dp2",
+        "bridge.log",
+        "rdsp.log",
+        8,
+        ("16 | 16", "16 | 16"),
+        "Not profiled.",
+        None,
+    ),
+    (
+        "Megatron-Bridge",
+        "TP2 × DP4, no pipeline",
+        "bridge_vs_rdsp/9b_tp2pp1dp4",
+        "bridge.log",
+        "rdsp.log",
+        8,
+        ("one stage", "one stage"),
+        "Not profiled. No pipeline, so this compares the model code: Megatron + Transformer Engine vs Hugging Face + DeepSpeed.",
+        None,
+    ),
+    (
+        "MegatronMIMO",
+        "vision 1 GPU + TP2 × PP2",
+        "mimo_vs_rdsp/9b_v1_tp2pp2dp1",
+        "mimo.log",
+        "rdsp.log",
+        5,
+        ("not printed", "18 | 14"),
+        "MIMO is held back by its vision GPU: slower vision encoder and a hand-off that blocks. Profiled.",
+        MIMO_URL,
+    ),
+    (
+        "MegatronMIMO",
+        "vision 1 GPU + TP2 × DP2",
+        "mimo_vs_rdsp/9b_v1_tp2pp1dp2",
+        "mimo.log",
+        "rdsp.log",
+        5,
+        ("one stage", "one stage"),
+        "Both are held back by their language GPUs, which run at about the same speed. Profiled.",
+        MIMO_URL,
+    ),
 )
 # (group, setting, Megatron side, rdsp, flag) -- flag: "" held equal, "design" differs by design,
 # "side" differs as a side effect of each system's defaults, "check" not confirmed equal.
 # Sources: bridge_vs_rdsp/9b_tp4pp2dp1/results/settings.md, the runs' launch scripts,
 # bench/mimo/runs.sh (STD_TRAIN, MIMO_TRAIN), MIMO's own config dump in its log.
 SETTINGS = (
-    ("Hardware and model", "Hardware", "8× H100 SXM 80 GB, NVLink, one AWS p5.48xlarge", "Same machine, same session", ""),
-    ("Hardware and model", "Model", "Qwen/Qwen3.5-9B from Hugging Face, converted to Megatron format", "Qwen/Qwen3.5-9B from Hugging Face, used as is", ""),
-    ("Hardware and model", "Trained parts", "Vision encoder, projection, language model", "Same", ""),
-    ("Hardware and model", "Output layer, MTP head", "Own output weight (not tied). MTP head: off in Bridge (<code>mtp_num_layers=null</code>); not printed by MIMO", "Own output weight; no MTP head", "check"),
+    (
+        "Hardware and model",
+        "Hardware",
+        "8× H100 SXM 80 GB, NVLink, one AWS p5.48xlarge",
+        "Same machine, same session",
+        "",
+    ),
+    (
+        "Hardware and model",
+        "Model",
+        "Qwen/Qwen3.5-9B from Hugging Face, converted to Megatron format",
+        "Qwen/Qwen3.5-9B from Hugging Face, used as is",
+        "",
+    ),
+    (
+        "Hardware and model",
+        "Trained parts",
+        "Vision encoder, projection, language model",
+        "Same",
+        "",
+    ),
+    (
+        "Hardware and model",
+        "Output layer, MTP head",
+        "Own output weight (not tied). MTP head: off in Bridge (<code>mtp_num_layers=null</code>); not printed by MIMO",
+        "Own output weight; no MTP head",
+        "check",
+    ),
     ("Data and batch", "Dataset", "CORD-v2 receipts", "Same", ""),
-    ("Data and batch", "Which rows, in what order", "Bridge: its own sampler. MIMO: its own CORD-v2 loader", "Replays the rows Bridge exported: same rows, order and microbatch groups as Bridge", "check"),
+    (
+        "Data and batch",
+        "Which rows, in what order",
+        "Bridge: its own sampler. MIMO: its own CORD-v2 loader",
+        "Replays the rows Bridge exported: same rows, order and microbatch groups as Bridge",
+        "check",
+    ),
     ("Data and batch", "Rows per step", "64", "64", ""),
-    ("Data and batch", "Microbatches per step", "64 ÷ DP: 64 (DP1), 32 (DP2), 16 (DP4); 1 row per DP copy", "Same", ""),
-    ("Data and batch", "Sequence length and padding", "2,048; every row padded to 2,048 (Bridge forces it under PP and was told to for TP2 × DP4; MIMO's default)", "2,048; every row padded to 2,048 (<code>--pad-multiple 0</code>)", ""),
+    (
+        "Data and batch",
+        "Microbatches per step",
+        "64 ÷ DP: 64 (DP1), 32 (DP2), 16 (DP4); 1 row per DP copy",
+        "Same",
+        "",
+    ),
+    (
+        "Data and batch",
+        "Sequence length and padding",
+        "2,048; every row padded to 2,048 (Bridge forces it under PP and was told to for TP2 × DP4; MIMO's default)",
+        "2,048; every row padded to 2,048 (<code>--pad-multiple 0</code>)",
+        "",
+    ),
     ("Parallel layout", "TP / PP / DP grid", "As listed for each run", "Same grid in each run", ""),
-    ("Parallel layout", "Language layers per stage", "Bridge: even, 16 | 16. MIMO: not printed (Megatron's default is even)", "Picks its own (<code>--cuts balanced</code>): 16 | 16 in the Bridge runs, 18 | 14 in MIMO layout a", "design"),
-    ("Parallel layout", "Vision encoder placement", "Bridge: on stage 0, split with the language TP. MIMO: on its own GPU", "Same as the opponent in each run", ""),
-    ("Parallel layout", "Tensor-parallel details", "Bridge: no sequence parallel, no TP communication overlap. MIMO: not printed (Megatron's defaults are off)", "No sequence parallel", "check"),
+    (
+        "Parallel layout",
+        "Language layers per stage",
+        "Bridge: even, 16 | 16. MIMO: not printed (Megatron's default is even)",
+        "Picks its own (<code>--cuts balanced</code>): 16 | 16 in the Bridge runs, 18 | 14 in MIMO layout a",
+        "design",
+    ),
+    (
+        "Parallel layout",
+        "Vision encoder placement",
+        "Bridge: on stage 0, split with the language TP. MIMO: on its own GPU",
+        "Same as the opponent in each run",
+        "",
+    ),
+    (
+        "Parallel layout",
+        "Tensor-parallel details",
+        "Bridge: no sequence parallel, no TP communication overlap. MIMO: not printed (Megatron's defaults are off)",
+        "No sequence parallel",
+        "check",
+    ),
     ("Parallel layout", "Embedding and output layer", "Split by vocabulary over TP", "Same", ""),
-    ("Parallel layout", "GDN (linear attention) layers", "Split by heads over TP, FLA kernels", "Same", ""),
-    ("Training math", "Loss averaging", "Bridge: mean over tokens. MIMO: mean per microbatch", "Matches each opponent: <code>--loss token-mean</code> vs Bridge, <code>--loss microbatch-mean</code> vs MIMO", ""),
-    ("Training math", "Step-1 loss", "Bridge 0.8412–0.8413. MIMO 0.8413 (a), 0.8412 (b)", "0.8412–0.8413 vs Bridge; 0.8408 vs MIMO", "check"),
-    ("Training math", "Optimizer", "AdamW: lr 1e-5 constant, betas 0.9 / 0.95, eps 1e-8, weight decay 0, no clipping, no warm-up", "Same", ""),
-    ("Training math", "Precision", "bf16 weights; fp32 master weights, gradients and gradient reduce", "bf16 weights; fp32 master weights and gradients (<code>--grad-dtype fp32</code>)", ""),
-    ("Training math", "Optimizer state", "Split over DP (distributed optimizer)", "Split over DP (ZeRO-1)", ""),
-    ("Training math", "Recompute, CUDA graphs", "Bridge: off, off. MIMO: not printed (Megatron's defaults are off)", "Off, off", "check"),
+    (
+        "Parallel layout",
+        "GDN (linear attention) layers",
+        "Split by heads over TP, FLA kernels",
+        "Same",
+        "",
+    ),
+    (
+        "Training math",
+        "Loss averaging",
+        "Bridge: mean over tokens. MIMO: mean per microbatch",
+        "Matches each opponent: <code>--loss token-mean</code> vs Bridge, <code>--loss microbatch-mean</code> vs MIMO",
+        "",
+    ),
+    (
+        "Training math",
+        "Step-1 loss",
+        "Bridge 0.8412–0.8413. MIMO 0.8413 (a), 0.8412 (b)",
+        "0.8412–0.8413 vs Bridge; 0.8408 vs MIMO",
+        "check",
+    ),
+    (
+        "Training math",
+        "Optimizer",
+        "AdamW: lr 1e-5 constant, betas 0.9 / 0.95, eps 1e-8, weight decay 0, no clipping, no warm-up",
+        "Same",
+        "",
+    ),
+    (
+        "Training math",
+        "Precision",
+        "bf16 weights; fp32 master weights, gradients and gradient reduce",
+        "bf16 weights; fp32 master weights and gradients (<code>--grad-dtype fp32</code>)",
+        "",
+    ),
+    (
+        "Training math",
+        "Optimizer state",
+        "Split over DP (distributed optimizer)",
+        "Split over DP (ZeRO-1)",
+        "",
+    ),
+    (
+        "Training math",
+        "Recompute, CUDA graphs",
+        "Bridge: off, off. MIMO: not printed (Megatron's defaults are off)",
+        "Off, off",
+        "check",
+    ),
     ("Training math", "Steps and timing", "50 steps; median step time of steps 6–50", "Same", ""),
-    ("Differs by design: what the comparison measures", "Model code", "Megatron modules and Transformer Engine layers; fused cross entropy; fp32 gradient accumulation fused into the matrix multiply", "Hugging Face modules; Liger norm and SwiGLU kernels; loss split by vocabulary; fp32 accumulation as a separate add", "design"),
-    ("Differs by design: what the comparison measures", "Attention kernel", "Transformer Engine, <code>auto</code> backend", "PyTorch SDPA (flash), no padding mask", "design"),
-    ("Differs by design: what the comparison measures", "Vision encoder code", "Megatron / Transformer Engine layers", "Hugging Face blocks, eager: no <code>torch.compile</code> (it crashed compiled under TP4)", "design"),
-    ("Differs by design: what the comparison measures", "Processes", "One process per GPU (torchrun)", "One Ray actor per GPU, plus a CPU driver", "design"),
-    ("Differs by design: what the comparison measures", "Sends between stages", "Bridge: the CPU waits after every send and receive. MIMO: each vision-language hand-off first reads the tensor's shape back to the CPU", "Asynchronous; waited for at the end of the step", "design"),
-    ("Differs as a side effect: each system's own default", "Data loading", "Tokenizes text and processes images in its data loader during training", "Loads already-processed rows; the next step's rows are sent during this step (<code>--prefetch</code>)", "side"),
-    ("Differs as a side effect: each system's own default", "NaN check", "Scans gradients every step (on in both Bridge and MIMO)", "None", "side"),
-    ("Differs as a side effect: each system's own default", "Python garbage collector", "Bridge: automatic collection off, one collection every 100 steps (none within these 50). MIMO: not checked", "Automatic collection on", "side"),
+    (
+        "Differs by design: what the comparison measures",
+        "Model code",
+        "Megatron modules and Transformer Engine layers; fused cross entropy; fp32 gradient accumulation fused into the matrix multiply",
+        "Hugging Face modules; Liger norm and SwiGLU kernels; loss split by vocabulary; fp32 accumulation as a separate add",
+        "design",
+    ),
+    (
+        "Differs by design: what the comparison measures",
+        "Attention kernel",
+        "Transformer Engine, <code>auto</code> backend",
+        "PyTorch SDPA (flash), no padding mask",
+        "design",
+    ),
+    (
+        "Differs by design: what the comparison measures",
+        "Vision encoder code",
+        "Megatron / Transformer Engine layers",
+        "Hugging Face blocks, eager: no <code>torch.compile</code> (it crashed compiled under TP4)",
+        "design",
+    ),
+    (
+        "Differs by design: what the comparison measures",
+        "Processes",
+        "One process per GPU (torchrun)",
+        "One Ray actor per GPU, plus a CPU driver",
+        "design",
+    ),
+    (
+        "Differs by design: what the comparison measures",
+        "Sends between stages",
+        "Bridge: the CPU waits after every send and receive. MIMO: each vision-language hand-off first reads the tensor's shape back to the CPU",
+        "Asynchronous; waited for at the end of the step",
+        "design",
+    ),
+    (
+        "Differs as a side effect: each system's own default",
+        "Data loading",
+        "Tokenizes text and processes images in its data loader during training",
+        "Loads already-processed rows; the next step's rows are sent during this step (<code>--prefetch</code>)",
+        "side",
+    ),
+    (
+        "Differs as a side effect: each system's own default",
+        "NaN check",
+        "Scans gradients every step (on in both Bridge and MIMO)",
+        "None",
+        "side",
+    ),
+    (
+        "Differs as a side effect: each system's own default",
+        "Python garbage collector",
+        "Bridge: automatic collection off, one collection every 100 steps (none within these 50). MIMO: not checked",
+        "Automatic collection on",
+        "side",
+    ),
 )
 TAGS = {"design": "differs by design", "side": "differs: default", "check": "not confirmed equal"}
 
@@ -101,19 +296,40 @@ def esc(s):
 def load(run):
     system, layout, d, mlog, rlog, gpus, split, why, link = run
     mt = open(f"{ROOT}/{d}/logs/{mlog}").read()
-    meg = {int(m[1]): (float(m[2]) / 1e3, float(m[3])) for m in re.finditer(
-        r"iteration +(\d+)/ +\d+ .*?per iteration \(ms\): ([\d.]+).*?lm loss: ([\d.E+-]+)", mt)}
+    meg = {
+        int(m[1]): (float(m[2]) / 1e3, float(m[3]))
+        for m in re.finditer(
+            r"iteration +(\d+)/ +\d+ .*?per iteration \(ms\): ([\d.]+).*?lm loss: ([\d.E+-]+)", mt
+        )
+    }
     rt = open(f"{ROOT}/{d}/logs/{rlog}").read()
-    rd = {int(m[1]) + 1: (float(m[3]) / 1e3, float(m[2]), int(m[4])) for m in re.finditer(
-        r"^step (\d+) loss ([\d.]+) (\d+) ms .*? real (\d+) supervised", rt, re.M)}
+    rd = {
+        int(m[1]) + 1: (float(m[3]) / 1e3, float(m[2]), int(m[4]))
+        for m in re.finditer(
+            r"^step (\d+) loss ([\d.]+) (\d+) ms .*? real (\d+) supervised", rt, re.M
+        )
+    }
     ms = statistics.median(v[0] for s, v in meg.items() if s >= 6)
     rs = statistics.median(v[0] for s, v in rd.items() if s >= 6)
     real = statistics.mean(v[2] for s, v in rd.items() if s >= 6)
     diff = statistics.mean(rd[s][1] - meg[s][1] for s in range(2, 51) if s in rd and s in meg)
-    return dict(system=system, layout=layout, dir=d, gpus=gpus, split=split, why=why, link=link,
-                meg=ms, rdsp=rs, steps=(len(meg), len(rd)), real=real,
-                loss1=(meg[1][1], rd[1][1]), loss_diff=diff,
-                tput=(real / ms / gpus, real / rs / gpus), padded=(PADDED / ms / gpus, PADDED / rs / gpus))
+    return dict(
+        system=system,
+        layout=layout,
+        dir=d,
+        gpus=gpus,
+        split=split,
+        why=why,
+        link=link,
+        meg=ms,
+        rdsp=rs,
+        steps=(len(meg), len(rd)),
+        real=real,
+        loss1=(meg[1][1], rd[1][1]),
+        loss_diff=diff,
+        tput=(real / ms / gpus, real / rs / gpus),
+        padded=(PADDED / ms / gpus, PADDED / rs / gpus),
+    )
 
 
 def svg_tput(rows):
@@ -124,22 +340,32 @@ def svg_tput(rows):
     xmax = (int(top / step) + 1) * step
     x = lambda v: L + v / xmax * (W - L - R)  # noqa: E731
     H = 26 + len(rows) * (2 * bar + gap + group)
-    out = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Real tokens per second per GPU, each run, both systems">']
+    out = [
+        f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Real tokens per second per GPU, each run, both systems">'
+    ]
     for v in range(0, xmax + 1, step):
-        out.append(f'<line class="grid" x1="{x(v):.1f}" x2="{x(v):.1f}" y1="0" y2="{H - 24}"/>'
-                   f'<text class="axis" x="{x(v):.1f}" y="{H - 8}" text-anchor="middle">{v:,}</text>')
+        out.append(
+            f'<line class="grid" x1="{x(v):.1f}" x2="{x(v):.1f}" y1="0" y2="{H - 24}"/>'
+            f'<text class="axis" x="{x(v):.1f}" y="{H - 8}" text-anchor="middle">{v:,}</text>'
+        )
     for i, r in enumerate(rows):
         y0 = 4 + i * (2 * bar + gap + group)
         short = "Bridge" if r["system"] == "Megatron-Bridge" else "MIMO"
-        out.append(f'<text class="rowlabel" x="{L - 10}" y="{y0 + bar}" text-anchor="end">{esc(short)}: {esc(r["layout"])}</text>'
-                   f'<text class="axis" x="{L - 10}" y="{y0 + 2 * bar + 1}" text-anchor="end">{r["gpus"]} GPUs</text>')
-        for j, (cls, name, v) in enumerate((("meg", short, r["tput"][0]), ("rd", "rdsp", r["tput"][1]))):
+        out.append(
+            f'<text class="rowlabel" x="{L - 10}" y="{y0 + bar}" text-anchor="end">{esc(short)}: {esc(r["layout"])}</text>'
+            f'<text class="axis" x="{L - 10}" y="{y0 + 2 * bar + 1}" text-anchor="end">{r["gpus"]} GPUs</text>'
+        )
+        for j, (cls, name, v) in enumerate(
+            (("meg", short, r["tput"][0]), ("rd", "rdsp", r["tput"][1]))
+        ):
             y = y0 + j * (bar + gap)
             w = x(v) - L
             # 4 px rounded data end, square at the baseline
-            out.append(f'<g><title>{esc(short)}: {esc(r["layout"])}. {name}: {v:,.0f} real tokens/s per GPU</title>'
-                       f'<path class="bar {cls}" d="M{L},{y} h{w - 4:.1f} a4,4 0 0 1 4,4 v{bar - 8} a4,4 0 0 1 -4,4 h{-(w - 4):.1f} z"/>'
-                       f'<text class="axis" x="{x(v) + 6:.1f}" y="{y + bar - 4}">{v:,.0f}</text></g>')
+            out.append(
+                f"<g><title>{esc(short)}: {esc(r['layout'])}. {name}: {v:,.0f} real tokens/s per GPU</title>"
+                f'<path class="bar {cls}" d="M{L},{y} h{w - 4:.1f} a4,4 0 0 1 4,4 v{bar - 8} a4,4 0 0 1 -4,4 h{-(w - 4):.1f} z"/>'
+                f'<text class="axis" x="{x(v) + 6:.1f}" y="{y + bar - 4}">{v:,.0f}</text></g>'
+            )
     out.append("</svg>")
     return "".join(out)
 
@@ -150,20 +376,33 @@ def main() -> None:
 
     def pct(r):
         p = 100 * (r["meg"] - r["rdsp"]) / r["meg"]
-        return f"rdsp {p:.0f}% faster" if p > 2 else ("about even" if p > -2 else f"rdsp {-p:.0f}% slower")
+        return (
+            f"rdsp {p:.0f}% faster"
+            if p > 2
+            else ("about even" if p > -2 else f"rdsp {-p:.0f}% slower")
+        )
 
     def name(r):
         return ("Bridge" if r["system"] == "Megatron-Bridge" else "MIMO") + " · " + r["layout"]
 
     trs = []
     for r in rows:
-        trs.append(f'<tr><td>{esc(name(r))}</td><td class="num">{r["gpus"]}</td>'
-                   f'<td class="num">{r["meg"]:.2f}</td><td class="num">{r["rdsp"]:.2f}</td>'
-                   f'<td class="num">{r["tput"][0]:,.0f}</td><td class="num">{r["tput"][1]:,.0f}</td><td>{pct(r)}</td></tr>')
-    whys = "".join(f'<li><b>{esc(name(r))}:</b> {esc(r["why"])}' + (f' <a href="{r["link"]}">Analysis →</a>' if r["link"] else "") + "</li>" for r in rows)
+        trs.append(
+            f'<tr><td>{esc(name(r))}</td><td class="num">{r["gpus"]}</td>'
+            f'<td class="num">{r["meg"]:.2f}</td><td class="num">{r["rdsp"]:.2f}</td>'
+            f'<td class="num">{r["tput"][0]:,.0f}</td><td class="num">{r["tput"][1]:,.0f}</td><td>{pct(r)}</td></tr>'
+        )
+    whys = "".join(
+        f"<li><b>{esc(name(r))}:</b> {esc(r['why'])}"
+        + (f' <a href="{r["link"]}">Analysis →</a>' if r["link"] else "")
+        + "</li>"
+        for r in rows
+    )
     srows = "".join(
         f'<tr><td>{esc(name(r))}</td><td class="num">{r["padded"][0]:,.0f}</td><td class="num">{r["padded"][1]:,.0f}</td>'
-        f'<td>{esc(r["split"][0])}</td><td>{esc(r["split"][1])}</td><td class="num">{r["loss_diff"]:+.4f}</td></tr>' for r in rows)
+        f'<td>{esc(r["split"][0])}</td><td>{esc(r["split"][1])}</td><td class="num">{r["loss_diff"]:+.4f}</td></tr>'
+        for r in rows
+    )
     real_mean = statistics.mean(r["real"] for r in rows)
     cfg, group = [], None
     for g, name, meg, rd, flag in SETTINGS:
@@ -171,7 +410,9 @@ def main() -> None:
             cfg.append(f'<tr class="grp"><th colspan="3">{esc(g)}</th></tr>')
             group = g
         tag = f'<br><span class="tag">{TAGS[flag]}</span>' if flag else ""
-        cfg.append(f'<tr{" class=\"flag\"" if flag else ""}><td>{esc(name)}{tag}</td><td>{meg}</td><td>{rd}</td></tr>')
+        cfg.append(
+            f"<tr{' class="flag"' if flag else ''}><td>{esc(name)}{tag}</td><td>{meg}</td><td>{rd}</td></tr>"
+        )
     ndiff = sum(1 for x in SETTINGS if x[4])
     nflag = {k: sum(1 for x in SETTINGS if x[4] == k) for k in TAGS}
 
@@ -278,14 +519,24 @@ rdsp vs MIMO layout a: --stages 3 --cuts 0,balanced --stage 0:gpus=1,zero=1 \
 </main>"""
     os.makedirs(HERE, exist_ok=True)
     open(f"{HERE}/report.html", "w").write(page)
-    md = ["# 9B results, 2026-10-11", "", "Median step time over steps 6–50; tok/s/GPU = real tokens per second per GPU.", "",
-          "| Run | GPUs | Megatron step | rdsp step | Result | Megatron tok/s/GPU | rdsp tok/s/GPU |", "|---|---|---|---|---|---|---|"]
+    md = [
+        "# 9B results, 2026-10-11",
+        "",
+        "Median step time over steps 6–50; tok/s/GPU = real tokens per second per GPU.",
+        "",
+        "| Run | GPUs | Megatron step | rdsp step | Result | Megatron tok/s/GPU | rdsp tok/s/GPU |",
+        "|---|---|---|---|---|---|---|",
+    ]
     for r in rows:
-        md.append(f'| {r["system"]}: {r["layout"]} | {r["gpus"]} | {r["meg"]:.2f} s | {r["rdsp"]:.2f} s | {pct(r)} | {r["tput"][0]:,.0f} | {r["tput"][1]:,.0f} |')
+        md.append(
+            f"| {r['system']}: {r['layout']} | {r['gpus']} | {r['meg']:.2f} s | {r['rdsp']:.2f} s | {pct(r)} | {r['tput'][0]:,.0f} | {r['tput'][1]:,.0f} |"
+        )
     open(f"{HERE}/results.md", "w").write("\n".join(md) + "\n")
     for r in rows:
-        print(f'{r["system"][:6]} {r["layout"]:28} steps {r["steps"]} meg {r["meg"]:.2f} rdsp {r["rdsp"]:.2f} '
-              f'real/step {r["real"]:,.0f} tput {r["tput"][0]:,.0f}/{r["tput"][1]:,.0f} loss1 {r["loss1"]} diff {r["loss_diff"]:+.4f}')
+        print(
+            f"{r['system'][:6]} {r['layout']:28} steps {r['steps']} meg {r['meg']:.2f} rdsp {r['rdsp']:.2f} "
+            f"real/step {r['real']:,.0f} tput {r['tput'][0]:,.0f}/{r['tput'][1]:,.0f} loss1 {r['loss1']} diff {r['loss_diff']:+.4f}"
+        )
 
 
 if __name__ == "__main__":

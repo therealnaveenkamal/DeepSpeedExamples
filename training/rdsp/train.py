@@ -20,8 +20,14 @@ import transformers
 import ray_deepspeed_pipeline as rdsp
 from ray_deepspeed_pipeline.config import StageOverride
 
-_STAGE_KEYS = {"gpus": "num_gpus", "zero": "zero_stage", "tp": "tp", "sp": "sp", "ep": "ep",
-               "recompute_blocks": "recompute_blocks"}
+_STAGE_KEYS = {
+    "gpus": "num_gpus",
+    "zero": "zero_stage",
+    "tp": "tp",
+    "sp": "sp",
+    "ep": "ep",
+    "recompute_blocks": "recompute_blocks",
+}
 
 
 def parse_stage(spec: str) -> StageOverride:
@@ -59,10 +65,11 @@ def token_stream(args, tokenizer):
         while True:
             yield from torch.randint(0, len(tokenizer), (65536,), generator=gen).tolist()
     import datasets
+
     split = datasets.load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1", split="train")
     while True:
         for start in range(0, len(split), 1000):
-            text = "".join(split[start:start + 1000]["text"])
+            text = "".join(split[start : start + 1000]["text"])
             yield from tokenizer(text)["input_ids"]
 
 
@@ -89,9 +96,14 @@ def ds_config(args) -> dict:
         "gradient_accumulation_steps": args.microbatches,
         # torch_adam: PyTorch's AdamW, not DeepSpeed's JIT-compiled CUDA op.
         # Optimizer offload needs DeepSpeed's CPU Adam (compiled on first use)
-        "optimizer": {"type": "AdamW",
-                      "params": {"lr": args.lr, "weight_decay": 0.0,
-                                 "torch_adam": not any(o.offload_optimizer for o in args.stage)}},
+        "optimizer": {
+            "type": "AdamW",
+            "params": {
+                "lr": args.lr,
+                "weight_decay": 0.0,
+                "torch_adam": not any(o.offload_optimizer for o in args.stage),
+            },
+        },
         "bf16": {"enabled": args.dtype == "bf16"},
         "zero_optimization": {"stage": args.zero},
         "gradient_clipping": 0.0,
@@ -103,11 +115,19 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--model", default="Qwen/Qwen3-0.6B")
     p.add_argument("--stages", type=int, default=2)
-    p.add_argument("--cuts", default="",
-                   help="block indices where stages 1.. start, e.g. 9,18,27; "
-                        "'balanced' for cost-balanced cuts; default: even layer counts")
-    p.add_argument("--stage", type=parse_stage, action="append", default=[],
-                   help="per-stage layout, e.g. 1:gpus=2,tp=2 (repeatable)")
+    p.add_argument(
+        "--cuts",
+        default="",
+        help="block indices where stages 1.. start, e.g. 9,18,27; "
+        "'balanced' for cost-balanced cuts; default: even layer counts",
+    )
+    p.add_argument(
+        "--stage",
+        type=parse_stage,
+        action="append",
+        default=[],
+        help="per-stage layout, e.g. 1:gpus=2,tp=2 (repeatable)",
+    )
     p.add_argument("--microbatches", type=int, default=8)
     p.add_argument("--rows", type=int, default=4, help="sequences per microbatch")
     p.add_argument("--seq", type=int, default=512)
@@ -137,9 +157,13 @@ def main(argv=None):
     else:
         partition = rdsp.UniformTransformerBlocks()
     engine, _, _, _ = rdsp.initialize(
-        model=model, config=ds_config(args), loss_fn=loss_fn,
-        pipeline_config=rdsp.PipelineConfig(stages=args.stages, partition=partition,
-                                            stage_overrides=tuple(args.stage)))
+        model=model,
+        config=ds_config(args),
+        loss_fn=loss_fn,
+        pipeline_config=rdsp.PipelineConfig(
+            stages=args.stages, partition=partition, stage_overrides=tuple(args.stage)
+        ),
+    )
     del model  # the stages hold their own copies
 
     data = microbatches(args, tokenizer)
@@ -148,8 +172,11 @@ def main(argv=None):
         start = time.perf_counter()
         loss = float(engine.train_batch(data_iter=data))
         elapsed = time.perf_counter() - start
-        print(f"step {step:5d}  loss {loss:.4f}  {elapsed * 1000:7.1f} ms  "
-              f"{tokens_per_step / elapsed / 1000:7.1f}k tok/s", flush=True)
+        print(
+            f"step {step:5d}  loss {loss:.4f}  {elapsed * 1000:7.1f} ms  "
+            f"{tokens_per_step / elapsed / 1000:7.1f}k tok/s",
+            flush=True,
+        )
     if args.save_dir:
         engine.save_checkpoint(args.save_dir)
         print(f"checkpoint: {args.save_dir}/global_step{engine.global_steps}")

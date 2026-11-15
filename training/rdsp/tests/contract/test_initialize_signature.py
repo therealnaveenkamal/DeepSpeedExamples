@@ -22,8 +22,9 @@ def test_signature_names_defaults_and_keyword_only():
     sig = inspect.signature(rdsp.initialize)
     params = list(sig.parameters.values())
     assert [(p.name, p.default) for p in params] == EXPECTED_PARAMS
-    assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in params), \
+    assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in params), (
         "every initialize() parameter must be keyword-only"
+    )
 
 
 def test_public_exports():

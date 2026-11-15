@@ -48,6 +48,7 @@ class _GroupHandle:
 
     def result(self):
         import ray
+
         return self.reduce(ray.get(self.refs))
 
 
@@ -67,9 +68,16 @@ class StageGroupClient:
     """Driver-side client for one stage's actors. Every command goes to every
     rank in the same order, so the ranks' collectives line up."""
 
-    def __init__(self, actors, stage: int = 0, grid: Grid | None = None,
-                 is_last: bool = False, placement_group=None, vision=None,
-                 count_tokens=None):
+    def __init__(
+        self,
+        actors,
+        stage: int = 0,
+        grid: Grid | None = None,
+        is_last: bool = False,
+        placement_group=None,
+        vision=None,
+        count_tokens=None,
+    ):
         """vision: (VisionLayout, this stage's global rank offset) under
         colocated vision. count_tokens: a TokenMeanLoss's count_fn (last
         stage), which counts the step's tokens from all its labels."""
@@ -82,17 +90,19 @@ class StageGroupClient:
         self.placement_group = placement_group
         self.node_id = None  # set at bootstrap; rebuilds prefer this node
 
-    def submit(self, command: Command, *, inputs=None, labels=None, control=None,
-               prepared=None):
+    def submit(self, command: Command, *, inputs=None, labels=None, control=None, prepared=None):
         """Send a command to every rank; returns a handle resolving to one
         stage-level result. prepared: prepare()'s result, in place of
         inputs and labels."""
         if command.kind in ("step", "eval_step"):
             payloads = prepared if prepared is not None else self._rank_payloads(inputs, labels)
             return self._submit_step(command, payloads, control)
-        refs = [actor.execute.remote(command.command_id, command.kind,
-                                     generation=command.generation, control=control)
-                for actor in self.actors]
+        refs = [
+            actor.execute.remote(
+                command.command_id, command.kind, generation=command.generation, control=control
+            )
+            for actor in self.actors
+        ]
         if command.kind == "save":
             return _GroupHandle(refs, self._stage_record)
         return _GroupHandle(refs, _all_ok)
@@ -102,9 +112,11 @@ class StageGroupClient:
         later submit() sends only references. Safe to call from another
         thread while a step runs."""
         import ray
-        return [{k: v if v is None or k == "token_total" else ray.put(v)
-                 for k, v in payload.items()}
-                for payload in self._rank_payloads(inputs, labels)]
+
+        return [
+            {k: v if v is None or k == "token_total" else ray.put(v) for k, v in payload.items()}
+            for payload in self._rank_payloads(inputs, labels)
+        ]
 
     def _rank_payloads(self, inputs, labels) -> list[dict]:
         """Each rank's share of a step. Under colocated vision every stage
@@ -121,22 +133,34 @@ class StageGroupClient:
                 layout, offset = self.vision
                 routes = route_images(inputs, layout, offset + rank)
                 if self.stage == 0:
-                    cell_inputs = [slice_inputs({k: v for k, v in x.items() if k != "pixel_values"},
-                                                cell) for x in inputs]
+                    cell_inputs = [
+                        slice_inputs({k: v for k, v in x.items() if k != "pixel_values"}, cell)
+                        for x in inputs
+                    ]
             elif inputs is not None:
                 cell_inputs = [slice_inputs(x, cell) for x in inputs]
-            payloads.append({
-                "inputs": cell_inputs,
-                "labels": [cell_slice(y, cell) for y in labels] if labels is not None else None,
-                "vision": routes, "token_total": token_total})
+            payloads.append(
+                {
+                    "inputs": cell_inputs,
+                    "labels": [cell_slice(y, cell) for y in labels] if labels is not None else None,
+                    "vision": routes,
+                    "token_total": token_total,
+                }
+            )
         return payloads
 
     def _submit_step(self, command, payloads, control):
         """One call per rank carrying the rank's whole op list for the step."""
-        refs = [actor.run_step.remote(command.generation, control["ops"],
-                                      command.kind == "step",
-                                      varying=control.get("varying", False), **payload)
-                for actor, payload in zip(self.actors, payloads)]
+        refs = [
+            actor.run_step.remote(
+                command.generation,
+                control["ops"],
+                command.kind == "step",
+                varying=control.get("varying", False),
+                **payload,
+            )
+            for actor, payload in zip(self.actors, payloads)
+        ]
         reps = representatives(self.grid)
 
         def reduce(results):
@@ -145,11 +169,14 @@ class StageGroupClient:
                 per_rep = [results[r]["losses"] for r in reps]
                 out["losses"] = [_mean(v) for v in zip(*per_rep)]
             return out
+
         return _GroupHandle(refs, reduce)
 
     def init_p2p(self, host: str, port: int, epoch: int, grids: list):
-        return [actor.init_p2p.remote(host, port, epoch, grids, _p2p_timeout_s())
-                for actor in self.actors]
+        return [
+            actor.init_p2p.remote(host, port, epoch, grids, _p2p_timeout_s())
+            for actor in self.actors
+        ]
 
     @staticmethod
     def reconnect_p2p(clients, epoch: int) -> None:
@@ -157,12 +184,16 @@ class StageGroupClient:
 
     def _stage_record(self, rank_records):
         files = next(r["files"] for r in rank_records if r["rank"] == 0)
-        return {"index": self.stage, "world_size": len(self.actors),
-                "ranks": [{"rank": r["rank"]} for r in rank_records],
-                "files": files}
+        return {
+            "index": self.stage,
+            "world_size": len(self.actors),
+            "ranks": [{"rank": r["rank"]} for r in rank_records],
+            "files": files,
+        }
 
     def alive(self, timeout: float | None = None) -> bool:
         import ray
+
         timeout = _alive_timeout_s() if timeout is None else timeout
         try:
             ray.get([actor.ping.remote() for actor in self.actors], timeout=timeout)
@@ -172,16 +203,19 @@ class StageGroupClient:
 
     def set_profile(self, on: bool) -> None:
         import ray
+
         ray.get([actor.set_profile.remote(on) for actor in self.actors])
 
     def profile_records(self) -> list[dict]:
         """Each rank's StageWorkerActor.profile_records(), in rank order."""
         import ray
+
         return ray.get([actor.profile_records.remote() for actor in self.actors])
 
     def shutdown(self) -> None:
         """Best effort: kill the actors and release the placement group."""
         import ray
+
         for actor in self.actors:
             try:
                 ray.kill(actor, no_restart=True)
@@ -199,21 +233,29 @@ def check_mesh(stage: int, grid: Grid, observed: list[dict | None]) -> None:
     each cell covered exactly once. Ranks reporting None (non-DeepSpeed stub
     engines) are checked only for count."""
     if len(observed) != grid.world:
-        raise ValidationError(f"stage {stage}: {len(observed)} ranks bootstrapped, "
-                              f"grid needs {grid.world}")
+        raise ValidationError(
+            f"stage {stage}: {len(observed)} ranks bootstrapped, grid needs {grid.world}"
+        )
     seen = set()
     for rank, mesh in enumerate(observed):
         if mesh is None:
             continue
         d, q, t = rank_coords(grid, rank)
-        expected = {"dp_rank": d, "dp_world": grid.dp, "tp_rank": t,
-                    "tp_world": grid.tp, "sp_rank": q, "sp_world": grid.sp}
+        expected = {
+            "dp_rank": d,
+            "dp_world": grid.dp,
+            "tp_rank": t,
+            "tp_world": grid.tp,
+            "sp_rank": q,
+            "sp_world": grid.sp,
+        }
         for key, want in expected.items():
             got = mesh.get(key)
             if got is not None and got != want:
                 raise ValidationError(
                     f"stage {stage} rank {rank}: DeepSpeed places it at "
-                    f"{key}={got}, the plan's grid expects {want} (mesh mismatch)")
+                    f"{key}={got}, the plan's grid expects {want} (mesh mismatch)"
+                )
         coords = (mesh.get("dp_rank", d), mesh.get("sp_rank", q), mesh.get("tp_rank", t))
         if coords in seen:
             raise ValidationError(f"stage {stage}: duplicate rank at grid position {coords}")
@@ -225,6 +267,7 @@ def connect_p2p(clients, epoch: int) -> None:
     TCPStore lives in stage 0 rank 0; each epoch uses fresh groups under a new
     key prefix, because a failed step leaves the old ones unusable."""
     import ray
+
     if epoch == 0:
         host, port, _ = ray.get(clients[0].actors[0].address.remote())
         for client in clients:
@@ -238,6 +281,7 @@ def _builder_kwargs(builder, spec) -> dict:
     """The HF stage builder also takes the stage's index: after a
     vision-only stage, the next one starts at block 0 too."""
     from ray_deepspeed_pipeline.hf_stage import build_hf_stage
+
     return {"stage_index": spec.index} if builder is build_hf_stage else {}
 
 
@@ -273,23 +317,36 @@ def bundles_in_rank_order(bundles_to_node: dict, node_order: list, group: int) -
     if split:
         raise ValidationError(
             f"a stage spanning nodes got {sorted(per_node.values())} GPUs per node; each node "
-            f"must hold a multiple of tp x sp = {group} so no tensor-parallel group crosses nodes")
+            f"must hold a multiple of tp x sp = {group} so no tensor-parallel group crosses nodes"
+        )
     return order
 
 
 def _nodes_in_fill_order() -> list[tuple[str, int]]:
     """Alive nodes with GPUs: the driver's first, the rest by address."""
     import ray
+
     here = ray.get_runtime_context().get_node_id()
-    nodes = [(n["NodeID"], int(n["Resources"].get("GPU", 0)), n["NodeManagerAddress"])
-             for n in ray.nodes() if n["Alive"] and n["Resources"].get("GPU", 0) >= 1]
+    nodes = [
+        (n["NodeID"], int(n["Resources"].get("GPU", 0)), n["NodeManagerAddress"])
+        for n in ray.nodes()
+        if n["Alive"] and n["Resources"].get("GPU", 0) >= 1
+    ]
     nodes.sort(key=lambda n: (n[0] != here, n[2]))
     return [(node, gpus) for node, gpus, _ in nodes]
 
 
-def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
-                         use_gpu: bool | None = None, stage_builder=None,
-                         prefer_nodes: list | None = None, weights: str | None = None):
+def create_stage_clients(
+    model,
+    plan,
+    loss_fn,
+    *,
+    engine_factory=None,
+    use_gpu: bool | None = None,
+    stage_builder=None,
+    prefer_nodes: list | None = None,
+    weights: str | None = None,
+):
     """Start one actor group per plan stage and return their clients.
 
     Needs an attached Ray context. Each stage gets its own STRICT_PACK
@@ -311,7 +368,8 @@ def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
     if not ray.is_initialized():
         raise ValidationError(
             "no Ray context: attach with ray.init(...) before rdsp.initialize() "
-            "(the package uses the current context and never creates one)")
+            "(the package uses the current context and never creates one)"
+        )
     if use_gpu is None:
         use_gpu = torch.cuda.is_available()
     needed = sum(spec.num_gpus for spec in plan.stages)
@@ -319,7 +377,8 @@ def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
     if use_gpu and needed > available:  # placement would wait out its timeout
         raise ValidationError(
             f"the pipeline needs {needed} GPUs; this Ray cluster has {available}. "
-            f"Reduce gpus= in the stage layouts, or add GPUs")
+            f"Reduce gpus= in the stage layouts, or add GPUs"
+        )
     backend = "nccl" if use_gpu else "gloo"
     actor_cls = ray.remote(StageWorkerActor)
     nodes = _nodes_in_fill_order() if use_gpu else []
@@ -335,14 +394,21 @@ def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
     vision, layout, offset = plan.colocated_vision, None, 0
     if vision is not None:
         first = plan.stages[0]
-        layout = VisionLayout(first=Grid(dp=first.dp, sp=first.sp, tp=first.tp),
-                              world=sum(spec.num_gpus for spec in plan.stages))
+        layout = VisionLayout(
+            first=Grid(dp=first.dp, sp=first.sp, tp=first.tp),
+            world=sum(spec.num_gpus for spec in plan.stages),
+        )
         tower_ref = ray.put((build_vision_tower(model, vision.module), vision))
     try:
         for spec in plan.stages:
             grid = Grid(dp=spec.dp, sp=spec.sp, tp=spec.tp)
-            module = builder(model, spec.block_start, spec.block_stop,
-                             spec.parameter_names, **_builder_kwargs(builder, spec))
+            module = builder(
+                model,
+                spec.block_start,
+                spec.block_stop,
+                spec.parameter_names,
+                **_builder_kwargs(builder, spec),
+            )
             if spec.recompute or spec.recompute_blocks is not None:
                 recompute_blocks(module, None if spec.recompute else spec.recompute_blocks)
             if spec.compile or spec.compile_vision:
@@ -355,20 +421,25 @@ def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
                 spans = spec.num_gpus > max_node_gpus
                 strategy = "PACK" if spans else "STRICT_PACK"
                 target = prefer_nodes[spec.index] if prefer_nodes and not spans else None
-                pg = placement_group([{"GPU": 1, "CPU": 1}] * spec.num_gpus,
-                                     strategy=strategy, _soft_target_node_id=target)
+                pg = placement_group(
+                    [{"GPU": 1, "CPU": 1}] * spec.num_gpus,
+                    strategy=strategy,
+                    _soft_target_node_id=target,
+                )
                 try:
                     ray.get(pg.ready(), timeout=_PLACEMENT_TIMEOUT_S)
                 except Exception as e:
                     ray.util.remove_placement_group(pg)
                     raise ValidationError(
                         f"stage {spec.index}: cannot place {spec.num_gpus} GPUs "
-                        f"({strategy}) in this Ray cluster: {e}") from e
+                        f"({strategy}) in this Ray cluster: {e}"
+                    ) from e
                 if spans:
                     table = ray.util.placement_group_table(pg)["bundles_to_node_id"]
                     try:
                         bundle_of_rank = bundles_in_rank_order(
-                            table, [n for n, _ in _nodes_in_fill_order()], spec.tp * spec.sp)
+                            table, [n for n, _ in _nodes_in_fill_order()], spec.tp * spec.sp
+                        )
                     except ValidationError:
                         ray.util.remove_placement_group(pg)
                         raise
@@ -378,20 +449,38 @@ def create_stage_clients(model, plan, loss_fn, *, engine_factory=None,
                 rank_options = dict(options)
                 if pg is not None:
                     rank_options["scheduling_strategy"] = PlacementGroupSchedulingStrategy(
-                        placement_group=pg, placement_group_bundle_index=bundle_of_rank[rank])
-                actors.append(actor_cls.options(**rank_options).remote(
-                    module_ref, spec.ds_config_json,
-                    stage=spec.index, rank=rank, grid=grid,
-                    backend=backend, n_microbatches=plan.global_microbatches,
-                    is_first=spec.index == 0, is_last=is_last,
-                    loss_fn=loss_fn if is_last else None,
-                    engine_factory=engine_factory, weights=weights,
-                    vision=tower_ref if vision is not None else None))
-            clients.append(StageGroupClient(
-                actors, stage=spec.index, grid=grid, is_last=is_last, placement_group=pg,
-                vision=(layout, offset) if vision is not None else None,
-                count_tokens=(loss_fn.count_fn if is_last and isinstance(loss_fn, TokenMeanLoss)
-                              else None)))
+                        placement_group=pg, placement_group_bundle_index=bundle_of_rank[rank]
+                    )
+                actors.append(
+                    actor_cls.options(**rank_options).remote(
+                        module_ref,
+                        spec.ds_config_json,
+                        stage=spec.index,
+                        rank=rank,
+                        grid=grid,
+                        backend=backend,
+                        n_microbatches=plan.global_microbatches,
+                        is_first=spec.index == 0,
+                        is_last=is_last,
+                        loss_fn=loss_fn if is_last else None,
+                        engine_factory=engine_factory,
+                        weights=weights,
+                        vision=tower_ref if vision is not None else None,
+                    )
+                )
+            clients.append(
+                StageGroupClient(
+                    actors,
+                    stage=spec.index,
+                    grid=grid,
+                    is_last=is_last,
+                    placement_group=pg,
+                    vision=(layout, offset) if vision is not None else None,
+                    count_tokens=(
+                        loss_fn.count_fn if is_last and isinstance(loss_fn, TokenMeanLoss) else None
+                    ),
+                )
+            )
             offset += spec.num_gpus
 
         # bootstrap every stage's world concurrently

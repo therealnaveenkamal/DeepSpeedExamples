@@ -59,23 +59,45 @@ def _cluster_main(tests: str, expected_nodes: int, gpus_per_node: int):
     info = modal.experimental.get_cluster_info()
     rank, ips = info.rank, info.container_ips
     head = ips[0]
-    subprocess.run(["pip", "install", "-e", "/root/rdsp"], check=True,
-                   capture_output=True)
+    subprocess.run(["pip", "install", "-e", "/root/rdsp"], check=True, capture_output=True)
     env = dict(os.environ, RAY_DEDUP_LOGS="0")
 
     if rank != 0:
-        subprocess.run(["ray", "start", f"--address={head}:{RAY_PORT}",
-                        f"--node-ip-address={ips[rank]}", f"--num-gpus={gpus_per_node}"],
-                       check=True, env=env)
-        while subprocess.run(["ray", "status", f"--address={head}:{RAY_PORT}"],
-                             capture_output=True).returncode == 0:
+        subprocess.run(
+            [
+                "ray",
+                "start",
+                f"--address={head}:{RAY_PORT}",
+                f"--node-ip-address={ips[rank]}",
+                f"--num-gpus={gpus_per_node}",
+            ],
+            check=True,
+            env=env,
+        )
+        while (
+            subprocess.run(
+                ["ray", "status", f"--address={head}:{RAY_PORT}"], capture_output=True
+            ).returncode
+            == 0
+        ):
             time.sleep(15)
         return 0, f"worker {rank} done"
 
-    subprocess.run(["ray", "start", "--head", f"--port={RAY_PORT}",
-                    f"--node-ip-address={head}", f"--num-gpus={gpus_per_node}",
-                    "--include-dashboard=false"], check=True, env=env)
+    subprocess.run(
+        [
+            "ray",
+            "start",
+            "--head",
+            f"--port={RAY_PORT}",
+            f"--node-ip-address={head}",
+            f"--num-gpus={gpus_per_node}",
+            "--include-dashboard=false",
+        ],
+        check=True,
+        env=env,
+    )
     import ray
+
     ray.init(address=f"{head}:{RAY_PORT}")
     deadline = time.time() + 600
     while len([n for n in ray.nodes() if n["Alive"]]) < expected_nodes:
@@ -88,10 +110,25 @@ def _cluster_main(tests: str, expected_nodes: int, gpus_per_node: int):
     env["RDSP_RAY_ADDRESS"] = f"{head}:{RAY_PORT}"
     env["RDSP_CLUSTER_GPUS"] = str(expected_nodes * gpus_per_node)
     proc = subprocess.Popen(
-        ["python", "-u", "-m", "pytest", "-v", "-s", "--tb=short", "-rA",
-         "-o", "faulthandler_timeout=1200", *shlex.split(tests)],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        cwd="/root/rdsp", env=env)
+        [
+            "python",
+            "-u",
+            "-m",
+            "pytest",
+            "-v",
+            "-s",
+            "--tb=short",
+            "-rA",
+            "-o",
+            "faulthandler_timeout=1200",
+            *shlex.split(tests),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        cwd="/root/rdsp",
+        env=env,
+    )
     lines = []
     for line in proc.stdout:
         sys.stdout.write(line)

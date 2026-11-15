@@ -28,11 +28,21 @@ def esc(s):
 
 # ---------- data ----------------------------------------------------------------
 
+
 def step_times():
-    b = {int(m[1]): float(m[2]) / 1e3 for m in re.finditer(
-        r"iteration +(\d+)/ +50 .*?per iteration \(ms\): ([\d.]+)", open(f"{LOGS}/bridge.log").read())}
-    r = {int(m[1]) + 1: float(m[2]) / 1e3 for m in re.finditer(
-        r"^step (\d+) loss [\d.]+ (\d+) ms", open(f"{LOGS}/rdsp-equal.log").read(), re.M)}
+    b = {
+        int(m[1]): float(m[2]) / 1e3
+        for m in re.finditer(
+            r"iteration +(\d+)/ +50 .*?per iteration \(ms\): ([\d.]+)",
+            open(f"{LOGS}/bridge.log").read(),
+        )
+    }
+    r = {
+        int(m[1]) + 1: float(m[2]) / 1e3
+        for m in re.finditer(
+            r"^step (\d+) loss [\d.]+ (\d+) ms", open(f"{LOGS}/rdsp-equal.log").read(), re.M
+        )
+    }
     return b, r
 
 
@@ -74,6 +84,7 @@ def vision_parts():
 
 # ---------- SVG -----------------------------------------------------------------
 
+
 def svg_steps(b, r):
     W, H, L, R, T, B = 760, 300, 52, 176, 18, 40
     steps = range(6, 51)
@@ -82,18 +93,26 @@ def svg_steps(b, r):
     y = lambda v: T + (hi - v) / (hi - lo) * (H - T - B)  # noqa: E731
     out = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Step time for steps 6 to 50">']
     for v in range(lo, hi + 1, 2):
-        out.append(f'<line class="grid" x1="{L}" x2="{W - R}" y1="{y(v):.1f}" y2="{y(v):.1f}"/>'
-                   f'<text class="axis" x="{L - 8}" y="{y(v) + 4:.1f}" text-anchor="end">{v} s</text>')
+        out.append(
+            f'<line class="grid" x1="{L}" x2="{W - R}" y1="{y(v):.1f}" y2="{y(v):.1f}"/>'
+            f'<text class="axis" x="{L - 8}" y="{y(v) + 4:.1f}" text-anchor="end">{v} s</text>'
+        )
     for s in (6, 10, 20, 30, 40, 50):
-        out.append(f'<text class="axis" x="{x(s):.1f}" y="{H - 16}" text-anchor="middle">{s}</text>')
-    out.append(f'<text class="axis" x="{(L + W - R) / 2:.0f}" y="{H - 2}" text-anchor="middle">step</text>')
+        out.append(
+            f'<text class="axis" x="{x(s):.1f}" y="{H - 16}" text-anchor="middle">{s}</text>'
+        )
+    out.append(
+        f'<text class="axis" x="{(L + W - R) / 2:.0f}" y="{H - 2}" text-anchor="middle">step</text>'
+    )
     for sysname, d in (("bridge", b), ("rdsp", r)):
         pts = " ".join(f"{x(s):.1f},{y(d[s]):.1f}" for s in steps if s in d)
         med = statistics.median(d[s] for s in steps if s in d)
-        out.append(f'<polyline class="line {sysname}" points="{pts}"/>'
-                   f'<line class="median {sysname}" x1="{L}" x2="{W - R}" y1="{y(med):.1f}" y2="{y(med):.1f}"/>'
-                   f'<text class="label {sysname}" x="{W - R + 8}" y="{y(med) + 4:.1f}">'
-                   f'{NAMES[sysname]} {med:.2f} s</text>')
+        out.append(
+            f'<polyline class="line {sysname}" points="{pts}"/>'
+            f'<line class="median {sysname}" x1="{L}" x2="{W - R}" y1="{y(med):.1f}" y2="{y(med):.1f}"/>'
+            f'<text class="label {sysname}" x="{W - R + 8}" y="{y(med) + 4:.1f}">'
+            f"{NAMES[sysname]} {med:.2f} s</text>"
+        )
     out.append("</svg>")
     return "".join(out)
 
@@ -106,27 +125,39 @@ def svg_split(splits, steps):
     x = lambda v: L + v / top * (W - L - R)  # noqa: E731
     out = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="Stage 0 time per step by part">']
     for v in range(0, int(top) + 1, 2):
-        out.append(f'<line class="grid" x1="{x(v):.1f}" x2="{x(v):.1f}" y1="14" y2="{14 + 2 * (bar + gap) - gap}"/>'
-                   f'<text class="axis" x="{x(v):.1f}" y="{20 + 2 * (bar + gap) - gap}" text-anchor="middle">{v} s</text>')
+        out.append(
+            f'<line class="grid" x1="{x(v):.1f}" x2="{x(v):.1f}" y1="14" y2="{14 + 2 * (bar + gap) - gap}"/>'
+            f'<text class="axis" x="{x(v):.1f}" y="{20 + 2 * (bar + gap) - gap}" text-anchor="middle">{v} s</text>'
+        )
     for i, sysname in enumerate(("bridge", "rdsp")):
         y0 = 14 + i * (bar + gap)
-        out.append(f'<text class="rowlabel" x="{L - 10}" y="{y0 + bar / 2 + 5}" text-anchor="end">'
-                   f'{NAMES[sysname]}</text>')
+        out.append(
+            f'<text class="rowlabel" x="{L - 10}" y="{y0 + bar / 2 + 5}" text-anchor="end">'
+            f"{NAMES[sysname]}</text>"
+        )
         acc = 0.0
         for j, k in enumerate(keys):
             v = splits[sysname][k]
-            out.append(f'<rect class="part p{j}" x="{x(acc):.1f}" y="{y0}" width="{max(x(acc + v) - x(acc), 0):.1f}" '
-                       f'height="{bar}"><title>{esc(k)}: {v:.2f} s</title></rect>')
+            out.append(
+                f'<rect class="part p{j}" x="{x(acc):.1f}" y="{y0}" width="{max(x(acc + v) - x(acc), 0):.1f}" '
+                f'height="{bar}"><title>{esc(k)}: {v:.2f} s</title></rect>'
+            )
             if x(acc + v) - x(acc) > 46:
-                out.append(f'<text class="inbar" x="{(x(acc) + x(acc + v)) / 2:.1f}" y="{y0 + bar / 2 + 5}" '
-                           f'text-anchor="middle">{v:.1f}</text>')
+                out.append(
+                    f'<text class="inbar" x="{(x(acc) + x(acc + v)) / 2:.1f}" y="{y0 + bar / 2 + 5}" '
+                    f'text-anchor="middle">{v:.1f}</text>'
+                )
             acc += v
-        out.append(f'<text class="axis" x="{x(acc) + 6:.1f}" y="{y0 + bar / 2 + 5}">= {steps[sysname]:.2f} s</text>')
+        out.append(
+            f'<text class="axis" x="{x(acc) + 6:.1f}" y="{y0 + bar / 2 + 5}">= {steps[sysname]:.2f} s</text>'
+        )
     ly = 44 + 2 * (bar + gap) - gap
     for j, k in enumerate(keys):
         cx, cy = L + (j % 3) * 210, ly + (j // 3) * 26
-        out.append(f'<rect class="part p{j}" x="{cx}" y="{cy - 11}" width="14" height="14"/>'
-                   f'<text class="legend" x="{cx + 20}" y="{cy}">{esc(k)}</text>')
+        out.append(
+            f'<rect class="part p{j}" x="{cx}" y="{cy - 11}" width="14" height="14"/>'
+            f'<text class="legend" x="{cx + 20}" y="{cy}">{esc(k)}</text>'
+        )
     out.append("</svg>")
     return "".join(out)
 
@@ -200,8 +231,10 @@ h3 { font-family: var(--font-head); font-weight: 600; font-size: 1.15rem; margin
 
 def main() -> None:
     b, r = step_times()
-    med = {"bridge": statistics.median(v for s, v in b.items() if s >= 6),
-           "rdsp": statistics.median(v for s, v in r.items() if s >= 6)}
+    med = {
+        "bridge": statistics.median(v for s, v in b.items() if s >= 6),
+        "rdsp": statistics.median(v for s, v in r.items() if s >= 6),
+    }
     splits = {s: stage0_split(s, med[s])[0] for s in ("bridge", "rdsp")}
     vparts = vision_parts()
     wait = {"bridge": vparts[0][1], "rdsp": vparts[0][2]}
@@ -212,25 +245,39 @@ def main() -> None:
     rows = "".join(
         f'<tr><td>{esc(k)}</td><td class="num">{splits["bridge"][k]:.2f}</td>'
         f'<td class="num">{splits["rdsp"][k]:.2f}</td>'
-        f'<td class="num">{splits["bridge"][k] - splits["rdsp"][k]:+.2f}</td></tr>' for k in keys)
-    rows += (f'<tr class="total"><td>Step</td><td class="num">{med["bridge"]:.2f}</td>'
-             f'<td class="num">{med["rdsp"]:.2f}</td><td class="num">{med["bridge"] - med["rdsp"]:+.2f}</td></tr>')
+        f'<td class="num">{splits["bridge"][k] - splits["rdsp"][k]:+.2f}</td></tr>'
+        for k in keys
+    )
+    rows += (
+        f'<tr class="total"><td>Step</td><td class="num">{med["bridge"]:.2f}</td>'
+        f'<td class="num">{med["rdsp"]:.2f}</td><td class="num">{med["bridge"] - med["rdsp"]:+.2f}</td></tr>'
+    )
 
-    part_names = {"attention: per-layer wait": "Line that reads a GPU value (Bridge: TE check; rdsp: lengths.tolist())",
-                  "attention: rotary embedding": "Rotary position embedding",
-                  "attention: the rest": "Rest of attention", "MLP": "MLP",
-                  "outside the layers": "Outside the layers (patch embedding, merger)"}
-    vrows = "".join(f'<tr><td>{esc(part_names.get(p, p))}</td><td class="num">{b_:.2f}</td>'
-                    f'<td class="num">{r_:.2f}</td><td class="num">{b_ - r_:+.2f}</td></tr>' for p, b_, r_ in vparts)
-    vrows += (f'<tr class="total"><td>Total</td><td class="num">{vtot["bridge"]:.2f}</td>'
-              f'<td class="num">{vtot["rdsp"]:.2f}</td><td class="num">{vtot["bridge"] - vtot["rdsp"]:+.2f}</td></tr>')
+    part_names = {
+        "attention: per-layer wait": "Line that reads a GPU value (Bridge: TE check; rdsp: lengths.tolist())",
+        "attention: rotary embedding": "Rotary position embedding",
+        "attention: the rest": "Rest of attention",
+        "MLP": "MLP",
+        "outside the layers": "Outside the layers (patch embedding, merger)",
+    }
+    vrows = "".join(
+        f'<tr><td>{esc(part_names.get(p, p))}</td><td class="num">{b_:.2f}</td>'
+        f'<td class="num">{r_:.2f}</td><td class="num">{b_ - r_:+.2f}</td></tr>'
+        for p, b_, r_ in vparts
+    )
+    vrows += (
+        f'<tr class="total"><td>Total</td><td class="num">{vtot["bridge"]:.2f}</td>'
+        f'<td class="num">{vtot["rdsp"]:.2f}</td><td class="num">{vtot["bridge"] - vtot["rdsp"]:+.2f}</td></tr>'
+    )
     gap, dv = med["bridge"] - med["rdsp"], vtot["bridge"] - vtot["rdsp"]
     lo = {k: min(v for st, v in d.items() if st >= 6) for k, d in (("bridge", b), ("rdsp", r))}
     hi = {k: max(v for st, v in d.items() if st >= 6) for k, d in (("bridge", b), ("rdsp", r))}
 
     def shot(name, alt, caption):
-        return (f'<figure><a class="shot" href="screens/{name}"><img src="screens/{name}" alt="{esc(alt)}"></a>'
-                f'<figcaption>{caption}</figcaption></figure>')
+        return (
+            f'<figure><a class="shot" href="screens/{name}"><img src="screens/{name}" alt="{esc(alt)}"></a>'
+            f"<figcaption>{caption}</figcaption></figure>"
+        )
 
     page = f"""<title>9B Bridge vs rdsp</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -243,9 +290,12 @@ def main() -> None:
   <p class="eyebrow">Qwen3.5-9B · TP4 × PP2 × DP1 · 8× H100 · 2026-10-11</p>
   <h1>Why rdsp is faster than Megatron-Bridge on 9B</h1>
   <div class="nums">
-    <div><span class="big r">{med["rdsp"]:.2f} s</span><span class="muted">rdsp, per step</span></div>
-    <div><span class="big b">{med["bridge"]:.2f} s</span><span class="muted">Megatron-Bridge, per step</span></div>
-    <div><span class="big">{gap:.1f} s</span><span class="muted">rdsp is faster ({100 * gap / med["bridge"]:.0f}%)</span></div>
+    <div><span class="big r">{
+        med["rdsp"]:.2f} s</span><span class="muted">rdsp, per step</span></div>
+    <div><span class="big b">{
+        med["bridge"]:.2f} s</span><span class="muted">Megatron-Bridge, per step</span></div>
+    <div><span class="big">{gap:.1f} s</span><span class="muted">rdsp is faster ({
+        100 * gap / med["bridge"]:.0f}%)</span></div>
   </div>
   <p class="muted">Same model, data, batch, layer split and loss on both. Both pad every row to 2,048 tokens.</p>
 </header>
@@ -253,7 +303,10 @@ def main() -> None:
 <section id="answer">
   <h2>The answer</h2>
   <ol class="answer">
-    <li><b>The gap is in one place: the vision encoder.</b> On stage 0 it takes {vtot["bridge"]:.1f} s per step on Bridge and {vtot["rdsp"]:.1f} s on rdsp: {1000 * vtot["bridge"] / 64:.0f} ms vs {1000 * vtot["rdsp"] / 64:.0f} ms for each of the 64 microbatches.</li>
+    <li><b>The gap is in one place: the vision encoder.</b> On stage 0 it takes {
+        vtot["bridge"]:.1f} s per step on Bridge and {vtot["rdsp"]:.1f} s on rdsp: {
+        1000 * vtot["bridge"] / 64:.0f} ms vs {
+        1000 * vtot["rdsp"] / 64:.0f} ms for each of the 64 microbatches.</li>
     <li><b>Bridge's vision encoder makes the CPU wait for the GPU 4 times per layer.</b> A wait empties the GPU's queue of work. rdsp's encoder also waits, but in the Nsight trace its waits are near zero.</li>
     <li><b>Bridge's vision code also spends about twice the CPU time per layer.</b> The CPU then cannot refill the GPU fast enough, so the GPU sits idle.</li>
   </ol>
@@ -262,7 +315,9 @@ def main() -> None:
 <section id="nsight">
   <p class="eyebrow">Evidence 1 · Nsight Systems</p>
   <h2>One microbatch on each system</h2>
-  <p>These pictures show <b>one microbatch</b>. A training step has 64. They come from the traced run, which is slower: Bridge's vision encoder takes 124 ms here vs {1000 * vtot["bridge"] / 64:.0f} ms per microbatch in the normal run, rdsp's 52 ms vs {1000 * vtot["rdsp"] / 64:.0f} ms.</p>
+  <p>These pictures show <b>one microbatch</b>. A training step has 64. They come from the traced run, which is slower: Bridge's vision encoder takes 124 ms here vs {
+        1000 * vtot["bridge"] / 64:.0f} ms per microbatch in the normal run, rdsp's 52 ms vs {
+        1000 * vtot["rdsp"] / 64:.0f} ms.</p>
   <p>Time runs left to right. Three rows matter:</p>
   <div class="tablewrap"><table>
     <tr><th>Row</th><th>What it shows</th><th>Look for</th></tr>
@@ -270,17 +325,42 @@ def main() -> None:
     <tr><td><code>NVTX</code></td><td>Which part of the model is running</td><td>Gray bars with names</td></tr>
     <tr><td><code>CUDA API</code></td><td>The CPU sending work to the GPU</td><td>Green = CPU waiting for the GPU</td></tr>
   </table></div>
-  {shot("n1_bridge_one_microbatch.png", "Nsight timeline of one Bridge microbatch with labels",
-        '<span class="b">Bridge</span>, stage 0, 205 ms shown. The vision encoder takes 124 ms. In it the CPU waits for the GPU 141 times (4 per layer), 28 ms in total. Only the longer waits are wide enough to see.')}
-  {shot("n2_rdsp_one_microbatch.png", "Nsight timeline of one rdsp microbatch with labels",
-        '<span class="r">rdsp</span>, stage 0, the same 205 ms width. Vision encoder 52 ms, language layers 52 ms. rdsp\'s encoder waits 91 times, but each wait is under 0.01 ms (0.4 ms in total), so none show.')}
-  {shot("n3_bridge_one_wait.png", "One green box hovered: cudaStreamSynchronize, 2.2 ms",
-        'One of Bridge\'s green boxes, hovered. The CPU waited 2.2 ms.')}
+  {
+        shot(
+            "n1_bridge_one_microbatch.png",
+            "Nsight timeline of one Bridge microbatch with labels",
+            '<span class="b">Bridge</span>, stage 0, 205 ms shown. The vision encoder takes 124 ms. In it the CPU waits for the GPU 141 times (4 per layer), 28 ms in total. Only the longer waits are wide enough to see.',
+        )
+    }
+  {
+        shot(
+            "n2_rdsp_one_microbatch.png",
+            "Nsight timeline of one rdsp microbatch with labels",
+            '<span class="r">rdsp</span>, stage 0, the same 205 ms width. Vision encoder 52 ms, language layers 52 ms. rdsp\'s encoder waits 91 times, but each wait is under 0.01 ms (0.4 ms in total), so none show.',
+        )
+    }
+  {
+        shot(
+            "n3_bridge_one_wait.png",
+            "One green box hovered: cudaStreamSynchronize, 2.2 ms",
+            "One of Bridge's green boxes, hovered. The CPU waited 2.2 ms.",
+        )
+    }
   <h3>Zoom in: what one wait costs</h3>
-  {shot("n4_bridge_15ms.png", "Bridge, 15 ms at the start of the vision encoder, GPU idle for 3 ms",
-        '<span class="b">Bridge</span>, 15 ms shown, at the start of the vision encoder. After the first kernel (the conv) the GPU does nothing for 3 ms. In the 7 ms after the conv, the GPU is busy 4% of the time.')}
-  {shot("n5_rdsp_15ms.png", "rdsp, 15 ms at the start of the vision encoder, GPU busy",
-        '<span class="r">rdsp</span>, 15 ms shown, the same point in the model. In the 7 ms after the conv, the GPU is busy 67% of the time: 24% computing, the rest in NCCL all-reduces (the encoder is split over 4 GPUs).')}
+  {
+        shot(
+            "n4_bridge_15ms.png",
+            "Bridge, 15 ms at the start of the vision encoder, GPU idle for 3 ms",
+            '<span class="b">Bridge</span>, 15 ms shown, at the start of the vision encoder. After the first kernel (the conv) the GPU does nothing for 3 ms. In the 7 ms after the conv, the GPU is busy 4% of the time.',
+        )
+    }
+  {
+        shot(
+            "n5_rdsp_15ms.png",
+            "rdsp, 15 ms at the start of the vision encoder, GPU busy",
+            '<span class="r">rdsp</span>, 15 ms shown, the same point in the model. In the 7 ms after the conv, the GPU is busy 67% of the time: 24% computing, the rest in NCCL all-reduces (the encoder is split over 4 GPUs).',
+        )
+    }
   <p class="muted">Nsight slows the CPU, rdsp more than Bridge (Bridge 18.2 to 22.6 s per step, rdsp 14.6 to 24.6 s). Use these pictures for the pattern, not for exact times.</p>
 </section>
 
@@ -295,29 +375,54 @@ def main() -> None:
     {rows}
   </table></div>
   <ul>
-    <li>Vision encoder: Bridge is {splits["bridge"][keys[0]] - splits["rdsp"][keys[0]]:.1f} s slower. That is the whole gap.</li>
-    <li>Backward pass: rdsp is {-bwd:.1f} s slower. rdsp launches 1.6× more GPU kernels per step (Nsight).</li>
+    <li>Vision encoder: Bridge is {
+        splits["bridge"][keys[0]]
+        - splits["rdsp"][keys[0]]:.1f} s slower. That is the whole gap.</li>
+    <li>Backward pass: rdsp is {
+        -bwd:.1f} s slower. rdsp launches 1.6× more GPU kernels per step (Nsight).</li>
   </ul>
   <h3>Inside the vision encoder</h3>
   <div class="tablewrap"><table>
     <tr><th>Vision encoder, seconds per step</th><th class="num">Bridge</th><th class="num">rdsp</th><th class="num">Bridge − rdsp</th></tr>
     {vrows}
   </table></div>
-  <p>The first row is the line in each encoder that reads a value back from the GPU. Its time includes the Python work on that line. It explains {wait["bridge"] - wait["rdsp"]:.1f} s of the {dv:.1f} s. The rest is Bridge taking about twice as long in every part.</p>
+  <p>The first row is the line in each encoder that reads a value back from the GPU. Its time includes the Python work on that line. It explains {
+        wait["bridge"] - wait["rdsp"]:.1f} s of the {
+        dv:.1f} s. The rest is Bridge taking about twice as long in every part.</p>
 </section>
 
 <section id="flame">
   <p class="eyebrow">Evidence 3 · py-spy flame graphs</p>
   <h2>The same thing as flame graphs</h2>
   <p>Each box is a function. Wider = more time. The bottom row is the training step; each row up is one call deeper. Purple = the search match. Click a picture for full size.</p>
-  {shot("1_bridge_vision.png", "py-spy flame graph, Bridge stage 0, vision encoder in purple",
-        '<span class="b">Bridge</span>: the vision encoder (purple) is 38% of this GPU\'s time.')}
-  {shot("2_rdsp_vision.png", "py-spy flame graph, rdsp stage 0, vision encoder in purple",
-        '<span class="r">rdsp</span>: the vision encoder (purple) is 23%.')}
-  {shot("3_bridge_vision_sync.png", "Bridge vision encoder, zoomed, wait line in purple",
-        '<span class="b">Bridge</span>, zoomed into the vision encoder. Purple = the line that waits for the GPU (Transformer Engine, <code>utils.py:320</code>).')}
-  {shot("4_rdsp_vision_sync.png", "rdsp vision encoder, zoomed, wait line in purple",
-        '<span class="r">rdsp</span>, zoomed into the vision encoder. Purple = its wait line (Hugging Face, <code>modeling_qwen3_5.py:1070</code>).')}
+  {
+        shot(
+            "1_bridge_vision.png",
+            "py-spy flame graph, Bridge stage 0, vision encoder in purple",
+            '<span class="b">Bridge</span>: the vision encoder (purple) is 38% of this GPU\'s time.',
+        )
+    }
+  {
+        shot(
+            "2_rdsp_vision.png",
+            "py-spy flame graph, rdsp stage 0, vision encoder in purple",
+            '<span class="r">rdsp</span>: the vision encoder (purple) is 23%.',
+        )
+    }
+  {
+        shot(
+            "3_bridge_vision_sync.png",
+            "Bridge vision encoder, zoomed, wait line in purple",
+            '<span class="b">Bridge</span>, zoomed into the vision encoder. Purple = the line that waits for the GPU (Transformer Engine, <code>utils.py:320</code>).',
+        )
+    }
+  {
+        shot(
+            "4_rdsp_vision_sync.png",
+            "rdsp vision encoder, zoomed, wait line in purple",
+            '<span class="r">rdsp</span>, zoomed into the vision encoder. Purple = its wait line (Hugging Face, <code>modeling_qwen3_5.py:1070</code>).',
+        )
+    }
   <p class="muted">Interactive versions (search, click to zoom): <a href="flame_bridge.svg">Bridge</a>, <a href="flame_rdsp.svg">rdsp</a>.</p>
 </section>
 
@@ -333,7 +438,10 @@ def main() -> None:
 320  <span class="hl">if sf != of:</span>                         # GPU value to Python bool: CPU waits</pre></li>
     <li>The check runs once per vision layer: 27 × 64 = 1,728 times per step.</li>
   </ol>
-  <p>py-spy (untraced run) finds Bridge's thread on this line for {wait["bridge"]:.1f} s per step. Nsight (traced run) counts 4 waits per vision layer in Bridge. It does not record which line each wait comes from.</p>
+  <p>py-spy (untraced run) finds Bridge's thread on this line for {
+        wait[
+            "bridge"
+        ]:.1f} s per step. Nsight (traced run) counts 4 waits per vision layer in Bridge. It does not record which line each wait comes from.</p>
   <p>rdsp's encoder (Hugging Face) also reads a GPU value once per layer, at <code>lengths.tolist()</code> (<code>modeling_qwen3_5.py:1070</code>). In Nsight each of those waits is under 0.01 ms.</p>
 </section>
 
@@ -341,7 +449,8 @@ def main() -> None:
   <p class="eyebrow">How sure are we</p>
   <h2>Checks and limits</h2>
   <figure><div class="chart">{svg_steps(b, r)}</div>
-  <figcaption>Every step from 6 to 50. Bridge {lo["bridge"]:.2f} to {hi["bridge"]:.2f} s, rdsp {lo["rdsp"]:.2f} to {hi["rdsp"]:.2f} s. The two never overlap.</figcaption></figure>
+  <figcaption>Every step from 6 to 50. Bridge {lo["bridge"]:.2f} to {hi["bridge"]:.2f} s, rdsp {
+        lo["rdsp"]:.2f} to {hi["rdsp"]:.2f} s. The two never overlap.</figcaption></figure>
   <ul>
     <li>One run per system. No repeats.</li>
     <li>py-spy read 2 of Bridge's 4 stage-0 GPUs (it failed on the other 2).</li>
@@ -353,8 +462,12 @@ def main() -> None:
 </section>
 </main>"""
     open(f"{RES}/report.html", "w").write(page)
-    print("report.html", f"{len(page) / 1e6:.2f} MB",
-          {k: round(v, 2) for k, v in splits["bridge"].items()}, {k: round(v, 2) for k, v in splits["rdsp"].items()})
+    print(
+        "report.html",
+        f"{len(page) / 1e6:.2f} MB",
+        {k: round(v, 2) for k, v in splits["bridge"].items()},
+        {k: round(v, 2) for k, v in splits["rdsp"].items()},
+    )
 
 
 if __name__ == "__main__":

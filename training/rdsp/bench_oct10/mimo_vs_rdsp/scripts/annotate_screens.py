@@ -12,12 +12,20 @@ import sys
 
 from PIL import Image, ImageDraw
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "../../bridge_vs_rdsp/9b_tp4pp2dp1/scripts"))
+sys.path.insert(
+    0,
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "../../bridge_vs_rdsp/9b_tp4pp2dp1/scripts"
+    ),
+)
 from annotate_screens import SMALL, arrow, bracket, box, label, pad_top  # noqa: E402
 
-D = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                 "9b_v1_tp2pp2dp1", "results", "screens")
+D = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "9b_v1_tp2pp2dp1",
+    "results",
+    "screens",
+)
 
 
 def mimo():
@@ -54,7 +62,12 @@ def rdsp():
     bracket(d, x(827.6), x(965.4), 58, "Vision backward: 138 ms")
     # vision autograd thread: cudaStreamSynchronize 30.82839-30.89370 s
     box(d, (x(828.4), o + 590, x(893.7), o + 616))
-    label(d, (x(828.4) + 40, o + 800), "Vision waits 65 ms for the gradient from the language GPU.", font=SMALL)
+    label(
+        d,
+        (x(828.4) + 40, o + 800),
+        "Vision waits 65 ms for the gradient from the language GPU.",
+        font=SMALL,
+    )
     label(d, (10, o + 800), "1 microbatch (a step has 64)", font=SMALL)
     # language NVTX backward ends 30.8844 s; it sends the gradient at 30.8934 s
     box(d, (240, o + 258, x(884.4), o + 283))

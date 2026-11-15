@@ -40,8 +40,12 @@ def bracket(d, x0, x1, y, text, up=True):
 def arrow(d, start, end):
     d.line((*start, *end), fill=RED, width=3)
     x, y = end
-    d.polygon([(x, y), (x - 7, y - 12), (x + 7, y - 12)] if start[1] < y else
-              [(x, y), (x - 7, y + 12), (x + 7, y + 12)], fill=RED)
+    d.polygon(
+        [(x, y), (x - 7, y - 12), (x + 7, y - 12)]
+        if start[1] < y
+        else [(x, y), (x - 7, y + 12), (x + 7, y + 12)],
+        fill=RED,
+    )
 
 
 def pad_top(img, h, bottom=0):
@@ -59,7 +63,12 @@ def bridge_205():
     bracket(d, 1105, 1468, 62, "16 language layers: 58 ms")
     box(d, (322, o + 333, 1104, o + 362))
     label(d, (10, o + 412), "1 microbatch (a step has 64)", font=SMALL)
-    label(d, (700, o + 412), "Green = CPU waiting for the GPU: 4 waits per layer, 28 ms in total.", font=SMALL)
+    label(
+        d,
+        (700, o + 412),
+        "Green = CPU waiting for the GPU: 4 waits per layer, 28 ms in total.",
+        font=SMALL,
+    )
     box(d, (240, o + 52, 1540, o + 80), width=2)
     label(d, (950, o + 104), "GPU kernels (blue). White gaps = GPU idle.", font=SMALL)
     img.save(f"{D}/n1_bridge_one_microbatch.png")
@@ -77,15 +86,29 @@ def rdsp_205():
     box(d, (296, o + 311, 318, o + 342), width=2)
     label(d, (250, o + 215), "2.7 ms wait, before the encoder", font=SMALL)
     label(d, (10, o + 412), "1 microbatch (a step has 64)", font=SMALL)
-    label(d, (560, o + 412), "Encoder waits 91 times, each under 0.01 ms: too short to see.", font=SMALL)
+    label(
+        d,
+        (560, o + 412),
+        "Encoder waits 91 times, each under 0.01 ms: too short to see.",
+        font=SMALL,
+    )
     img.save(f"{D}/n2_rdsp_one_microbatch.png")
 
 
 def tooltip():
-    img = Image.open(f"{D}/8_nsight_bridge_sync_tooltip.jpg").convert("RGB").crop((200, 360, 1100, 520))
+    img = (
+        Image.open(f"{D}/8_nsight_bridge_sync_tooltip.jpg")
+        .convert("RGB")
+        .crop((200, 360, 1100, 520))
+    )
     img = pad_top(img, 56)
     d = ImageDraw.Draw(img)
-    label(d, (10, 12), "Hovering one green box: the CPU sat in cudaStreamSynchronize for 2.2 ms.", font=SMALL)
+    label(
+        d,
+        (10, 12),
+        "Hovering one green box: the CPU sat in cudaStreamSynchronize for 2.2 ms.",
+        font=SMALL,
+    )
     box(d, (380, 56 + 44, 410, 56 + 62))
     img.save(f"{D}/n3_bridge_one_wait.png")
 
@@ -99,7 +122,12 @@ def bridge_15():
     bracket(d, 726, 965, 50, "GPU idle for 3 ms")
     box(d, (726, o + 52, 965, o + 150))
     box(d, (726, o + 462, 965, o + 492))
-    label(d, (700, o + 520), "CPU sends almost no work to the GPU here: 5 CUDA calls in 3 ms.", font=SMALL)
+    label(
+        d,
+        (700, o + 520),
+        "CPU sends almost no work to the GPU here: 5 CUDA calls in 3 ms.",
+        font=SMALL,
+    )
     img.save(f"{D}/n4_bridge_15ms.png")
 
 

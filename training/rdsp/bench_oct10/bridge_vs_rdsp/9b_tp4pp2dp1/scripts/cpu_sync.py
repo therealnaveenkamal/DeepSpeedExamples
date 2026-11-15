@@ -19,10 +19,11 @@ def main(argv=None) -> None:
     steps = (hi - lo) / 1e6 / a.step_ms
     per = collections.defaultdict(dict)
     for pid, fn, n, tot in db.execute(
-            "SELECT r.globalTid, s.value, count(*), sum(r.end - r.start) "
-            "FROM CUPTI_ACTIVITY_KIND_RUNTIME r JOIN StringIds s ON s.id = r.nameId "
-            "WHERE s.value LIKE '%Synchronize%' OR s.value LIKE '%LaunchKernel%' "
-            "OR s.value LIKE '%EventQuery%' GROUP BY r.globalTid, s.value"):
+        "SELECT r.globalTid, s.value, count(*), sum(r.end - r.start) "
+        "FROM CUPTI_ACTIVITY_KIND_RUNTIME r JOIN StringIds s ON s.id = r.nameId "
+        "WHERE s.value LIKE '%Synchronize%' OR s.value LIKE '%LaunchKernel%' "
+        "OR s.value LIKE '%EventQuery%' GROUP BY r.globalTid, s.value"
+    ):
         per[pid][fn] = (n / steps, tot / 1e6 / steps)
     db.close()
     print(f"{steps:.2f} steps in the window; per step, per CPU thread that launches kernels")
@@ -31,8 +32,10 @@ def main(argv=None) -> None:
         if launches < 1000:
             continue
         blocking = {fn.split("_v")[0]: v for fn, v in per[pid].items() if "LaunchKernel" not in fn}
-        print(f"  launches {launches:>8.0f}  " + "  ".join(
-            f"{fn}: {n:.0f}x {ms:.0f} ms" for fn, (n, ms) in sorted(blocking.items())))
+        print(
+            f"  launches {launches:>8.0f}  "
+            + "  ".join(f"{fn}: {n:.0f}x {ms:.0f} ms" for fn, (n, ms) in sorted(blocking.items()))
+        )
 
 
 if __name__ == "__main__":

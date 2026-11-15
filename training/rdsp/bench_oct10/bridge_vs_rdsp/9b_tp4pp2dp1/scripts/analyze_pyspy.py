@@ -25,11 +25,21 @@ import sys
 STEP = re.compile(r"forward_backward_pipelining|_run_step \(.*stage_worker")
 VISION = re.compile(r"vision_model\.py|get_image_features|VisionModel|vision_utils")
 RULES = (
-    ("sync", re.compile(r"Synchronize|synchronize|_local_scalar_dense|\bitem \(|tolist \("
-                        r"|\bcpu \(|nonzero|is_nonzero|__bool__|__int__|__index__")),
-    ("p2p", re.compile(r"p2p_communication|_communicate|batch_isend_irecv|send_forward"
-                       r"|recv_forward|send_backward|recv_backward|p2p\.py|recv_boundary"
-                       r"|send_boundary|_receive_forward")),
+    (
+        "sync",
+        re.compile(
+            r"Synchronize|synchronize|_local_scalar_dense|\bitem \(|tolist \("
+            r"|\bcpu \(|nonzero|is_nonzero|__bool__|__int__|__index__"
+        ),
+    ),
+    (
+        "p2p",
+        re.compile(
+            r"p2p_communication|_communicate|batch_isend_irecv|send_forward"
+            r"|recv_forward|send_backward|recv_backward|p2p\.py|recv_boundary"
+            r"|send_boundary|_receive_forward"
+        ),
+    ),
     ("backward", re.compile(r"backward \(|run_backward|_engine_run_backward")),
     ("forward", re.compile(r"forward \(|forward_step|_forward \(")),
 )
@@ -39,8 +49,13 @@ PARTS = (
     ("vision", VISION),
     ("data", re.compile(r"get_batch|_to_device|prepare|iterator")),
     ("checks", re.compile(r"rerun_state_machine|validate_result|check_for_nan")),
-    ("language", re.compile(r"transformer_block|transformer_layer|modeling_layers|text_model"
-                            r"|DecoderLayer|layers\.py")),
+    (
+        "language",
+        re.compile(
+            r"transformer_block|transformer_layer|modeling_layers|text_model"
+            r"|DecoderLayer|layers\.py"
+        ),
+    ),
 )
 
 
@@ -50,8 +65,10 @@ def frame_name(f: str) -> str:
 
 def main() -> None:
     system, paths = sys.argv[1], sys.argv[2:]
-    print(f"{system}: wall-clock share of the training thread per process "
-          f"(py-spy, 25 Hz, 40 s while steady)\n")
+    print(
+        f"{system}: wall-clock share of the training thread per process "
+        f"(py-spy, 25 Hz, 40 s while steady)\n"
+    )
     stage_totals = collections.defaultdict(collections.Counter)
     stage_frames = collections.defaultdict(collections.Counter)
     stage_leaf = collections.defaultdict(collections.Counter)
@@ -80,18 +97,32 @@ def main() -> None:
         stage_totals[stage].update(cats)
         stage_frames[stage].update(frames)
         stage_leaf[stage].update(leaves)
-        print(f"{path.rsplit('/', 1)[-1]:28} {stage}  " + "  ".join(
-            f"{c} {100 * cats[c] / total:4.1f}%" for c in ORDER))
-        print(" " * 37 + "forward = " + "  ".join(
-            f"{c} {100 * cats['fwd:' + c] / total:4.1f}%"
-            for c in [c for c, _ in PARTS] + ["rest"]))
+        print(
+            f"{path.rsplit('/', 1)[-1]:28} {stage}  "
+            + "  ".join(f"{c} {100 * cats[c] / total:4.1f}%" for c in ORDER)
+        )
+        print(
+            " " * 37
+            + "forward = "
+            + "  ".join(
+                f"{c} {100 * cats['fwd:' + c] / total:4.1f}%"
+                for c in [c for c, _ in PARTS] + ["rest"]
+            )
+        )
     for stage in sorted(stage_totals):
         cats = stage_totals[stage]
         total = sum(cats[c] for c in ORDER)
-        print(f"\n== {stage}, all its processes: " + "  ".join(
-            f"{c} {100 * cats[c] / total:.1f}%" for c in ORDER))
-        print("  forward = " + "  ".join(f"{c} {100 * cats['fwd:' + c] / total:.1f}%"
-                                         for c in [c for c, _ in PARTS] + ["rest"]))
+        print(
+            f"\n== {stage}, all its processes: "
+            + "  ".join(f"{c} {100 * cats[c] / total:.1f}%" for c in ORDER)
+        )
+        print(
+            "  forward = "
+            + "  ".join(
+                f"{c} {100 * cats['fwd:' + c] / total:.1f}%"
+                for c in [c for c, _ in PARTS] + ["rest"]
+            )
+        )
         print("  top functions on the stack (inclusive share):")
         for f, n in stage_frames[stage].most_common(30):
             print(f"    {100 * n / total:5.1f}%  {f[:120]}")

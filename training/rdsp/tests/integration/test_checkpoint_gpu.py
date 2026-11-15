@@ -25,8 +25,8 @@ from ray_deepspeed_pipeline.errors import PipelinePoisoned, StepFailed
 from ray_deepspeed_pipeline.stage_group import create_stage_clients
 
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.device_count() < 2,
-    reason="needs 2 CUDA devices")
+    not torch.cuda.is_available() or torch.cuda.device_count() < 2, reason="needs 2 CUDA devices"
+)
 
 VOCAB, DIM, SEQ, ROWS, N_MB = 64, 32, 16, 2, 4
 FLAG = "/tmp/rdsp_fail_apply"
@@ -100,27 +100,38 @@ def faulty_factory(module, conf):
 def ds_config(zero, optimizer="AdamW"):
     """zero: a ZeRO stage, or "2+offload" for ZeRO-2 with the optimizer in
     host memory (SGD there needs zero_force_ds_cpu_optimizer off)."""
-    opt = ({"type": "AdamW", "params": {"lr": 1e-2, "torch_adam": True}}
-           if optimizer == "AdamW" else
-           {"type": "SGD", "params": {"lr": 0.1, "momentum": 0.9}})
+    opt = (
+        {"type": "AdamW", "params": {"lr": 1e-2, "torch_adam": True}}
+        if optimizer == "AdamW"
+        else {"type": "SGD", "params": {"lr": 0.1, "momentum": 0.9}}
+    )
     zero_conf = {"stage": zero}
     if zero == "2+offload":
         zero_conf = {"stage": 2, "offload_optimizer": {"device": "cpu"}}
-    return {"zero_force_ds_cpu_optimizer": False,"train_micro_batch_size_per_gpu": ROWS,
-            "gradient_accumulation_steps": N_MB,
-            "optimizer": opt, "zero_allow_untested_optimizer": True,
-            "scheduler": {"type": "WarmupLR",
-                          "params": {"warmup_min_lr": 0.0, "warmup_max_lr": 1e-2,
-                                     "warmup_num_steps": 10}},
-            "zero_optimization": zero_conf,
-            "steps_per_print": 10**6}
+    return {
+        "zero_force_ds_cpu_optimizer": False,
+        "train_micro_batch_size_per_gpu": ROWS,
+        "gradient_accumulation_steps": N_MB,
+        "optimizer": opt,
+        "zero_allow_untested_optimizer": True,
+        "scheduler": {
+            "type": "WarmupLR",
+            "params": {"warmup_min_lr": 0.0, "warmup_max_lr": 1e-2, "warmup_num_steps": 10},
+        },
+        "zero_optimization": zero_conf,
+        "steps_per_print": 10**6,
+    }
 
 
 @pytest.fixture(scope="module")
 def ray_ctx():
     here = os.path.dirname(os.path.abspath(__file__))
-    ray.init(num_cpus=16, include_dashboard=False, log_to_driver=False,
-             runtime_env={"env_vars": {"PYTHONPATH": here}})
+    ray.init(
+        num_cpus=16,
+        include_dashboard=False,
+        log_to_driver=False,
+        runtime_env={"env_vars": {"PYTHONPATH": here}},
+    )
     yield
     ray.shutdown()
 
@@ -133,10 +144,12 @@ def runtime(ray_ctx, monkeypatch):
         plan = lower(model, pipeline_config, ds_config)
 
         def build():
-            clients = create_stage_clients(model, plan, loss_fn,
-                                           engine_factory=faulty_factory, use_gpu=True)
+            clients = create_stage_clients(
+                model, plan, loss_fn, engine_factory=faulty_factory, use_gpu=True
+            )
             made.append(clients)
             return clients
+
         return PipelineCoordinator(plan, build(), rebuild=build)
 
     monkeypatch.setattr(api, "_coordinator_factory", factory)
@@ -156,10 +169,12 @@ def dataset(n_steps=6):
 def make_engine(seed, zero, training_data=None, optimizer="AdamW"):
     torch.manual_seed(seed)
     engine, _, _, _ = rdsp.initialize(
-        model=TinyLM(), config=ds_config(zero, optimizer), training_data=training_data,
-        pipeline_config=rdsp.PipelineConfig(
-            stages=2, partition=rdsp.UniformTransformerBlocks()),
-        loss_fn=loss_fn)
+        model=TinyLM(),
+        config=ds_config(zero, optimizer),
+        training_data=training_data,
+        pipeline_config=rdsp.PipelineConfig(stages=2, partition=rdsp.UniformTransformerBlocks()),
+        loss_fn=loss_fn,
+    )
     return engine
 
 
@@ -171,10 +186,11 @@ def close(engine):
 
 
 def fixed(step, data):
-    rows = data[step * N_MB * ROWS:(step + 1) * N_MB * ROWS]
+    rows = data[step * N_MB * ROWS : (step + 1) * N_MB * ROWS]
     ids = torch.stack([r[0] for r in rows])
-    return iter([(ids[k * ROWS:(k + 1) * ROWS], ids[k * ROWS:(k + 1) * ROWS])
-                 for k in range(N_MB)])
+    return iter(
+        [(ids[k * ROWS : (k + 1) * ROWS], ids[k * ROWS : (k + 1) * ROWS]) for k in range(N_MB)]
+    )
 
 
 def is_ray(obj):

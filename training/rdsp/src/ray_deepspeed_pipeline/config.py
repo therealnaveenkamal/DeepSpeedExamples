@@ -39,8 +39,10 @@ class MeasuredStages:
             object.__setattr__(self, name, tuple(getattr(self, name)))
         n = len(self.seconds)
         if len(self.cuts) != n - 1 or len(self.peak_gib) != n or len(self.bytes_per_param) != n:
-            raise ValidationError("MeasuredStages: one cut fewer than stages, and one time, "
-                                  "peak and bytes per parameter per stage")
+            raise ValidationError(
+                "MeasuredStages: one cut fewer than stages, and one time, "
+                "peak and bytes per parameter per stage"
+            )
 
 
 @dataclass(frozen=True)
@@ -82,8 +84,9 @@ class ExplicitCuts:
         object.__setattr__(self, "cuts", tuple(self.cuts))
 
 
-PartitionConfig = (UniformTransformerBlocks | UniformSequential | BalancedTransformerBlocks
-                   | ExplicitCuts)
+PartitionConfig = (
+    UniformTransformerBlocks | UniformSequential | BalancedTransformerBlocks | ExplicitCuts
+)
 
 
 @dataclass(frozen=True)
@@ -190,30 +193,39 @@ class PipelineConfig:
             raise ValidationError(f"unsupported schedule {self.schedule!r}; v1 supports '1f1b'")
         if self.microbatches is not None and self.microbatches < 1:
             raise ValidationError(f"microbatches must be positive, got {self.microbatches}")
-        if not isinstance(self.partition, (UniformTransformerBlocks, UniformSequential,
-                                           BalancedTransformerBlocks, ExplicitCuts)):
+        if not isinstance(
+            self.partition,
+            (UniformTransformerBlocks, UniformSequential, BalancedTransformerBlocks, ExplicitCuts),
+        ):
             raise ValidationError(
                 "partition must be a partition policy (UniformTransformerBlocks, "
-                "UniformSequential, BalancedTransformerBlocks, or ExplicitCuts)")
+                "UniformSequential, BalancedTransformerBlocks, or ExplicitCuts)"
+            )
         for override in self.stage_overrides:
             if not isinstance(override, StageOverride):
                 raise ValidationError(
-                    f"stage_overrides entries must be StageOverride, got {type(override)}")
+                    f"stage_overrides entries must be StageOverride, got {type(override)}"
+                )
             if not 0 <= override.stage < self.stages:
                 raise ValidationError(f"StageOverride.stage {override.stage} out of range")
             if override.num_gpus < 1:
                 raise ValidationError(
-                    f"StageOverride.num_gpus must be >= 1, got {override.num_gpus}")
+                    f"StageOverride.num_gpus must be >= 1, got {override.num_gpus}"
+                )
             for knob in ("tp", "sp", "ep"):
                 if getattr(override, knob) < 1:
                     raise ValidationError(
-                        f"StageOverride.{knob} must be >= 1, got {getattr(override, knob)}")
-        if self.colocated_vision is not None and \
-                not isinstance(self.colocated_vision, ColocatedVision):
+                        f"StageOverride.{knob} must be >= 1, got {getattr(override, knob)}"
+                    )
+        if self.colocated_vision is not None and not isinstance(
+            self.colocated_vision, ColocatedVision
+        ):
             raise ValidationError(
-                f"colocated_vision must be a ColocatedVision, got {type(self.colocated_vision)}")
+                f"colocated_vision must be a ColocatedVision, got {type(self.colocated_vision)}"
+            )
         for connection in self.connection_overrides:
             if not isinstance(connection, ConnectionOverride):
                 raise ValidationError(
                     "connection_overrides entries must be ConnectionOverride, "
-                    f"got {type(connection)}")
+                    f"got {type(connection)}"
+                )

@@ -46,18 +46,40 @@ class RemainderAdamW(torch.optim.Optimizer):
     fused pick torch's kernels as in torch.optim.AdamW. A fresh state's
     remainder is 0: the master starts at the bf16 weight, as a copy would."""
 
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=1e-2, *,
-                 foreach=None, fused=None, chunk_numel=CHUNK_NUMEL):
-        super().__init__(params, dict(lr=lr, betas=tuple(betas), eps=eps,
-                                      weight_decay=weight_decay, foreach=foreach, fused=fused))
+    def __init__(
+        self,
+        params,
+        lr=1e-3,
+        betas=(0.9, 0.999),
+        eps=1e-8,
+        weight_decay=1e-2,
+        *,
+        foreach=None,
+        fused=None,
+        chunk_numel=CHUNK_NUMEL,
+    ):
+        super().__init__(
+            params,
+            dict(
+                lr=lr,
+                betas=tuple(betas),
+                eps=eps,
+                weight_decay=weight_decay,
+                foreach=foreach,
+                fused=fused,
+            ),
+        )
         self.chunk_numel = chunk_numel
 
     def _state(self, p, group) -> dict:
         state = self.state[p]
         if not state:
             # where torch.optim.AdamW keeps its step count
-            state["step"] = (torch.zeros((), dtype=torch.float32, device=p.device)
-                             if group["fused"] else torch.tensor(0.0, dtype=torch.float32))
+            state["step"] = (
+                torch.zeros((), dtype=torch.float32, device=p.device)
+                if group["fused"]
+                else torch.tensor(0.0, dtype=torch.float32)
+            )
             state["exp_avg"] = torch.zeros_like(p, dtype=torch.float32)
             state["exp_avg_sq"] = torch.zeros_like(p, dtype=torch.float32)
             state["remainder"] = torch.zeros_like(p, dtype=torch.int16)
@@ -75,19 +97,34 @@ class RemainderAdamW(torch.optim.Optimizer):
                 if p.dtype != torch.bfloat16:
                     raise TypeError(f"RemainderAdamW keeps bf16 parameters, not {p.dtype}")
                 state = self._state(p, group)
-                flat = [t.view(-1) for t in (p, state["remainder"], p.grad,
-                                             state["exp_avg"], state["exp_avg_sq"])]
+                flat = [
+                    t.view(-1)
+                    for t in (p, state["remainder"], p.grad, state["exp_avg"], state["exp_avg_sq"])
+                ]
                 for start in range(0, p.numel(), self.chunk_numel):
                     n = min(self.chunk_numel, p.numel() - start)
                     weight, remainder, grad, exp_avg, exp_avg_sq = (
-                        t.narrow(0, start, n) for t in flat)
+                        t.narrow(0, start, n) for t in flat
+                    )
                     master = join_master(weight, remainder)
                     # each chunk takes the step count before this step; adamw adds 1
                     adamw(
-                        [master], [grad.float()], [exp_avg], [exp_avg_sq], [],
-                        [state["step"].clone()], foreach=group["foreach"], fused=group["fused"],
-                        amsgrad=False, beta1=beta1, beta2=beta2, lr=group["lr"],
-                        weight_decay=group["weight_decay"], eps=group["eps"], maximize=False)
+                        [master],
+                        [grad.float()],
+                        [exp_avg],
+                        [exp_avg_sq],
+                        [],
+                        [state["step"].clone()],
+                        foreach=group["foreach"],
+                        fused=group["fused"],
+                        amsgrad=False,
+                        beta1=beta1,
+                        beta2=beta2,
+                        lr=group["lr"],
+                        weight_decay=group["weight_decay"],
+                        eps=group["eps"],
+                        maximize=False,
+                    )
                     split_master(master, weight, remainder)
                 state["step"] += 1
 

@@ -15,6 +15,7 @@ The log lines read: "stages (blocks): ((0, 3), (3, 9), ...)" (the last one is th
 cut's pipeline) and "measured: MeasuredStages(cuts=(...), seconds=(...), ...)" (the
 calibration steps, which ran the balanced cut).
 """
+
 import ast
 import re
 import sys
@@ -59,8 +60,15 @@ def megatron_cut(blocks: list[int], layers: int) -> tuple[int, int]:
     return best[1]
 
 
-def vision_width(cuts: tuple, seconds: tuple, layers: int, gpus_per_stage: int, gpus: int,
-                 widths=(2, 4, 8), stage_gpus: int | None = None) -> int:
+def vision_width(
+    cuts: tuple,
+    seconds: tuple,
+    layers: int,
+    gpus_per_stage: int,
+    gpus: int,
+    widths=(2, 4, 8),
+    stage_gpus: int | None = None,
+) -> int:
     """The vision-only stage's GPU count. Run 1's middle stages hold decoder blocks only:
     their seconds per block is the block rate; stage 0's time beyond its blocks at that rate
     is the vision encoder's (and the embedding's, which is small)."""

@@ -20,20 +20,43 @@ from ray_deepspeed_pipeline.errors import ValidationError
 NAME = "rdsp_flash_varlen"
 
 
-def varlen_attention_forward(module, query, key, value, attention_mask=None, *, scaling=None,
-                             dropout=0.0, cu_seq_lens_q=None, cu_seq_lens_k=None,
-                             max_length_q=None, max_length_k=None, is_causal=False, **kwargs):
+def varlen_attention_forward(
+    module,
+    query,
+    key,
+    value,
+    attention_mask=None,
+    *,
+    scaling=None,
+    dropout=0.0,
+    cu_seq_lens_q=None,
+    cu_seq_lens_k=None,
+    max_length_q=None,
+    max_length_k=None,
+    is_causal=False,
+    **kwargs,
+):
     """Hugging Face's attention-function signature: query, key and value are
     (1, heads, tokens, head_dim), the packed sequences cu_seq_lens bounds;
     returns ((1, tokens, heads, head_dim), None)."""
     from torch.nn.attention.varlen import varlen_attn
 
     if cu_seq_lens_q is None or attention_mask is not None or dropout:
-        raise ValidationError(f"{NAME} runs packed sequences only: cu_seq_lens, no mask, "
-                              "no dropout")
+        raise ValidationError(
+            f"{NAME} runs packed sequences only: cu_seq_lens, no mask, no dropout"
+        )
     q, k, v = (t[0].transpose(0, 1) for t in (query, key, value))
-    out = varlen_attn(q, k, v, cu_seq_lens_q, cu_seq_lens_k, max_length_q, max_length_k,
-                      scale=scaling, window_size=(-1, 0) if is_causal else (-1, -1))
+    out = varlen_attn(
+        q,
+        k,
+        v,
+        cu_seq_lens_q,
+        cu_seq_lens_k,
+        max_length_q,
+        max_length_k,
+        scale=scaling,
+        window_size=(-1, 0) if is_causal else (-1, -1),
+    )
     return out.unsqueeze(0), None
 
 

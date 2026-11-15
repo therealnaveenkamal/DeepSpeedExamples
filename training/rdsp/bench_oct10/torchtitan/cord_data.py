@@ -45,7 +45,9 @@ class ExportedStepsSource(Configurable):
         self.rows = config.rows_per_step
         self.dp = config.data_parallel
         if (len(self.paths) * self.rows) % self.dp:
-            raise ValueError(f"{len(self.paths) * self.rows} rows do not split over {self.dp} ranks")
+            raise ValueError(
+                f"{len(self.paths) * self.rows} rows do not split over {self.dp} ranks"
+            )
         self._lock = threading.Lock()
         self._cached: tuple[int, list] | None = None
 
@@ -57,8 +59,9 @@ class ExportedStepsSource(Configurable):
             if self._cached is None or self._cached[0] != step:
                 samples = torch.load(self.paths[step], weights_only=False)
                 if len(samples) != self.rows:
-                    raise ValueError(f"{self.paths[step]}: {len(samples)} rows, "
-                                     f"expected {self.rows}")
+                    raise ValueError(
+                        f"{self.paths[step]}: {len(samples)} rows, expected {self.rows}"
+                    )
                 self._cached = (step, samples)
             return self._cached[1]
 

@@ -31,22 +31,34 @@ def per_image_sdpa(q, k, v, cu_q, cu_k, max_q, max_k, *, scale=None, window_size
     assert window_size == (-1, -1) and max_q == max_k
     bounds = [int(x) for x in cu_q]  # int(), not .tolist(): not counted as a sync below
     assert max_q == max(b - a for a, b in zip(bounds, bounds[1:]))
-    out = [F.scaled_dot_product_attention(*(t[a:b].transpose(0, 1) for t in (q, k, v)),
-                                          scale=scale).transpose(0, 1)
-           for a, b in zip(bounds, bounds[1:])]
+    out = [
+        F.scaled_dot_product_attention(
+            *(t[a:b].transpose(0, 1) for t in (q, k, v)), scale=scale
+        ).transpose(0, 1)
+        for a, b in zip(bounds, bounds[1:])
+    ]
     return torch.cat(out)
 
 
 @pytest.fixture
 def cpu_varlen(monkeypatch):
     import torch.nn.attention.varlen as varlen
+
     monkeypatch.setattr(varlen, "varlen_attn", per_image_sdpa)
 
 
 def model(depth=3):
     cfg = transformers.Qwen3_5VisionConfig(
-        depth=depth, hidden_size=32, intermediate_size=64, num_heads=2, out_hidden_size=16,
-        patch_size=4, spatial_merge_size=2, temporal_patch_size=1, num_position_embeddings=16)
+        depth=depth,
+        hidden_size=32,
+        intermediate_size=64,
+        num_heads=2,
+        out_hidden_size=16,
+        patch_size=4,
+        spatial_merge_size=2,
+        temporal_patch_size=1,
+        num_position_embeddings=16,
+    )
     cfg._attn_implementation = "sdpa"
     torch.manual_seed(0)
     m = torch.nn.Module()
@@ -84,8 +96,9 @@ def test_host_reads_do_not_grow_with_depth(cpu_varlen, monkeypatch):
     reads = []
     for name in ("item", "tolist"):
         real = getattr(torch.Tensor, name)
-        monkeypatch.setattr(torch.Tensor, name,
-                            lambda self, _real=real, _n=name: reads.append(_n) or _real(self))
+        monkeypatch.setattr(
+            torch.Tensor, name, lambda self, _real=real, _n=name: reads.append(_n) or _real(self)
+        )
     pixels, grid = images()
 
     def count(depth, varlen):
@@ -114,5 +127,6 @@ def test_stage_workers_register_it_again(monkeypatch):
 
 def test_train_vl_flag():
     import train_vl
+
     assert train_vl.build_parser().parse_args([]).vision_attn == "same"
     assert train_vl.build_parser().parse_args(["--vision-attn", "varlen"]).vision_attn == "varlen"

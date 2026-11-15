@@ -60,11 +60,19 @@ class TimedEngine:
     def step(self):
         out = self._timed("opt", self._e.step)
         torch.cuda.synchronize()
-        self._f.write(json.dumps({
-            "tag": self._tag, "pid": os.getpid(), "step": self._step,
-            "ops": [(k, t, s.elapsed_time(e)) for k, t, s, e in self._ops],
-            "max_alloc": torch.cuda.max_memory_allocated(),
-            "max_reserved": torch.cuda.max_memory_reserved()}) + "\n")
+        self._f.write(
+            json.dumps(
+                {
+                    "tag": self._tag,
+                    "pid": os.getpid(),
+                    "step": self._step,
+                    "ops": [(k, t, s.elapsed_time(e)) for k, t, s, e in self._ops],
+                    "max_alloc": torch.cuda.max_memory_allocated(),
+                    "max_reserved": torch.cuda.max_memory_reserved(),
+                }
+            )
+            + "\n"
+        )
         self._f.flush()
         self._ops.clear()
         self._step += 1
@@ -74,8 +82,10 @@ class TimedEngine:
 
 
 def timed_engine_factory(stage_module, ds_config):
-    return TimedEngine(_deepspeed_engine_factory(stage_module, ds_config),
-                       getattr(stage_module, "bench_tag", "stage"))
+    return TimedEngine(
+        _deepspeed_engine_factory(stage_module, ds_config),
+        getattr(stage_module, "bench_tag", "stage"),
+    )
 
 
 # Fused kernels, to match Megatron's default fusions. Liger replaces Qwen3's
@@ -83,10 +93,13 @@ def timed_engine_factory(stage_module, ds_config):
 # travel with the pickled stage modules, but the rotary patch is a module-level
 # function in transformers, so every stage worker applies it too.
 
+
 def apply_fusions():
     from liger_kernel.transformers import apply_liger_kernel_to_qwen3
-    apply_liger_kernel_to_qwen3(rope=True, rms_norm=True, swiglu=True,
-                                cross_entropy=False, fused_linear_cross_entropy=False)
+
+    apply_liger_kernel_to_qwen3(
+        rope=True, rms_norm=True, swiglu=True, cross_entropy=False, fused_linear_cross_entropy=False
+    )
 
 
 def fused_engine_factory(stage_module, ds_config):
@@ -139,8 +152,11 @@ class ProfiledEngine:
         if self._n == PROF_START:
             torch.cuda.synchronize()
             self._prof = torch.profiler.profile(
-                activities=[torch.profiler.ProfilerActivity.CPU,
-                            torch.profiler.ProfilerActivity.CUDA])
+                activities=[
+                    torch.profiler.ProfilerActivity.CPU,
+                    torch.profiler.ProfilerActivity.CUDA,
+                ]
+            )
             self._prof.__enter__()
             self._t0 = time.perf_counter()
         elif self._n == PROF_STOP and self._prof is not None:
@@ -149,13 +165,21 @@ class ProfiledEngine:
             self._prof.__exit__(None, None, None)
             os.makedirs(OUT, exist_ok=True)
             with open(f"{OUT}/prof_{self._tag}.json", "w") as f:
-                json.dump({"steps": PROF_STOP - PROF_START, "wall_s": wall,
-                           "kernels": kernel_table(self._prof)}, f)
+                json.dump(
+                    {
+                        "steps": PROF_STOP - PROF_START,
+                        "wall_s": wall,
+                        "kernels": kernel_table(self._prof),
+                    },
+                    f,
+                )
             self._prof = None
         return out
 
 
 def fused_prof_engine_factory(stage_module, ds_config):
     apply_fusions()
-    return ProfiledEngine(_deepspeed_engine_factory(stage_module, ds_config),
-                          getattr(stage_module, "bench_tag", "stage"))
+    return ProfiledEngine(
+        _deepspeed_engine_factory(stage_module, ds_config),
+        getattr(stage_module, "bench_tag", "stage"),
+    )

@@ -11,6 +11,7 @@ Writes <out>/varlen.ok and <out>/remainder.ok when a check passes (the queue rea
 
     python gpu_checks.py <exported dir> <Qwen3.5-27B snapshot dir or Hub id> <out dir>
 """
+
 import copy
 import glob
 import json
@@ -26,8 +27,10 @@ EXPORTED, SNAPSHOT, OUT = sys.argv[1:4]
 os.makedirs(OUT, exist_ok=True)
 if not os.path.isdir(SNAPSHOT):  # a Hub id: the cached snapshot
     import huggingface_hub
+
     SNAPSHOT = huggingface_hub.snapshot_download(
-        SNAPSHOT, allow_patterns=["*.json", "*.safetensors", "*.txt", "*.jinja"])
+        SNAPSHOT, allow_patterns=["*.json", "*.safetensors", "*.txt", "*.jinja"]
+    )
 
 
 def gib(n):
@@ -76,8 +79,12 @@ def check_varlen():
     batches = []
     for _ in range(4):
         inputs, _ = next(data)
-        batches.append((torch.cat(inputs["pixel_values"]).cuda().to(torch.bfloat16),
-                        torch.cat(inputs["image_grid_thw"]).cuda()))
+        batches.append(
+            (
+                torch.cat(inputs["pixel_values"]).cuda().to(torch.bfloat16),
+                torch.cat(inputs["image_grid_thw"]).cuda(),
+            )
+        )
 
     def step(encoder, pixels, grid):
         encoder.zero_grad(set_to_none=True)
@@ -89,20 +96,25 @@ def check_varlen():
         out = step(encoder, pixels, grid)
         return out.detach().float(), {n: p.grad.float() for n, p in encoder.named_parameters()}
 
-    report = {"images_per_microbatch": [int(g.shape[0]) for _, g in batches],
-              "patches_per_microbatch": [int(g.prod(-1).sum()) for _, g in batches]}
+    report = {
+        "images_per_microbatch": [int(g.shape[0]) for _, g in batches],
+        "patches_per_microbatch": [int(g.prod(-1).sum()) for _, g in batches],
+    }
     worst_out = worst_grad = 0.0
     for pixels, grid in batches:
         a, ga = run(sdpa, pixels, grid)
         b, gb = run(varlen, pixels, grid)
         worst_out = max(worst_out, float((a - b).norm() / a.norm()))
-        worst_grad = max(worst_grad, max(float((ga[n] - gb[n]).norm() / ga[n].norm().clamp_min(1e-30))
-                                         for n in ga))
+        worst_grad = max(
+            worst_grad,
+            max(float((ga[n] - gb[n]).norm() / ga[n].norm().clamp_min(1e-30)) for n in ga),
+        )
     report["features_rel_diff_max"] = worst_out
     report["grad_rel_diff_max"] = worst_grad
     for name, encoder in (("sdpa", sdpa), ("varlen", varlen)):
-        report[f"{name}_fwd_bwd_ms"] = round(timed(
-            lambda: [step(encoder, p, g) for p, g in batches], repeat=5) / len(batches), 1)
+        report[f"{name}_fwd_bwd_ms"] = round(
+            timed(lambda: [step(encoder, p, g) for p, g in batches], repeat=5) / len(batches), 1
+        )
     # bf16 kernels differ in summation order: a few 1e-3 relative is expected
     report["pass"] = worst_out < 2e-2 and worst_grad < 5e-2
     print("varlen", json.dumps(report), flush=True)
@@ -113,8 +125,9 @@ def check_varlen():
 
 
 def check_remainder():
-    os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT="29561", RANK="0", WORLD_SIZE="1",
-                      LOCAL_RANK="0")
+    os.environ.update(
+        MASTER_ADDR="127.0.0.1", MASTER_PORT="29561", RANK="0", WORLD_SIZE="1", LOCAL_RANK="0"
+    )
     import deepspeed
 
     import train_vl
@@ -125,16 +138,36 @@ def check_remainder():
     width, depth = 8192, 24  # 1.61B parameters
 
     def engine(master):
-        flags = ["--stages", "1", "--stage", "0:gpus=1", "--zero", "1", "--lr", "1e-5",
-                 "--betas", "0.9,0.95", "--rows", "1", "--microbatches", "1",
-                 "--grad-dtype", "bf16", "--fused-adam", "--optimizer-group-numel", "250000000",
-                 "--master-dtype", master]
+        flags = [
+            "--stages",
+            "1",
+            "--stage",
+            "0:gpus=1",
+            "--zero",
+            "1",
+            "--lr",
+            "1e-5",
+            "--betas",
+            "0.9,0.95",
+            "--rows",
+            "1",
+            "--microbatches",
+            "1",
+            "--grad-dtype",
+            "bf16",
+            "--fused-adam",
+            "--optimizer-group-numel",
+            "250000000",
+            "--master-dtype",
+            master,
+        ]
         conf = train_vl.ds_config(train_vl.build_parser().parse_args(flags))
         conf.update(train_micro_batch_size_per_gpu=1, train_batch_size=1)
         torch.manual_seed(0)
         with torch.device("cuda"):
-            model = torch.nn.Sequential(*[torch.nn.Linear(width, width, bias=False)
-                                          for _ in range(depth)]).to(torch.bfloat16)
+            model = torch.nn.Sequential(
+                *[torch.nn.Linear(width, width, bias=False) for _ in range(depth)]
+            ).to(torch.bfloat16)
         return _deepspeed_engine_factory(model, conf)
 
     def train(e, steps=5):
@@ -158,17 +191,24 @@ def check_remainder():
         out = []
         for m in opt.single_partition_of_fp32_groups:
             state = opt.optimizer.state.get(m, {})
-            out.append((join_master(m.detach(), state["remainder"]) if "remainder" in state
-                        else m.detach().float()).cpu())
+            out.append(
+                (
+                    join_master(m.detach(), state["remainder"])
+                    if "remainder" in state
+                    else m.detach().float()
+                ).cpu()
+            )
         return out
 
     report, kept = {"parameters": width * width * depth}, {}
     for master in ("fp32", "remainder"):
         e = engine(master)
         times, peaks = train(e)
-        report[master] = {"held_gib": gib(torch.cuda.memory_allocated()),
-                          "step_peak_gib": gib(max(peaks)),
-                          "step_ms_median": round(sorted(times)[len(times) // 2], 1)}
+        report[master] = {
+            "held_gib": gib(torch.cuda.memory_allocated()),
+            "step_peak_gib": gib(max(peaks)),
+            "step_ms_median": round(sorted(times)[len(times) // 2], 1),
+        }
         kept[master] = masters(e)
         del e
         torch.cuda.empty_cache()
@@ -188,5 +228,6 @@ for check in (check_varlen, check_remainder):
         check()
     except Exception as e:  # report and go on: the queue drops a failed fix's flag
         import traceback
+
         traceback.print_exc()
         print(f"{check.__name__} FAILED: {e!r}", flush=True)

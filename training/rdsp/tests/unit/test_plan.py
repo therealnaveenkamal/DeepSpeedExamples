@@ -17,10 +17,17 @@ from ray_deepspeed_pipeline.plan import (
 
 def make_plan(microbatches=4):
     stages = tuple(
-        StageSpec(index=i, parameter_names=(f"blocks.{i}.fc.weight",),
-                  block_start=i, block_stop=i + 1, num_gpus=1,
-                  ds_config_json="{}", process_group_tag=f"stage{i}")
-        for i in range(2))
+        StageSpec(
+            index=i,
+            parameter_names=(f"blocks.{i}.fc.weight",),
+            block_start=i,
+            block_stop=i + 1,
+            num_gpus=1,
+            ds_config_json="{}",
+            process_group_tag=f"stage{i}",
+        )
+        for i in range(2)
+    )
     return ExecutionPlan(
         schema_version=SCHEMA_VERSION,
         global_microbatches=microbatches,

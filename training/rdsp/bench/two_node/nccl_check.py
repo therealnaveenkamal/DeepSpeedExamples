@@ -5,6 +5,7 @@ through the aws-ofi-nccl plugin, bench/two_node/efa_env.sh). Start on both nodes
 
 Rank 0 prints each size's time and bus bandwidth (2 (n-1)/n x bytes / time). Over TCP instead of
 EFA the large sizes come out an order of magnitude lower."""
+
 import os
 import time
 
@@ -26,8 +27,11 @@ for mib in (16, 256, 1024):
     seconds = (time.perf_counter() - start) / n
     bus = 2 * (world - 1) / world * x.numel() * x.element_size() / seconds / 1e9
     if rank == 0:
-        print(f"all_reduce {mib} MiB over {world} GPUs: {seconds * 1e3:.2f} ms, "
-              f"bus bandwidth {bus:.1f} GB/s", flush=True)
+        print(
+            f"all_reduce {mib} MiB over {world} GPUs: {seconds * 1e3:.2f} ms, "
+            f"bus bandwidth {bus:.1f} GB/s",
+            flush=True,
+        )
 # all-to-all, as expert parallelism sends tokens: each rank sends 1/world of the buffer to every
 # rank. Bus bandwidth (n-1)/n x bytes / time, as nccl-tests reports it.
 for mib in (16, 256, 1024):
@@ -43,6 +47,9 @@ for mib in (16, 256, 1024):
     seconds = (time.perf_counter() - start) / n
     bus = (world - 1) / world * x.numel() * x.element_size() / seconds / 1e9
     if rank == 0:
-        print(f"all_to_all {mib} MiB per GPU over {world} GPUs: {seconds * 1e3:.2f} ms, "
-              f"bus bandwidth {bus:.1f} GB/s", flush=True)
+        print(
+            f"all_to_all {mib} MiB per GPU over {world} GPUs: {seconds * 1e3:.2f} ms, "
+            f"bus bandwidth {bus:.1f} GB/s",
+            flush=True,
+        )
 dist.destroy_process_group()

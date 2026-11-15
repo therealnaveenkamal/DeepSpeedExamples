@@ -6,14 +6,17 @@ sees its GPU as device 0, so its stage 0 processes are the ones that run the vis
 
     python3 nsys_stage_busy.py <report.sqlite> [bridge|rdsp]
 """
+
 import collections
 import sqlite3
 import sys
 
 db = sqlite3.connect(sys.argv[1])
 system = sys.argv[2] if len(sys.argv) > 2 else "rdsp"
-q = ("select k.globalPid / 16777216 % 16777216, k.deviceId, k.start, k.end, s.value "
-     "from CUPTI_ACTIVITY_KIND_KERNEL k join StringIds s on s.id = k.shortName order by 1, 3")
+q = (
+    "select k.globalPid / 16777216 % 16777216, k.deviceId, k.start, k.end, s.value "
+    "from CUPTI_ACTIVITY_KIND_KERNEL k join StringIds s on s.id = k.shortName order by 1, 3"
+)
 procs = collections.defaultdict(lambda: {"iv": [], "cat": collections.Counter(), "dev": None})
 lo, hi = None, None
 for pid, dev, s, e, name in db.execute(q):
@@ -21,8 +24,15 @@ for pid, dev, s, e, name in db.execute(q):
     p["iv"].append((s, e))
     p["dev"] = dev
     n = name.lower()
-    cat = ("nccl" if "nccl" in n else "conv" if "conv" in n else
-           "matmul" if any(x in n for x in ("gemm", "nvjet", "cutlass", "xmma", "sm90_", "cublas")) else "other")
+    cat = (
+        "nccl"
+        if "nccl" in n
+        else "conv"
+        if "conv" in n
+        else "matmul"
+        if any(x in n for x in ("gemm", "nvjet", "cutlass", "xmma", "sm90_", "cublas"))
+        else "other"
+    )
     p["cat"][cat] += e - s
     lo = s if lo is None else min(lo, s)
     hi = e if hi is None else max(hi, e)
@@ -51,5 +61,7 @@ for pid, p in procs.items():
     rows.append((stage, p["dev"], pid, p))
 for stage, dev, pid, p in sorted(rows, key=lambda r: (r[0], r[1], r[2])):
     c = p["cat"]
-    print(f"{stage:5d}  {dev:3d}  {len(p['iv']):8d}  {busy(p['iv']) / 1e9:10.1f}  {c['matmul'] / 1e9:6.1f}"
-          f"  {c['nccl'] / 1e9:6.1f}  {c['conv'] / 1e9:6.2f}  {c['other'] / 1e9:6.1f}")
+    print(
+        f"{stage:5d}  {dev:3d}  {len(p['iv']):8d}  {busy(p['iv']) / 1e9:10.1f}  {c['matmul'] / 1e9:6.1f}"
+        f"  {c['nccl'] / 1e9:6.1f}  {c['conv'] / 1e9:6.2f}  {c['other'] / 1e9:6.1f}"
+    )

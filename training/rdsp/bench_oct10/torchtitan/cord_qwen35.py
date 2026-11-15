@@ -73,9 +73,19 @@ def qwen35_27b_cord_tp4pp2() -> Trainer.Config:
             loss_fn=CrossEntropyLoss.Config(global_vocab_size=decoder_vocab_size(model_config)),
         ),
         optim=Optim.Config(
-            optimizer=OptimizersContainer.Config(optimizers=[AdamW.Config(
-                pattern=r".*", lr=1e-5, betas=(0.9, 0.95), eps=1e-8, weight_decay=0.0,
-                fused=True, moment_dtype="parameter")]),
+            optimizer=OptimizersContainer.Config(
+                optimizers=[
+                    AdamW.Config(
+                        pattern=r".*",
+                        lr=1e-5,
+                        betas=(0.9, 0.95),
+                        eps=1e-8,
+                        weight_decay=0.0,
+                        fused=True,
+                        moment_dtype="parameter",
+                    )
+                ]
+            ),
             lr_scheduler=LRSchedulersContainer.Config(warmup_steps=0, decay_ratio=0.0),
             # 0 would scale every gradient by 0; inf leaves them unchanged
             max_norm=float("inf"),
@@ -132,15 +142,17 @@ def qwen35_27b_cord_tp4dp2_rc() -> Trainer.Config:
     return config
 
 
-def _with_layout(config: Trainer.Config, parallelism: ParallelismConfig,
-                 data_parallel: int, flavor: str = "27B") -> Trainer.Config:
+def _with_layout(
+    config: Trainer.Config, parallelism: ParallelismConfig, data_parallel: int, flavor: str = "27B"
+) -> Trainer.Config:
     """config on another layout (and model flavor): the model rebuilt for it, Bridge's rows
     dealt to the data-parallel copies as Megatron deals them, ROWS_PER_STEP rows of 2048
     tokens a step."""
     config.parallelism = parallelism
     config.model = build_model_config(flavor, seq_len=SEQ, parallelism=parallelism)
     config.loss = ChunkedLossWrapper.Config(
-        loss_fn=CrossEntropyLoss.Config(global_vocab_size=decoder_vocab_size(config.model)))
+        loss_fn=CrossEntropyLoss.Config(global_vocab_size=decoder_vocab_size(config.model))
+    )
     config.dataloader = exported_dataloader(os.environ["EXPORTED"], data_parallel=data_parallel)
     config.training.num_tokens_per_train_step = ROWS_PER_STEP * SEQ
     return config
@@ -150,14 +162,18 @@ def qwen35_27b_cord_tp2pp2dp2() -> Trainer.Config:
     """TP2 x PP2 x data parallel 2 (FSDP over the 2 copies), as Bridge and rdsp ran this
     layout: 32 pipeline microbatches of one row per copy, the vision encoder on stage 0,
     layers 32 | 32 (TorchTitan's default split). No recompute: a fit check."""
-    return _with_layout(qwen35_27b_cord_tp4pp2(), ParallelismConfig(
-        data_parallel_shard_degree=2,
-        tensor_parallel_degree=2,
-        enable_sequence_parallel=True,
-        pipeline_parallel_degree=2,
-        pipeline_parallel_schedule="1F1B",
-        num_pp_microbatches=ROWS_PER_STEP // 2,
-    ), data_parallel=2)
+    return _with_layout(
+        qwen35_27b_cord_tp4pp2(),
+        ParallelismConfig(
+            data_parallel_shard_degree=2,
+            tensor_parallel_degree=2,
+            enable_sequence_parallel=True,
+            pipeline_parallel_degree=2,
+            pipeline_parallel_schedule="1F1B",
+            num_pp_microbatches=ROWS_PER_STEP // 2,
+        ),
+        data_parallel=2,
+    )
 
 
 def qwen35_27b_cord_tp2pp2dp2_rc() -> Trainer.Config:
@@ -172,14 +188,18 @@ def qwen35_27b_cord_tp2pp4() -> Trainer.Config:
     microbatches of one row, the vision encoder on stage 0, layers 16 | 17 | 16 | 15
     (TorchTitan's default split: the embedding and the output layer each count as one
     layer). No recompute: a fit check."""
-    return _with_layout(qwen35_27b_cord_tp4pp2(), ParallelismConfig(
-        data_parallel_shard_degree=1,
-        tensor_parallel_degree=2,
-        enable_sequence_parallel=True,
-        pipeline_parallel_degree=4,
-        pipeline_parallel_schedule="1F1B",
-        num_pp_microbatches=ROWS_PER_STEP,
-    ), data_parallel=1)
+    return _with_layout(
+        qwen35_27b_cord_tp4pp2(),
+        ParallelismConfig(
+            data_parallel_shard_degree=1,
+            tensor_parallel_degree=2,
+            enable_sequence_parallel=True,
+            pipeline_parallel_degree=4,
+            pipeline_parallel_schedule="1F1B",
+            num_pp_microbatches=ROWS_PER_STEP,
+        ),
+        data_parallel=1,
+    )
 
 
 def qwen35_27b_cord_tp2pp4_rc() -> Trainer.Config:
@@ -195,10 +215,14 @@ def qwen35_27b_cord_fsdp8() -> Trainer.Config:
     gathered whole just before it runs. 8 accumulation steps of one row per GPU per step:
     64 rows, Bridge's rows dealt to the 8 copies as Megatron deals them. No recompute: a
     fit check."""
-    return _with_layout(qwen35_27b_cord_tp4pp2(), ParallelismConfig(
-        data_parallel_shard_degree=8,
-        tensor_parallel_degree=1,
-    ), data_parallel=8)
+    return _with_layout(
+        qwen35_27b_cord_tp4pp2(),
+        ParallelismConfig(
+            data_parallel_shard_degree=8,
+            tensor_parallel_degree=1,
+        ),
+        data_parallel=8,
+    )
 
 
 def qwen35_27b_cord_fsdp8_rc() -> Trainer.Config:
@@ -212,10 +236,14 @@ def qwen35_27b_cord_fsdp16_rc() -> Trainer.Config:
     """Two nodes: FSDP over all 16 GPUs (dp_shard 16), every block recomputed (FullAC), as
     qwen35_27b_cord_fsdp8_rc on one node. Run with ROWS=128: 8 accumulation steps of one row
     per GPU per step, the rows dealt to the 16 copies as Megatron deals them."""
-    config = _with_layout(qwen35_27b_cord_tp4pp2(), ParallelismConfig(
-        data_parallel_shard_degree=16,
-        tensor_parallel_degree=1,
-    ), data_parallel=16)
+    config = _with_layout(
+        qwen35_27b_cord_tp4pp2(),
+        ParallelismConfig(
+            data_parallel_shard_degree=16,
+            tensor_parallel_degree=1,
+        ),
+        data_parallel=16,
+    )
     config.activation_checkpoint = FullAC.Config()
     return config
 
@@ -236,10 +264,17 @@ def qwen35_35b_a3b_cord_fsdp16() -> Trainer.Config:
     every expert's weights and each layer is gathered whole before it runs. Run with ROWS=128
     and HF_ASSETS at the 35B-A3B snapshot: 8 accumulation steps of one row per GPU per step.
     No router load-balancing loss. No recompute: a fit check."""
-    return _without_router_balancing_loss(_with_layout(qwen35_27b_cord_tp4pp2(), ParallelismConfig(
-        data_parallel_shard_degree=16,
-        tensor_parallel_degree=1,
-    ), data_parallel=16, flavor="35B-A3B"))
+    return _without_router_balancing_loss(
+        _with_layout(
+            qwen35_27b_cord_tp4pp2(),
+            ParallelismConfig(
+                data_parallel_shard_degree=16,
+                tensor_parallel_degree=1,
+            ),
+            data_parallel=16,
+            flavor="35B-A3B",
+        )
+    )
 
 
 def qwen35_35b_a3b_cord_fsdp16_rc() -> Trainer.Config:
@@ -255,11 +290,18 @@ def qwen35_35b_a3b_cord_fsdp16_ep8() -> Trainer.Config:
     weights are FSDP-split over the 2 nodes, everything else over all 16 GPUs. The model is
     built for the EP layout (the flavor reads it). No router load-balancing loss. No
     recompute: a fit check."""
-    return _without_router_balancing_loss(_with_layout(qwen35_27b_cord_tp4pp2(), ParallelismConfig(
-        data_parallel_shard_degree=16,
-        tensor_parallel_degree=1,
-        expert_parallel_degree=8,
-    ), data_parallel=16, flavor="35B-A3B"))
+    return _without_router_balancing_loss(
+        _with_layout(
+            qwen35_27b_cord_tp4pp2(),
+            ParallelismConfig(
+                data_parallel_shard_degree=16,
+                tensor_parallel_degree=1,
+                expert_parallel_degree=8,
+            ),
+            data_parallel=16,
+            flavor="35B-A3B",
+        )
+    )
 
 
 def qwen35_35b_a3b_cord_fsdp16_ep8_rc() -> Trainer.Config:
@@ -288,7 +330,9 @@ def qwen35_27b_cord_fsdp8_ffnrc_bf16() -> Trainer.Config:
     region kept except feed_forward.*) and gradients reduced in bf16. Between no recompute
     (out of memory at 73 GiB) and FullAC."""
     config = _bf16_reduce(qwen35_27b_cord_fsdp8())
-    config.activation_checkpoint = RegionAC.Config(save_regions=["*"], recompute_regions=["feed_forward.*"])
+    config.activation_checkpoint = RegionAC.Config(
+        save_regions=["*"], recompute_regions=["feed_forward.*"]
+    )
     return config
 
 
@@ -297,20 +341,27 @@ def qwen35_35b_a3b_cord_fsdp16_ep8_bf16() -> Trainer.Config:
     return _bf16_reduce(qwen35_35b_a3b_cord_fsdp16_ep8())
 
 
-
 def qwen35_27b_cord_fsdp16_bf16() -> Trainer.Config:
     """Two nodes, FSDP over all 16 GPUs, no recompute, gradients reduced in bf16 (ROWS=128).
     Half the state per GPU of FSDP8, so it may fit where FSDP8 without recompute did not."""
-    return _bf16_reduce(_with_layout(qwen35_27b_cord_tp4pp2(), ParallelismConfig(
-        data_parallel_shard_degree=16,
-        tensor_parallel_degree=1,
-    ), data_parallel=16))
+    return _bf16_reduce(
+        _with_layout(
+            qwen35_27b_cord_tp4pp2(),
+            ParallelismConfig(
+                data_parallel_shard_degree=16,
+                tensor_parallel_degree=1,
+            ),
+            data_parallel=16,
+        )
+    )
 
 
 def qwen35_27b_cord_fsdp16_ffnrc_bf16() -> Trainer.Config:
     """qwen35_27b_cord_fsdp16_bf16 with only each block's MLP recomputed (RegionAC)."""
     config = qwen35_27b_cord_fsdp16_bf16()
-    config.activation_checkpoint = RegionAC.Config(save_regions=["*"], recompute_regions=["feed_forward.*"])
+    config.activation_checkpoint = RegionAC.Config(
+        save_regions=["*"], recompute_regions=["feed_forward.*"]
+    )
     return config
 
 
@@ -324,11 +375,18 @@ def qwen35_35b_a3b_cord_fsdp8_ep8_rc_bf16() -> Trainer.Config:
     GPU), every block recomputed, gradients reduced in bf16, no router load-balancing loss
     (ROWS=64). TorchTitan keeps fp32 weights and Adam moments: ~16 bytes a parameter, about
     70 GB a GPU before activations, so this is a fit check."""
-    config = _without_router_balancing_loss(_with_layout(qwen35_27b_cord_tp4pp2(), ParallelismConfig(
-        data_parallel_shard_degree=8,
-        tensor_parallel_degree=1,
-        expert_parallel_degree=8,
-    ), data_parallel=8, flavor="35B-A3B"))
+    config = _without_router_balancing_loss(
+        _with_layout(
+            qwen35_27b_cord_tp4pp2(),
+            ParallelismConfig(
+                data_parallel_shard_degree=8,
+                tensor_parallel_degree=1,
+                expert_parallel_degree=8,
+            ),
+            data_parallel=8,
+            flavor="35B-A3B",
+        )
+    )
     config.activation_checkpoint = FullAC.Config()
     return _bf16_reduce(config)
 
@@ -359,8 +417,11 @@ def _from_dcp(config: Trainer.Config) -> Trainer.Config:
     embedding or the output layer on every pipeline stage (state_dict_adapter.py from_hf), so a
     middle stage of 3 or more stages cannot load the HF files."""
     config.checkpointer = CheckpointManager.Config(
-        initial_load_in_hf=False, initial_load_path=os.environ["TT_DCP"], load_only=True,
-        initial_load_model_only=True)
+        initial_load_in_hf=False,
+        initial_load_path=os.environ["TT_DCP"],
+        load_only=True,
+        initial_load_model_only=True,
+    )
     return config
 
 
@@ -368,14 +429,18 @@ def qwen35_27b_cord_pp8_rc() -> Trainer.Config:
     """TP1 x PP8 on one node, 1F1B, 64 microbatches of one row, at rdsp's measured cut
     (PP8_CUT_27B), every block recomputed (FullAC), gradients reduced in bf16 (no data
     parallel here, so no reduce), weights from DCP."""
-    config = _with_layout(qwen35_27b_cord_tp4pp2(), ParallelismConfig(
-        data_parallel_shard_degree=1,
-        tensor_parallel_degree=1,
-        pipeline_parallel_degree=8,
-        pipeline_parallel_schedule="1F1B",
-        num_pp_microbatches=ROWS_PER_STEP,
-        pipeline_parallel_module_fqns_per_model_part=_module_split(PP8_CUT_27B),
-    ), data_parallel=1)
+    config = _with_layout(
+        qwen35_27b_cord_tp4pp2(),
+        ParallelismConfig(
+            data_parallel_shard_degree=1,
+            tensor_parallel_degree=1,
+            pipeline_parallel_degree=8,
+            pipeline_parallel_schedule="1F1B",
+            num_pp_microbatches=ROWS_PER_STEP,
+            pipeline_parallel_module_fqns_per_model_part=_module_split(PP8_CUT_27B),
+        ),
+        data_parallel=1,
+    )
     config.activation_checkpoint = FullAC.Config()
     return _from_dcp(_bf16_reduce(config))
 
@@ -383,14 +448,18 @@ def qwen35_27b_cord_pp8_rc() -> Trainer.Config:
 def qwen35_27b_cord_pp8dp2_rc() -> Trainer.Config:
     """Two nodes (ROWS=128): PP8 x FSDP over 2 copies, 64 microbatches of one row per copy,
     otherwise as qwen35_27b_cord_pp8_rc."""
-    config = _with_layout(qwen35_27b_cord_tp4pp2(), ParallelismConfig(
-        data_parallel_shard_degree=2,
-        tensor_parallel_degree=1,
-        pipeline_parallel_degree=8,
-        pipeline_parallel_schedule="1F1B",
-        num_pp_microbatches=ROWS_PER_STEP // 2,
-        pipeline_parallel_module_fqns_per_model_part=_module_split(PP8_CUT_27B),
-    ), data_parallel=2)
+    config = _with_layout(
+        qwen35_27b_cord_tp4pp2(),
+        ParallelismConfig(
+            data_parallel_shard_degree=2,
+            tensor_parallel_degree=1,
+            pipeline_parallel_degree=8,
+            pipeline_parallel_schedule="1F1B",
+            num_pp_microbatches=ROWS_PER_STEP // 2,
+            pipeline_parallel_module_fqns_per_model_part=_module_split(PP8_CUT_27B),
+        ),
+        data_parallel=2,
+    )
     config.activation_checkpoint = FullAC.Config()
     return _from_dcp(_bf16_reduce(config))
 

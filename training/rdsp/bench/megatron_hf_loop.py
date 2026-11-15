@@ -36,11 +36,19 @@ p.add_argument("--data", required=True)
 p.add_argument("--steps", type=int, default=300)
 p.add_argument("--lr", type=float, default=1e-5)
 p.add_argument("--out", required=True)
-p.add_argument("--grad_bf16", type=int, default=0,
-               help="sum gradients across microbatches in bf16 (--grad-reduce-in-bf16), "
-                    "as DeepSpeed ZeRO-0 bf16 does; Megatron's default sums in fp32")
-p.add_argument("--ce_impl", default="native", choices=["native", "te"],
-               help="Megatron's fused cross-entropy implementation")
+p.add_argument(
+    "--grad_bf16",
+    type=int,
+    default=0,
+    help="sum gradients across microbatches in bf16 (--grad-reduce-in-bf16), "
+    "as DeepSpeed ZeRO-0 bf16 does; Megatron's default sums in fp32",
+)
+p.add_argument(
+    "--ce_impl",
+    default="native",
+    choices=["native", "te"],
+    help="Megatron's fused cross-entropy implementation",
+)
 p.add_argument("--prof_out", default="", help="torch.profiler kernel table for steps [20, 30)")
 p.add_argument("--layout", default="", help="Megatron layer layout, e.g. PP=8: 'Et*4|...|t*3,L'")
 a = p.parse_args()
@@ -60,26 +68,48 @@ _, M, B, S1 = X.shape
 S = S1 - 1
 
 cfg = TransformerConfig(
-    num_layers=L, hidden_size=H, ffn_hidden_size=FFN, num_attention_heads=HEADS,
-    num_query_groups=GROUPS, kv_channels=HD, normalization="RMSNorm", layernorm_epsilon=1e-6,
-    gated_linear_unit=True, activation_func=F.silu, add_bias_linear=False, add_qkv_bias=False,
-    qk_layernorm=True, hidden_dropout=0.0, attention_dropout=0.0,
-    bf16=True, params_dtype=torch.bfloat16, pipeline_dtype=torch.bfloat16,
+    num_layers=L,
+    hidden_size=H,
+    ffn_hidden_size=FFN,
+    num_attention_heads=HEADS,
+    num_query_groups=GROUPS,
+    kv_channels=HD,
+    normalization="RMSNorm",
+    layernorm_epsilon=1e-6,
+    gated_linear_unit=True,
+    activation_func=F.silu,
+    add_bias_linear=False,
+    add_qkv_bias=False,
+    qk_layernorm=True,
+    hidden_dropout=0.0,
+    attention_dropout=0.0,
+    bf16=True,
+    params_dtype=torch.bfloat16,
+    pipeline_dtype=torch.bfloat16,
     pipeline_model_parallel_size=pp,
     pipeline_model_parallel_layout=a.layout or None,
     # Megatron's standard fusions (pretrain_gpt.py defaults); rdsp runs the
     # matching Liger kernels (RoPE, RMSNorm, SwiGLU, cross-entropy) and fused
     # Adam. Weight-gradient accumulation fusion has no rdsp equivalent;
     # Megatron keeps it.
-    apply_rope_fusion=True, bias_activation_fusion=True,
-    cross_entropy_loss_fusion=True, cross_entropy_fusion_impl=a.ce_impl,
-    gradient_accumulation_fusion=True)
+    apply_rope_fusion=True,
+    bias_activation_fusion=True,
+    cross_entropy_loss_fusion=True,
+    cross_entropy_fusion_impl=a.ce_impl,
+    gradient_accumulation_fusion=True,
+)
 model = GPTModel(
     config=cfg,
     transformer_layer_spec=get_gpt_layer_with_transformer_engine_spec(qk_layernorm=True),
-    vocab_size=V, max_sequence_length=40960, pre_process=first, post_process=last,
-    share_embeddings_and_output_weights=False, position_embedding_type="rope",
-    rotary_percent=1.0, rotary_base=1000000).cuda()
+    vocab_size=V,
+    max_sequence_length=40960,
+    pre_process=first,
+    post_process=last,
+    share_embeddings_and_output_weights=False,
+    position_embedding_type="rope",
+    rotary_percent=1.0,
+    rotary_base=1000000,
+).cuda()
 
 hf = load_file(os.path.join(a.hf, "model.safetensors"))
 params = dict(model.named_parameters())
@@ -111,8 +141,10 @@ for i, layer in enumerate(model.decoder.layers):
     put(loc + "self_attention.q_layernorm.weight", hf[pre + "self_attn.q_norm.weight"])
     put(loc + "self_attention.k_layernorm.weight", hf[pre + "self_attn.k_norm.weight"])
     put(loc + "self_attention.linear_proj.weight", hf[pre + "self_attn.o_proj.weight"])
-    put(loc + "mlp.linear_fc1.weight", torch.cat([hf[pre + "mlp.gate_proj.weight"],
-                                                  hf[pre + "mlp.up_proj.weight"]], 0))
+    put(
+        loc + "mlp.linear_fc1.weight",
+        torch.cat([hf[pre + "mlp.gate_proj.weight"], hf[pre + "mlp.up_proj.weight"]], 0),
+    )
     put(loc + "mlp.linear_fc1.layer_norm_weight", hf[pre + "post_attention_layernorm.weight"])
     put(loc + "mlp.linear_fc2.weight", hf[pre + "mlp.down_proj.weight"])
 missing = set(params) - written
@@ -123,16 +155,37 @@ for layer in model.decoder.layers:
     mine[layer.layer_number - 1] += 1
 torch.distributed.all_reduce(mine)
 assert bool((mine == 1).all()), f"layer coverage {mine.tolist()}"
-print(f"rank {torch.distributed.get_rank()}: layers "
-      f"{[layer.layer_number - 1 for layer in model.decoder.layers]}", flush=True)
+print(
+    f"rank {torch.distributed.get_rank()}: layers "
+    f"{[layer.layer_number - 1 for layer in model.decoder.layers]}",
+    flush=True,
+)
 del hf
 
-ddp = DistributedDataParallel(config=cfg, ddp_config=DistributedDataParallelConfig(
-    grad_reduce_in_fp32=not a.grad_bf16, overlap_grad_reduce=False,
-    use_distributed_optimizer=False), module=model)
-opt = get_megatron_optimizer(OptimizerConfig(
-    optimizer="adam", lr=a.lr, min_lr=a.lr, weight_decay=0.0, adam_beta1=0.9, adam_beta2=0.999,
-    adam_eps=1e-8, clip_grad=0.0, bf16=True, use_distributed_optimizer=False), [ddp])
+ddp = DistributedDataParallel(
+    config=cfg,
+    ddp_config=DistributedDataParallelConfig(
+        grad_reduce_in_fp32=not a.grad_bf16,
+        overlap_grad_reduce=False,
+        use_distributed_optimizer=False,
+    ),
+    module=model,
+)
+opt = get_megatron_optimizer(
+    OptimizerConfig(
+        optimizer="adam",
+        lr=a.lr,
+        min_lr=a.lr,
+        weight_decay=0.0,
+        adam_beta1=0.9,
+        adam_beta2=0.999,
+        adam_eps=1e-8,
+        clip_grad=0.0,
+        bf16=True,
+        use_distributed_optimizer=False,
+    ),
+    [ddp],
+)
 # printed so each run's log records which gradient-summing precision it used
 print(f"main_grad dtype: {next(p for p in model.parameters()).main_grad.dtype}", flush=True)
 for group in opt.param_groups:
@@ -158,6 +211,7 @@ def forward_step(it, mdl):
         # clone: Megatron divides `loss` by num_microbatches IN PLACE afterwards,
         # and a detached view would share that storage (logged value /M)
         return loss, {"lm loss": loss.detach().clone()}
+
     return out, loss_func
 
 
@@ -168,8 +222,9 @@ prof, t_prof = None, 0.0
 for step in range(a.steps):
     if a.prof_out and step == 20:  # same window and tool as bench_hooks.ProfiledEngine
         torch.cuda.synchronize()
-        prof = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
-                                                  torch.profiler.ProfilerActivity.CUDA])
+        prof = torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
+        )
         prof.__enter__()
         t_prof = time.perf_counter()
     if prof is not None and step == 30:
@@ -178,6 +233,7 @@ for step in range(a.steps):
         prof.__exit__(None, None, None)
         if torch.distributed.get_rank() == 0:
             from bench_hooks import kernel_table
+
             with open(a.prof_out, "w") as f:
                 json.dump({"steps": 10, "wall_s": wall, "kernels": kernel_table(prof)}, f)
         prof = None
@@ -185,21 +241,41 @@ for step in range(a.steps):
     opt.zero_grad()
     torch.cuda.synchronize()
     t0 = time.perf_counter()
-    out = fb(forward_step_func=forward_step, data_iterator=batches(step), model=ddp,
-             num_microbatches=M, seq_length=S, micro_batch_size=B, forward_only=False)
+    out = fb(
+        forward_step_func=forward_step,
+        data_iterator=batches(step),
+        model=ddp,
+        num_microbatches=M,
+        seq_length=S,
+        micro_batch_size=B,
+        forward_only=False,
+    )
     opt.step()
     torch.cuda.synchronize()
     times.append(time.perf_counter() - t0)
     if last:
         losses.append(sum(float(d["lm loss"]) for d in out) / M)
         if step % 25 == 0:
-            print(f"megatron step {step} loss {losses[-1]:.4f} {times[-1] * 1000:.0f} ms",
-                  flush=True)
+            print(
+                f"megatron step {step} loss {losses[-1]:.4f} {times[-1] * 1000:.0f} ms", flush=True
+            )
 
 if last:
     with open(a.out, "w") as f:
-        json.dump({"system": "megatron", "pp": pp, "m": M, "b": B, "seq": S, "layout": a.layout,
-                   "grad_bf16": a.grad_bf16, "ce_impl": a.ce_impl,
-                   "loss": losses, "step_s": times}, f)
+        json.dump(
+            {
+                "system": "megatron",
+                "pp": pp,
+                "m": M,
+                "b": B,
+                "seq": S,
+                "layout": a.layout,
+                "grad_bf16": a.grad_bf16,
+                "ce_impl": a.ce_impl,
+                "loss": losses,
+                "step_s": times,
+            },
+            f,
+        )
 torch.distributed.barrier()
 torch.distributed.destroy_process_group()

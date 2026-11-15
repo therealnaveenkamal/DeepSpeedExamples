@@ -28,7 +28,10 @@ BASELINE_ROW = SupportRow(
     dtype="bf16",
     stages=2,
     gpus_per_stage=1,
-    dp=1, tp=1, ep=1, sp=1,
+    dp=1,
+    tp=1,
+    ep=1,
+    sp=1,
     zero_stage=0,
     schedule="1f1b",
     boundaries="identity",
@@ -67,59 +70,88 @@ _PARITY_EVIDENCE = (
 
 HETEROGENEOUS_ROWS = (
     HeterogeneousRow(
-        "static-boundary", "replicate<->shard StageConnection conversion",
+        "static-boundary",
+        "replicate<->shard StageConnection conversion",
         ("1 GPU", "dp=2", "1 GPU"),
         supported=True,
-        evidence=_PARITY_EVIDENCE.format(row="static-boundary")),
+        evidence=_PARITY_EVIDENCE.format(row="static-boundary"),
+    ),
     HeterogeneousRow(
-        "resource-mesh", "differing per-stage GPU counts and meshes",
+        "resource-mesh",
+        "differing per-stage GPU counts and meshes",
         ("dp=2", "dp=4", "dp=2"),
         supported=True,
-        evidence=_PARITY_EVIDENCE.format(row="resource-mesh")),
+        evidence=_PARITY_EVIDENCE.format(row="resource-mesh"),
+    ),
     HeterogeneousRow(
-        "dp-zero", "differing per-stage DP degrees and ZeRO stages",
+        "dp-zero",
+        "differing per-stage DP degrees and ZeRO stages",
         ("dp=4 ZeRO-2", "dp=2 ZeRO-1", "dp=2 ZeRO-0"),
         supported=True,
-        evidence=_PARITY_EVIDENCE.format(row="dp-zero")),
+        evidence=_PARITY_EVIDENCE.format(row="dp-zero"),
+    ),
     HeterogeneousRow(
-        "autotp", "stage-local AutoTP",
+        "autotp",
+        "stage-local AutoTP",
         ("1 GPU", "tp=2", "tp=2 x dp=2"),
         supported=True,
         evidence=(
             _PARITY_EVIDENCE.format(row="autotp") + "; tiny random Qwen3 (fp32); per-TP-rank "
             "shards in the checkpoint; test_row_gradient_parity_per_parameter[autotp] passed: "
             "91 parameters, worst update error 2.4e-5 against matching reference slices. "
-            "Needs rdsp's q_norm/k_norm TP gradient-sum hook (AutoTP leaves them partial)")),
+            "Needs rdsp's q_norm/k_norm TP gradient-sum hook (AutoTP leaves them partial)"
+        ),
+    ),
     HeterogeneousRow(
-        "autoep-folding", "stage-local AutoEP plus Parallel Folding",
+        "autoep-folding",
+        "stage-local AutoEP plus Parallel Folding",
         ("1 GPU", "ep=4", "ep=2 folded with tp=2"),
         supported=True,
         evidence=(
             _PARITY_EVIDENCE.format(row="autoep-folding") + "; tiny random Qwen3-MoE (8 "
             "experts, top-2, fp32); test_row_gradient_parity_per_parameter passed: 76 "
             "parameters, worst 3.0e-4 (folded-stage input_layernorm), rest <= 1.8e-5. Needs "
-            "rdsp's TP-average hook at folded MoE inputs")),
+            "rdsp's TP-average hook at folded MoE inputs"
+        ),
+    ),
     HeterogeneousRow(
-        "sequence-parallel", "stage-local Ulysses sequence parallelism",
+        "sequence-parallel",
+        "stage-local Ulysses sequence parallelism",
         ("sp=2", "sp=2 x dp=2", "1 GPU"),
         supported=True,
         evidence=(
             _PARITY_EVIDENCE.format(row="sequence-parallel") + "; tiny random Qwen3 (fp32); "
             "SP ranks >= 1 checkpoint through the model-rank-0 mpu wrapper; "
             "test_row_gradient_parity_per_parameter passed: 91 parameters, worst 2.4e-5. "
-            "SP stages average gradients over dp only (DeepSpeed sums over SP)")),
+            "SP stages average gradients over dp only (DeepSpeed sums over SP)"
+        ),
+    ),
     HeterogeneousRow(
-        "four-stage-mixed", "the four stage kinds above composed (32 GPUs, 4 nodes)",
-        ("dp=4 x sp=2, ZeRO-2", "tp=4 x dp=2, ZeRO-1",
-         "ep=8 AutoEP + Parallel Folding", "tp=2 x dp=4"),
-        requires=("static-boundary", "resource-mesh", "dp-zero",
-                  "autotp", "autoep-folding", "sequence-parallel"),
-        note=("all six prerequisites are supported, and the same four stage kinds composed "
-              "on one 8-GPU node pass every check (test_*[four-stage-mixed-mini], 85 "
-              "parameters, worst update error 2.4e-5). The 32-GPU, 4-node run has not been "
-              "done, so cross-node rendezvous, placement and node-local checkpoints are "
-              "unvalidated. Command: pytest tests/integration/test_heterogeneous_pipeline.py "
-              "-k four-stage-mixed")),
+        "four-stage-mixed",
+        "the four stage kinds above composed (32 GPUs, 4 nodes)",
+        (
+            "dp=4 x sp=2, ZeRO-2",
+            "tp=4 x dp=2, ZeRO-1",
+            "ep=8 AutoEP + Parallel Folding",
+            "tp=2 x dp=4",
+        ),
+        requires=(
+            "static-boundary",
+            "resource-mesh",
+            "dp-zero",
+            "autotp",
+            "autoep-folding",
+            "sequence-parallel",
+        ),
+        note=(
+            "all six prerequisites are supported, and the same four stage kinds composed "
+            "on one 8-GPU node pass every check (test_*[four-stage-mixed-mini], 85 "
+            "parameters, worst update error 2.4e-5). The 32-GPU, 4-node run has not been "
+            "done, so cross-node rendezvous, placement and node-local checkpoints are "
+            "unvalidated. Command: pytest tests/integration/test_heterogeneous_pipeline.py "
+            "-k four-stage-mixed"
+        ),
+    ),
 )
 
 ROWS = (BASELINE_ROW, *HETEROGENEOUS_ROWS)

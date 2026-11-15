@@ -56,8 +56,9 @@ def _splittable(layer: nn.Module, world: int) -> bool:
 
 
 def _keep(param: nn.Parameter, index, dim: int = 0) -> nn.Parameter:
-    return nn.Parameter(param.detach().index_select(dim, index).clone(),
-                        requires_grad=param.requires_grad)
+    return nn.Parameter(
+        param.detach().index_select(dim, index).clone(), requires_grad=param.requires_grad
+    )
 
 
 def _split(layer: nn.Module, rank: int, world: int, group) -> None:
@@ -74,8 +75,12 @@ def _split(layer: nn.Module, rank: int, world: int, group) -> None:
     # the fused projection (and the conv over its output) is [q | k | v]
     qkv = torch.cat([keys, layer.key_dim + keys, 2 * layer.key_dim + values])
 
-    for linear, rows in ((layer.in_proj_qkv, qkv), (layer.in_proj_z, values),
-                         (layer.in_proj_b, heads), (layer.in_proj_a, heads)):
+    for linear, rows in (
+        (layer.in_proj_qkv, qkv),
+        (layer.in_proj_z, values),
+        (layer.in_proj_b, heads),
+        (layer.in_proj_a, heads),
+    ):
         linear.weight = _keep(linear.weight, rows)
         linear.out_features = len(rows)
     layer.out_proj.weight = _keep(layer.out_proj.weight, values, dim=1)
@@ -92,8 +97,9 @@ def _split(layer: nn.Module, rank: int, world: int, group) -> None:
         layer.conv_dim = len(qkv)
 
     layer.norm.weight.register_hook(functools.partial(_summed, group=group))
-    layer.register_forward_pre_hook(functools.partial(_sum_input_grad, group=group),
-                                    with_kwargs=True)
+    layer.register_forward_pre_hook(
+        functools.partial(_sum_input_grad, group=group), with_kwargs=True
+    )
     layer.register_forward_hook(functools.partial(_sum_output, group=group))
 
 
@@ -105,8 +111,9 @@ def _summed(grad: torch.Tensor, group) -> torch.Tensor:
 
 def _sum_input_grad(module, args, kwargs, group):
     if "hidden_states" in kwargs:
-        kwargs = dict(kwargs, hidden_states=_SumGradOverRanks.apply(kwargs["hidden_states"],
-                                                                    group()))
+        kwargs = dict(
+            kwargs, hidden_states=_SumGradOverRanks.apply(kwargs["hidden_states"], group())
+        )
     else:
         args = (_SumGradOverRanks.apply(args[0], group()), *args[1:])
     return args, kwargs

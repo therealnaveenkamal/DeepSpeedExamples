@@ -125,7 +125,8 @@ def _pack(per_block: dict, rows: int, block_form: int | None) -> dict:
             if t.dim() < 2 or t.shape[0] % rows:
                 raise ValidationError(
                     f"block argument {name!r} of shape {tuple(t.shape)} has no leading "
-                    f"row dimension of size {rows}, so it cannot cross a stage boundary")
+                    f"row dimension of size {rows}, so it cannot cross a stage boundary"
+                )
             out[f"{'+'.join(blocks)}/{name}"] = t.detach()
     if block_form:
         out[_FORM_KEY] = torch.full((rows, 1), block_form, dtype=torch.int64)
@@ -150,9 +151,18 @@ class HFModelStage(nn.Module):
     upstream (their keys contain "/"). Returns the logits on the last stage,
     otherwise (hidden, extras) for the next stage."""
 
-    def __init__(self, model, blocks_name: str, block_start: int, block_stop: int,
-                 is_first: bool, is_last: bool, block_form: list,
-                 sends_token_ids: bool = False, embeds_token_ids: bool = False):
+    def __init__(
+        self,
+        model,
+        blocks_name: str,
+        block_start: int,
+        block_stop: int,
+        is_first: bool,
+        is_last: bool,
+        block_form: list,
+        sends_token_ids: bool = False,
+        embeds_token_ids: bool = False,
+    ):
         super().__init__()
         self.model = model
         self._block_form = block_form  # shared with the _PassThrough blocks
@@ -180,11 +190,15 @@ class HFModelStage(nn.Module):
         pipeline = self.model.get_submodule(self._blocks_name)
         blocks, taken = [], [self._blocks_name + "."]
         for name, module in self.model.named_modules():
-            if (isinstance(module, nn.ModuleList) and len(module) >= 2
-                    and not name.startswith(tuple(taken)) and module is not pipeline
-                    and len({type(b) for b in module}) == 1
-                    and not isinstance(module[0], (_PassThrough, _Unowned))
-                    and next(module.parameters(), None) is not None):
+            if (
+                isinstance(module, nn.ModuleList)
+                and len(module) >= 2
+                and not name.startswith(tuple(taken))
+                and module is not pipeline
+                and len({type(b) for b in module}) == 1
+                and not isinstance(module[0], (_PassThrough, _Unowned))
+                and next(module.parameters(), None) is not None
+            ):
                 blocks.extend(module)
                 taken.append(name + ".")
         return blocks
@@ -230,6 +244,7 @@ class HFModelStage(nn.Module):
                 # on pass-through outputs of unknown form
                 raise _Recorded
             return args, kwargs
+
         return hook
 
     def _embed_text(self, received, ids):
@@ -291,9 +306,13 @@ class HFModelStage(nn.Module):
             self._downstream = {}
 
 
-def build_hf_stage(model: nn.Module, block_start: int, block_stop: int,
-                   parameter_names: tuple[str, ...],
-                   stage_index: int | None = None) -> HFModelStage:
+def build_hf_stage(
+    model: nn.Module,
+    block_start: int,
+    block_stop: int,
+    parameter_names: tuple[str, ...],
+    stage_index: int | None = None,
+) -> HFModelStage:
     """One stage of an HF model as an HFModelStage. Modules it does not own
     are never copied, so building from a full model costs only the stage's
     own share of memory. stage_index: the stage's position; without it the
@@ -303,16 +322,15 @@ def build_hf_stage(model: nn.Module, block_start: int, block_stop: int,
     if block_start == 0 and block_stop < depth:
         raise ValidationError(
             f"{type(model).__name__} adds vision features inside blocks 0-{depth - 1}, "
-            f"which only the first stage can do: put the first cut at {depth} or later")
+            f"which only the first stage can do: put the first cut at {depth} or later"
+        )
     owned = set(parameter_names)
     # the first stage owns the input embeddings; the one after a vision-only
     # stage starts at block 0 too
     embedding = model.get_input_embeddings()
-    owns_embedding = any(p is embedding.weight for n, p in model.named_parameters()
-                         if n in owned)
+    owns_embedding = any(p is embedding.weight for n, p in model.named_parameters() if n in owned)
     vision_only = block_stop == 0
-    is_first = (stage_index == 0 if stage_index is not None
-                else owns_embedding or vision_only)
+    is_first = stage_index == 0 if stage_index is not None else owns_embedding or vision_only
     block_form = [None]
     memo = {}
     for i, block in enumerate(blocks):
@@ -331,18 +349,27 @@ def build_hf_stage(model: nn.Module, block_start: int, block_stop: int,
         raise ValidationError(
             f"stage over blocks [{block_start}, {block_stop}) cannot be cut out cleanly: "
             f"a module mixes parameters of different stages "
-            f"({sorted(kept ^ owned)[:3]}...)")
-    stage = HFModelStage(stage_model, blocks_name, block_start, block_stop,
-                         is_first=is_first, is_last=block_stop == len(blocks),
-                         block_form=block_form,
-                         sends_token_ids=is_first and vision_only and not owns_embedding,
-                         embeds_token_ids=not is_first and owns_embedding)
+            f"({sorted(kept ^ owned)[:3]}...)"
+        )
+    stage = HFModelStage(
+        stage_model,
+        blocks_name,
+        block_start,
+        block_stop,
+        is_first=is_first,
+        is_last=block_stop == len(blocks),
+        block_form=block_form,
+        sends_token_ids=is_first and vision_only and not owns_embedding,
+        embeds_token_ids=not is_first and owns_embedding,
+    )
     # what intra-stage parallelism reads: the AutoTP plan, head counts
     # (Ulysses) and MoE settings (AutoEP), all on the text model's config
     config = getattr(model, "config", None)
     text_config = config.get_text_config() if hasattr(config, "get_text_config") else config
-    plan = dict(getattr(text_config, "base_model_tp_plan", None)
-                or _standard_tp_plan(blocks_name, blocks, _STANDARD_TP))
+    plan = dict(
+        getattr(text_config, "base_model_tp_plan", None)
+        or _standard_tp_plan(blocks_name, blocks, _STANDARD_TP)
+    )
     for name, vision_blocks in _vision_block_lists(model, blocks_name):
         plan.update(_standard_tp_plan(name, vision_blocks, _VISION_TP))
     attach_tp_plan(stage, plan)
@@ -366,19 +393,28 @@ def _colocated_encoder(model: nn.Module, owned: set) -> nn.Module | None:
 
 # projection names shared by most decoder families, and how Megatron-style
 # tensor parallelism splits them
-_STANDARD_TP = {"self_attn.q_proj": "colwise", "self_attn.k_proj": "colwise",
-                "self_attn.v_proj": "colwise", "self_attn.o_proj": "rowwise",
-                "mlp.gate_proj": "colwise", "mlp.up_proj": "colwise",
-                "mlp.down_proj": "rowwise",
-                # per-head norms: replicated, but each rank sees only its heads
-                "self_attn.q_norm": "replicated_with_grad_allreduce",
-                "self_attn.k_norm": "replicated_with_grad_allreduce"}
+_STANDARD_TP = {
+    "self_attn.q_proj": "colwise",
+    "self_attn.k_proj": "colwise",
+    "self_attn.v_proj": "colwise",
+    "self_attn.o_proj": "rowwise",
+    "mlp.gate_proj": "colwise",
+    "mlp.up_proj": "colwise",
+    "mlp.down_proj": "rowwise",
+    # per-head norms: replicated, but each rank sees only its heads
+    "self_attn.q_norm": "replicated_with_grad_allreduce",
+    "self_attn.k_norm": "replicated_with_grad_allreduce",
+}
 
 
 # the same for vision encoder blocks (Qwen-VL family); qkv is one fused
 # projection, split by thirds so every rank keeps whole heads of q, k and v
-_VISION_TP = {"attn.qkv": "qkv_colwise", "attn.proj": "rowwise",
-              "mlp.linear_fc1": "colwise", "mlp.linear_fc2": "rowwise"}
+_VISION_TP = {
+    "attn.qkv": "qkv_colwise",
+    "attn.proj": "rowwise",
+    "mlp.linear_fc1": "colwise",
+    "mlp.linear_fc2": "rowwise",
+}
 
 
 def _standard_tp_plan(blocks_name: str, blocks, table: dict) -> dict:
@@ -387,8 +423,11 @@ def _standard_tp_plan(blocks_name: str, blocks, table: dict) -> dict:
     Qwen3-VL), and for vision encoders, which never have one."""
     names = [{n for n, _ in block.named_modules()} for block in blocks]
     prefix = blocks_name.rsplit(".", 1)[-1]
-    return {f"{prefix}.*.{name}": style for name, style in table.items()
-            if all(name in block_names for block_names in names)}
+    return {
+        f"{prefix}.*.{name}": style
+        for name, style in table.items()
+        if all(name in block_names for block_names in names)
+    }
 
 
 def _vision_block_lists(model: nn.Module, blocks_name: str) -> list:
@@ -396,10 +435,15 @@ def _vision_block_lists(model: nn.Module, blocks_name: str) -> list:
     >=2 same-class blocks outside the decoder's."""
     if getattr(getattr(model, "config", None), "vision_config", None) is None:
         return []
-    return [(name, module) for name, module in model.named_modules()
-            if isinstance(module, nn.ModuleList) and len(module) >= 2
-            and len({type(b) for b in module}) == 1
-            and name != blocks_name and not name.startswith(blocks_name + ".")]
+    return [
+        (name, module)
+        for name, module in model.named_modules()
+        if isinstance(module, nn.ModuleList)
+        and len(module) >= 2
+        and len({type(b) for b in module}) == 1
+        and name != blocks_name
+        and not name.startswith(blocks_name + ".")
+    ]
 
 
 def _checkpoint_files(weights_dir: str) -> dict:
@@ -412,6 +456,7 @@ def _checkpoint_files(weights_dir: str) -> dict:
     if not os.path.exists(single):
         raise ValidationError(f"no safetensors checkpoint in {weights_dir!r}")
     from safetensors import safe_open
+
     with safe_open(single, "pt") as f:
         return {k: single for k in f.keys()}
 
@@ -426,13 +471,15 @@ def load_meta_parameters(stage: nn.Module, weights_dir: str | None) -> None:
     if weights_dir is None:
         raise ValidationError(
             f"{len(meta)} parameters are on the meta device (e.g. {meta[0][0]}); pass "
-            f"weights=<HF checkpoint dir> to rdsp.initialize() to load them per stage")
+            f"weights=<HF checkpoint dir> to rdsp.initialize() to load them per stage"
+        )
     if not isinstance(stage, (HFModelStage, VisionTower)):
         raise ValidationError("weights= needs a Hugging Face model (the HF stage builder)")
     if any(b.is_meta for b in stage.buffers()):
         raise ValidationError(
             "buffers are on the meta device too; build the model skeleton with "
-            "accelerate.init_empty_weights(), which keeps buffers real")
+            "accelerate.init_empty_weights(), which keeps buffers real"
+        )
     files = _checkpoint_files(weights_dir)
     # a tied checkpoint stores only one of each tied pair (Qwen3-VL-2B has no
     # lm_head); the untied copy is read from the tensor it was tied to
@@ -440,18 +487,23 @@ def load_meta_parameters(stage: nn.Module, weights_dir: str | None) -> None:
     tied = tied if isinstance(tied, dict) else {}
     by_file = {}
     for name, param in meta:
-        key = stage.checkpoint_key(name) if isinstance(stage, VisionTower) \
+        key = (
+            stage.checkpoint_key(name)
+            if isinstance(stage, VisionTower)
             else name.removeprefix("model.")
+        )
         if key not in files:
             key = tied.get(key, key)
         if key not in files:
             raise ValidationError(f"{key!r} is not in the checkpoint at {weights_dir!r}")
         by_file.setdefault(files[key], []).append((name, key, param))
     from safetensors import safe_open
+
     for path, entries in by_file.items():
         with safe_open(path, "pt") as f:
             for name, key, param in entries:
                 module_name, _, leaf = name.rpartition(".")
                 value = f.get_tensor(key).to(param.dtype)
                 stage.get_submodule(module_name)._parameters[leaf] = nn.Parameter(
-                    value, requires_grad=param.requires_grad)
+                    value, requires_grad=param.requires_grad
+                )

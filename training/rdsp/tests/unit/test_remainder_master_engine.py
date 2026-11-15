@@ -24,16 +24,37 @@ from ray_deepspeed_pipeline.remainder_adamw import RemainderAdamW, join_master  
 
 @pytest.fixture(scope="module", autouse=True)
 def gloo():
-    os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT="29541", RANK="0", WORLD_SIZE="1",
-                      LOCAL_RANK="0")
+    os.environ.update(
+        MASTER_ADDR="127.0.0.1", MASTER_PORT="29541", RANK="0", WORLD_SIZE="1", LOCAL_RANK="0"
+    )
     deepspeed.init_distributed(dist_backend="gloo")
 
 
 def engine(master, zero=1, group_numel=0):
-    flags = ["--stages", "1", "--stage", "0:gpus=1", "--zero", str(zero), "--lr", "1e-3",
-             "--betas", "0.9,0.95", "--weight-decay", "0.1", "--rows", "1", "--microbatches", "1",
-             "--grad-dtype", "bf16", "--master-dtype", master,
-             "--optimizer-group-numel", str(group_numel)]
+    flags = [
+        "--stages",
+        "1",
+        "--stage",
+        "0:gpus=1",
+        "--zero",
+        str(zero),
+        "--lr",
+        "1e-3",
+        "--betas",
+        "0.9,0.95",
+        "--weight-decay",
+        "0.1",
+        "--rows",
+        "1",
+        "--microbatches",
+        "1",
+        "--grad-dtype",
+        "bf16",
+        "--master-dtype",
+        master,
+        "--optimizer-group-numel",
+        str(group_numel),
+    ]
     args = train_vl.build_parser().parse_args(flags)
     assert train_vl.optimizer_problem(args) is None
     conf = train_vl.ds_config(args)
@@ -61,8 +82,11 @@ def masters(e):
     out = []
     for m in opt.single_partition_of_fp32_groups:
         state = opt.optimizer.state.get(m, {})
-        out.append(join_master(m.detach(), state["remainder"]) if "remainder" in state
-                   else m.detach().clone())
+        out.append(
+            join_master(m.detach(), state["remainder"])
+            if "remainder" in state
+            else m.detach().clone()
+        )
     return out
 
 

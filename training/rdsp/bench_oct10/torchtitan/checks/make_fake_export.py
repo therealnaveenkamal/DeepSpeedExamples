@@ -6,6 +6,7 @@ names i, so order can be checked.
 
     .venv/bin/python rdsp/bench_oct10/torchtitan/checks/make_fake_export.py <out dir> [steps]
 """
+
 import os
 import sys
 
@@ -18,7 +19,9 @@ from PIL import Image
 SEQ, ROWS = 2048, 64
 out = sys.argv[1]
 steps = int(sys.argv[2]) if len(sys.argv) > 2 else 2
-path = huggingface_hub.snapshot_download("Qwen/Qwen3.5-27B", allow_patterns=["*.json", "*.txt", "*.jinja"])
+path = huggingface_hub.snapshot_download(
+    "Qwen/Qwen3.5-27B", allow_patterns=["*.json", "*.txt", "*.jinja"]
+)
 processor = transformers.AutoProcessor.from_pretrained(path)
 pad = processor.tokenizer.convert_tokens_to_ids("<|endoftext|>")
 rng = np.random.default_rng(0)
@@ -29,10 +32,21 @@ for step in range(steps):
         i = step * ROWS + r
         h, w = (int(x) for x in rng.integers(48, 200, size=2))
         image = Image.fromarray(rng.integers(0, 255, size=(h, w, 3), dtype=np.uint8))
-        prompt = [{"role": "user", "content": [{"type": "image", "image": image},
-                                               {"type": "text", "text": "Read the receipt."}]}]
-        full = prompt + [{"role": "assistant", "content": [{"type": "text", "text": f"row {i}: total {i * 7}"}]}]
-        f = processor.apply_chat_template(full, tokenize=True, return_dict=True, return_tensors="pt")
+        prompt = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": "Read the receipt."},
+                ],
+            }
+        ]
+        full = prompt + [
+            {"role": "assistant", "content": [{"type": "text", "text": f"row {i}: total {i * 7}"}]}
+        ]
+        f = processor.apply_chat_template(
+            full, tokenize=True, return_dict=True, return_tensors="pt"
+        )
         ids = f["input_ids"][0]
         n = ids.shape[0]
         start = n - 12
@@ -46,11 +60,16 @@ for step in range(steps):
         mm_ids = torch.zeros((1, SEQ), dtype=torch.long)
         if mm is not None:
             mm_ids[0, :n] = mm[0]
-        samples.append({
-            "input_ids": input_ids, "attention_mask": attention_mask, "mm_token_type_ids": mm_ids,
-            "pixel_values": f["pixel_values"].to(torch.bfloat16),
-            "image_grid_thw": f["image_grid_thw"].clone(), "labels": labels,
-            "tokens": int((labels != -100).sum()),
-        })
+        samples.append(
+            {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "mm_token_type_ids": mm_ids,
+                "pixel_values": f["pixel_values"].to(torch.bfloat16),
+                "image_grid_thw": f["image_grid_thw"].clone(),
+                "labels": labels,
+                "tokens": int((labels != -100).sum()),
+            }
+        )
     torch.save(samples, os.path.join(out, f"step_{step:05d}.pt"))
 print(f"wrote {steps} steps x {ROWS} rows to {out}; processor {path}")

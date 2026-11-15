@@ -14,6 +14,7 @@
     python gpu_checks2.py <exported dir> <Qwen3.5-27B snapshot dir or Hub id> <out dir>
     python gpu_checks2.py <...> <out dir> --engine fp32|remainder   (one engine, internal)
 """
+
 import json
 import os
 import subprocess
@@ -40,8 +41,9 @@ def rel(a, b):
 
 def one_engine(master):
     """Build, train 5 steps, report; this process's only engine."""
-    os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT="29571", RANK="0", WORLD_SIZE="1",
-                      LOCAL_RANK="0")
+    os.environ.update(
+        MASTER_ADDR="127.0.0.1", MASTER_PORT="29571", RANK="0", WORLD_SIZE="1", LOCAL_RANK="0"
+    )
     import deepspeed
 
     import train_vl
@@ -50,16 +52,36 @@ def one_engine(master):
 
     deepspeed.init_distributed(dist_backend="nccl")
     width, depth = 8192, 24  # 1.61B parameters
-    flags = ["--stages", "1", "--stage", "0:gpus=1", "--zero", "1", "--lr", "1e-5",
-             "--betas", "0.9,0.95", "--rows", "1", "--microbatches", "1",
-             "--grad-dtype", "bf16", "--fused-adam", "--optimizer-group-numel", "250000000",
-             "--master-dtype", master]
+    flags = [
+        "--stages",
+        "1",
+        "--stage",
+        "0:gpus=1",
+        "--zero",
+        "1",
+        "--lr",
+        "1e-5",
+        "--betas",
+        "0.9,0.95",
+        "--rows",
+        "1",
+        "--microbatches",
+        "1",
+        "--grad-dtype",
+        "bf16",
+        "--fused-adam",
+        "--optimizer-group-numel",
+        "250000000",
+        "--master-dtype",
+        master,
+    ]
     conf = train_vl.ds_config(train_vl.build_parser().parse_args(flags))
     conf.update(train_micro_batch_size_per_gpu=1, train_batch_size=1)
     torch.manual_seed(0)
     with torch.device("cuda"):
-        model = torch.nn.Sequential(*[torch.nn.Linear(width, width, bias=False)
-                                      for _ in range(depth)]).to(torch.bfloat16)
+        model = torch.nn.Sequential(
+            *[torch.nn.Linear(width, width, bias=False) for _ in range(depth)]
+        ).to(torch.bfloat16)
     before = torch.cuda.memory_allocated()  # the bf16 model itself
     e = _deepspeed_engine_factory(model, conf)
     g = torch.Generator(device="cuda").manual_seed(1)
@@ -83,17 +105,29 @@ def one_engine(master):
         sample.append(full.float()[::997].cpu())
     torch.save(torch.cat(sample), os.path.join(OUT, f"master-sample-{master}.pt"))
     params = width * width * depth
-    print("ENGINE_REPORT", json.dumps({"model_gib": gib(before), "held_gib": gib(held),
-                      "held_bytes_per_param": round(held / params, 2),
-                      "step_peak_gib": gib(max(peaks)),
-                      "step_ms_median": round(sorted(times)[2], 1)}), flush=True)
+    print(
+        "ENGINE_REPORT",
+        json.dumps(
+            {
+                "model_gib": gib(before),
+                "held_gib": gib(held),
+                "held_bytes_per_param": round(held / params, 2),
+                "step_peak_gib": gib(max(peaks)),
+                "step_ms_median": round(sorted(times)[2], 1),
+            }
+        ),
+        flush=True,
+    )
 
 
 def check_remainder():
     report = {}
     for master in ("fp32", "remainder"):
-        done = subprocess.run([sys.executable, __file__, EXPORTED, SNAPSHOT, OUT, "--engine", master],
-                              capture_output=True, text=True)
+        done = subprocess.run(
+            [sys.executable, __file__, EXPORTED, SNAPSHOT, OUT, "--engine", master],
+            capture_output=True,
+            text=True,
+        )
         lines = [l for l in done.stdout.splitlines() if l.startswith("ENGINE_REPORT ")]
         if done.returncode or not lines:
             raise RuntimeError(f"{master} engine failed: {done.stderr[-2000:]}")
@@ -117,8 +151,13 @@ def vision_encoder():
     import transformers
     from safetensors import safe_open
 
-    snapshot = SNAPSHOT if os.path.isdir(SNAPSHOT) else huggingface_hub.snapshot_download(
-        SNAPSHOT, allow_patterns=["*.json", "*.safetensors", "*.txt", "*.jinja"])
+    snapshot = (
+        SNAPSHOT
+        if os.path.isdir(SNAPSHOT)
+        else huggingface_hub.snapshot_download(
+            SNAPSHOT, allow_patterns=["*.json", "*.safetensors", "*.txt", "*.jinja"]
+        )
+    )
     vision = transformers.AutoConfig.from_pretrained(snapshot).vision_config
     vision._attn_implementation = "sdpa"
     with torch.device("cuda"):
@@ -152,15 +191,24 @@ def check_varlen():
     lens = grid.prod(-1).to(torch.int32)
     cu = torch.nn.functional.pad(lens.cumsum(0, dtype=torch.int32), (1, 0))
     tokens, heads, dim = int(lens.sum()), 16, 72
-    qkv32 = torch.randn(tokens, 3, heads, dim, device="cuda", generator=torch.Generator(
-        device="cuda").manual_seed(0))
+    qkv32 = torch.randn(
+        tokens,
+        3,
+        heads,
+        dim,
+        device="cuda",
+        generator=torch.Generator(device="cuda").manual_seed(0),
+    )
     grad_out = torch.randn(tokens, heads, dim, device="cuda")
 
     def per_image(qkv):
         q, k, v = qkv.permute(1, 0, 2, 3).unbind(0)
-        out = [F.scaled_dot_product_attention(*(t[a:b].transpose(0, 1)[None] for t in (q, k, v)),
-                                              scale=dim**-0.5)[0].transpose(0, 1)
-               for a, b in zip(cu[:-1].tolist(), cu[1:].tolist())]
+        out = [
+            F.scaled_dot_product_attention(
+                *(t[a:b].transpose(0, 1)[None] for t in (q, k, v)), scale=dim**-0.5
+            )[0].transpose(0, 1)
+            for a, b in zip(cu[:-1].tolist(), cu[1:].tolist())
+        ]
         return torch.cat(out)
 
     def varlen(qkv):
@@ -168,9 +216,11 @@ def check_varlen():
         return varlen_attn(q, k, v, cu, cu, int(lens.max()), int(lens.max()), scale=dim**-0.5)
 
     results = {}
-    for name, fn, dtype in (("ref_fp32", per_image, torch.float32),
-                            ("sdpa_bf16", per_image, torch.bfloat16),
-                            ("varlen_bf16", varlen, torch.bfloat16)):
+    for name, fn, dtype in (
+        ("ref_fp32", per_image, torch.float32),
+        ("sdpa_bf16", per_image, torch.bfloat16),
+        ("varlen_bf16", varlen, torch.bfloat16),
+    ):
         qkv = qkv32.detach().to(dtype).clone().requires_grad_(True)
         out = fn(qkv)
         out.backward(grad_out.to(dtype))
@@ -192,8 +242,9 @@ def check_varlen():
         encoder.zero_grad(set_to_none=True)
         out = encoder(pixels.to(dtype), grid_thw=grid).pooler_output
         out.float().square().mean().backward()
-        return out.detach().float(), torch.cat([p.grad.float().flatten()
-                                                for p in encoder.parameters()])
+        return out.detach().float(), torch.cat(
+            [p.grad.float().flatten() for p in encoder.parameters()]
+        )
 
     ref_out, ref_grad = run(fp32, torch.float32)
     for name, encoder in (("sdpa_bf16", bf16), ("varlen_bf16", holder.visual)):
@@ -211,5 +262,6 @@ else:
             check()
         except Exception as e:  # report and go on
             import traceback
+
             traceback.print_exc()
             print(f"{check.__name__} FAILED: {e!r}", flush=True)

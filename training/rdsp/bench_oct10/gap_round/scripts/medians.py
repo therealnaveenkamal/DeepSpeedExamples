@@ -7,6 +7,7 @@ first step counted and the fewest steps a median needs (the 10-step receipt cont
   titan   TorchTitan: the time between consecutive "step: N" lines of one rank
   rdsp    rdsp: "step N loss L  T ms" lines
 """
+
 import os
 import re
 import statistics
@@ -16,8 +17,12 @@ import sys
 def bridge(text: str) -> dict[int, float]:
     pattern = r"iteration +(\d+)/ *\d+ \|.*?elapsed time per iteration \(ms\): ([\d.]+)"
     times = {int(m.group(1)): float(m.group(2)) / 1000 for m in re.finditer(pattern, text)}
-    if not times:  # two-node logs of node 1 print only "Step Time : X s", one line per step from step 1
-        times = {i: float(t) for i, t in enumerate(re.findall(r"^Step Time : ([\d.]+)s", text, re.M), 1)}
+    if (
+        not times
+    ):  # two-node logs of node 1 print only "Step Time : X s", one line per step from step 1
+        times = {
+            i: float(t) for i, t in enumerate(re.findall(r"^Step Time : ([\d.]+)s", text, re.M), 1)
+        }
     return times
 
 
@@ -31,7 +36,10 @@ def titan(text: str) -> dict[int, float]:
 
 
 def rdsp(text: str) -> dict[int, float]:
-    return {int(m.group(1)): float(m.group(2)) / 1000 for m in re.finditer(r"^step (\d+) loss \S+ +(\d+) ms", text, re.M)}
+    return {
+        int(m.group(1)): float(m.group(2)) / 1000
+        for m in re.finditer(r"^step (\d+) loss \S+ +(\d+) ms", text, re.M)
+    }
 
 
 def median(kind: str, path: str) -> float | None:
@@ -42,7 +50,11 @@ def median(kind: str, path: str) -> float | None:
     times = globals()[kind](text)
     first = int(os.environ.get("MEDIAN_FIRST", "6"))
     window = [times[i] for i in range(first, 51) if i in times]
-    return statistics.median(window) if len(window) >= int(os.environ.get("MEDIAN_MIN", "40")) else None
+    return (
+        statistics.median(window)
+        if len(window) >= int(os.environ.get("MEDIAN_MIN", "40"))
+        else None
+    )
 
 
 if __name__ == "__main__":

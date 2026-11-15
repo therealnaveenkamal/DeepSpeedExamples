@@ -12,8 +12,12 @@ BENCH = os.path.join(ROOT, "bench", "mimo", "bench.sh")
 
 def plan(tmp_path, *layouts, model="Qwen3.5-4B", **env):
     out = subprocess.run(
-        ["bash", BENCH, *layouts], capture_output=True, text=True, check=False,
-        env={**os.environ, "HOME": str(tmp_path), "DRY_RUN": "1", "MODEL": model, **env})
+        ["bash", BENCH, *layouts],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "HOME": str(tmp_path), "DRY_RUN": "1", "MODEL": model, **env},
+    )
     return out.returncode, out.stdout + out.stderr
 
 
@@ -21,17 +25,33 @@ def test_each_layout_runs_megatron_then_rdsp(tmp_path):
     code, out = plan(tmp_path, "noncoloc", "tp2", "tp4", "coloc")
     assert code == 0, out
     cases = [line.split()[-1] for line in out.splitlines() if line.startswith("run ")]
-    assert cases == ["convert", "export",
-                     "noncoloc-mimo", "noncoloc-rdsp", "shared-megatron", "shared-rdsp",
-                     "tp4pp2-megatron", "tp4pp2-rdsp", "coloc-rdsp"]
+    assert cases == [
+        "convert",
+        "export",
+        "noncoloc-mimo",
+        "noncoloc-rdsp",
+        "shared-megatron",
+        "shared-rdsp",
+        "tp4pp2-megatron",
+        "tp4pp2-rdsp",
+        "coloc-rdsp",
+    ]
 
 
 def test_mimo_means_every_non_colocated_mimo_pair(tmp_path):
     code, out = plan(tmp_path, "mimo")
     assert code == 0, out
     cases = [line.split()[-1] for line in out.splitlines() if line.startswith("run ")][2:]
-    assert cases == ["noncoloc-mimo", "noncoloc-rdsp", "vision2-mimo", "vision2-rdsp",
-                     "langpp2-mimo", "langpp2-rdsp", "langtp4-mimo", "langtp4-rdsp"]
+    assert cases == [
+        "noncoloc-mimo",
+        "noncoloc-rdsp",
+        "vision2-mimo",
+        "vision2-rdsp",
+        "langpp2-mimo",
+        "langpp2-rdsp",
+        "langtp4-mimo",
+        "langtp4-rdsp",
+    ]
 
 
 def test_all_means_every_layout(tmp_path):

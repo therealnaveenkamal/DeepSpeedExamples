@@ -20,20 +20,31 @@ ORACLE_REV = "53a2ac44fb664bea838df3981ba4366b91643070"
 hf_cache = modal.Volume.from_name("rdsp-hf-cache", create_if_missing=True)
 
 image = (
-    modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04",
-                              add_python="3.12")
+    modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.12")
     .apt_install("git")
     .env({"CUDA_HOME": "/usr/local/cuda"})
-    .pip_install("torch", "pytest", "ninja", "packaging", "numpy",
-                 "transformers", "ray", "cloudpickle", "accelerate",
-                 "cupy-cuda12x")  # cupy: Ray Direct Transport over NCCL
+    .pip_install(
+        "torch",
+        "pytest",
+        "ninja",
+        "packaging",
+        "numpy",
+        "transformers",
+        "ray",
+        "cloudpickle",
+        "accelerate",
+        "cupy-cuda12x",
+    )  # cupy: Ray Direct Transport over NCCL
     .run_commands(
         "pip install --no-build-isolation "
         f"git+https://github.com/deepspeedai/DeepSpeed.git@{ORACLE_REV}"
     )
     .env({"DS_BUILD_OPS": "0", "TOKENIZERS_PARALLELISM": "false"})
-    .add_local_dir(REPO, "/root/rdsp", ignore=[".venv", "**/__pycache__", ".cache",
-                                               ".pytest_cache", "uv.lock", "bench/results"])
+    .add_local_dir(
+        REPO,
+        "/root/rdsp",
+        ignore=[".venv", "**/__pycache__", ".cache", ".pytest_cache", "uv.lock", "bench/results"],
+    )
 )
 
 app = modal.App("rdsp-tests", image=image)
@@ -47,12 +58,26 @@ def _run(tests: str) -> tuple[int, str]:
     import subprocess
     import sys
 
-    subprocess.run(["pip", "install", "-e", "/root/rdsp"], check=True,
-                   capture_output=True)
+    subprocess.run(["pip", "install", "-e", "/root/rdsp"], check=True, capture_output=True)
     proc = subprocess.Popen(
-        ["python", "-u", "-m", "pytest", "-v", "-s", "--tb=short", "-rA",
-         "-o", "faulthandler_timeout=600", *shlex.split(tests)],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd="/root/rdsp")
+        [
+            "python",
+            "-u",
+            "-m",
+            "pytest",
+            "-v",
+            "-s",
+            "--tb=short",
+            "-rA",
+            "-o",
+            "faulthandler_timeout=600",
+            *shlex.split(tests),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        cwd="/root/rdsp",
+    )
     lines = []
     for line in proc.stdout:
         sys.stdout.write(line)

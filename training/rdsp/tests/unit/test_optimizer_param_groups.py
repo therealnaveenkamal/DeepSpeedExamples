@@ -42,8 +42,10 @@ def test_groups_are_built_when_listed_not_when_asked_for():
 def test_train_vl_passes_the_size_under_rdsp_s_own_key():
     import os
     import sys
+
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
     import train_vl
+
     args = train_vl.build_parser().parse_args(["--optimizer-group-numel", "250000000"])
     assert train_vl.ds_config(args)[GROUP_NUMEL_KEY] == 250_000_000
     assert GROUP_NUMEL_KEY not in train_vl.ds_config(train_vl.build_parser().parse_args([]))

@@ -4,6 +4,7 @@ Face's Qwen3_5Model.get_rope_index on the same exported rows, real tokens only
 
     .venv/bin/python rdsp/bench_oct10/torchtitan/checks/compare_mrope.py <tt_mrope.pt> <export dir>
 """
+
 import glob
 import os
 import sys
@@ -20,14 +21,19 @@ with torch.device("meta"):
     model = transformers.Qwen3_5Model(config)
 for i, (s, row) in enumerate(zip(saved, rows)):
     assert torch.equal(s["input_ids"], row["input_ids"][0])
-    pos, _ = model.get_rope_index(row["input_ids"], row["mm_token_type_ids"],
-                                  image_grid_thw=row["image_grid_thw"],
-                                  attention_mask=row["attention_mask"])
-    hf = pos[:, 0, :].T.cpu()                      # (S, 3)
+    pos, _ = model.get_rope_index(
+        row["input_ids"],
+        row["mm_token_type_ids"],
+        image_grid_thw=row["image_grid_thw"],
+        attention_mask=row["attention_mask"],
+    )
+    hf = pos[:, 0, :].T.cpu()  # (S, 3)
     real = row["attention_mask"][0].bool()
     tt = s["tt_mrope"].to(hf.dtype)
     diff = (hf[real] - tt[real]).abs().max().item()
-    print(f"row {i}: {int(real.sum())} real tokens, image grid {row['image_grid_thw'].tolist()}, "
-          f"max |HF - TorchTitan| position difference {diff}")
+    print(
+        f"row {i}: {int(real.sum())} real tokens, image grid {row['image_grid_thw'].tolist()}, "
+        f"max |HF - TorchTitan| position difference {diff}"
+    )
     assert diff == 0, f"row {i}: positions differ"
 print("OK: M-RoPE positions identical on every real token")

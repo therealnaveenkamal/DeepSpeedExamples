@@ -11,13 +11,33 @@ import train_vl  # noqa: E402
 
 
 def test_passes_what_actors_read_and_nothing_else():
-    env = {"RDSP_PROFILE": "1", "RDSP_P2P_TIMEOUT_S": "600", "NCCL_SOCKET_IFNAME": "^lo,docker",
-           "FI_PROVIDER": "efa", "HF_HOME": "/home/ubuntu/hf",
-           "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True", "DS_BUILD_OPS": "0",
-           "CUDA_HOME": "/usr/local/cuda-13.0", "LD_LIBRARY_PATH": "/opt/amazon/ofi-nccl/lib",
-           "CUDA_VISIBLE_DEVICES": "0,1", "HOME": "/home/ubuntu", "PATH": "/usr/bin",
-           "RAY_ADDRESS": "auto"}
+    env = {
+        "RDSP_PROFILE": "1",
+        "RDSP_P2P_TIMEOUT_S": "600",
+        "NCCL_SOCKET_IFNAME": "^lo,docker",
+        "FI_PROVIDER": "efa",
+        "HF_HOME": "/home/ubuntu/hf",
+        "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+        "DS_BUILD_OPS": "0",
+        "CUDA_HOME": "/usr/local/cuda-13.0",
+        "LD_LIBRARY_PATH": "/opt/amazon/ofi-nccl/lib",
+        "CUDA_VISIBLE_DEVICES": "0,1",
+        "HOME": "/home/ubuntu",
+        "PATH": "/usr/bin",
+        "RAY_ADDRESS": "auto",
+    }
     got = train_vl.worker_env(env)
-    assert got == {k: env[k] for k in ("RDSP_PROFILE", "RDSP_P2P_TIMEOUT_S", "NCCL_SOCKET_IFNAME",
-                                       "FI_PROVIDER", "HF_HOME", "PYTORCH_CUDA_ALLOC_CONF",
-                                       "DS_BUILD_OPS", "CUDA_HOME", "LD_LIBRARY_PATH")}
+    assert got == {
+        k: env[k]
+        for k in (
+            "RDSP_PROFILE",
+            "RDSP_P2P_TIMEOUT_S",
+            "NCCL_SOCKET_IFNAME",
+            "FI_PROVIDER",
+            "HF_HOME",
+            "PYTORCH_CUDA_ALLOC_CONF",
+            "DS_BUILD_OPS",
+            "CUDA_HOME",
+            "LD_LIBRARY_PATH",
+        )
+    }

@@ -68,9 +68,13 @@ def _overlap(i: int, n: int, j: int, m: int) -> bool:
 
 
 def overlapping_cells(src: Grid, dest: Cell) -> list[Cell]:
-    return [Cell(d, src.dp, q, src.sp)
-            for d in range(src.dp) if _overlap(d, src.dp, dest.dp_index, dest.dp)
-            for q in range(src.sp) if _overlap(q, src.sp, dest.sp_index, dest.sp)]
+    return [
+        Cell(d, src.dp, q, src.sp)
+        for d in range(src.dp)
+        if _overlap(d, src.dp, dest.dp_index, dest.dp)
+        for q in range(src.sp)
+        if _overlap(q, src.sp, dest.sp_index, dest.sp)
+    ]
 
 
 def _span(index: int, parts: int, total: int, what: str) -> tuple[int, int]:
@@ -103,8 +107,9 @@ def slice_inputs(inputs, cell: Cell):
             out[name] = cell_slice(value, cell)
             continue
         if cell.sp > 1:
-            raise StepFailed(f"input {name!r} is given per row and cannot be "
-                             f"split across sequence shards")
+            raise StepFailed(
+                f"input {name!r} is given per row and cannot be split across sequence shards"
+            )
         r0, r1 = _span(cell.dp_index, cell.dp, len(value), "row")
         out[name] = torch.cat(value[r0:r1])
     return out
@@ -135,21 +140,22 @@ def assemble(pieces: list[tuple[Cell, torch.Tensor]], dest: Cell) -> torch.Tenso
         lo, hi = max(pr0, r0), min(pr1, r1)
         if lo >= hi:
             continue
-        src = piece[lo - pr0:hi - pr0]
+        src = piece[lo - pr0 : hi - pr0]
         if uses_seq:
             ps0, ps1 = _span(cell.sp_index, cell.sp, seq, "sequence")
             slo, shi = max(ps0, s0), min(ps1, s1)
             if slo >= shi:
                 continue
-            out[lo - r0:hi - r0, slo - s0:shi - s0] = src[:, slo - ps0:shi - ps0]
+            out[lo - r0 : hi - r0, slo - s0 : shi - s0] = src[:, slo - ps0 : shi - ps0]
             covered += (hi - lo) * (shi - slo)
         else:
-            out[lo - r0:hi - r0] = src
+            out[lo - r0 : hi - r0] = src
             covered += hi - lo
     expected = shape[0] * (shape[1] if uses_seq else 1)
     if covered != expected:
-        raise StepFailed(f"boundary pieces cover {covered} of {expected} elements "
-                         f"of the destination cell {dest}")
+        raise StepFailed(
+            f"boundary pieces cover {covered} of {expected} elements of the destination cell {dest}"
+        )
     return out
 
 
@@ -176,6 +182,7 @@ def gradient_scale(src_avg_degree: int, dest_avg_degree: int) -> float:
 
 
 # --- point-to-point routing: the same overlap geometry, seen from each end ---
+
 
 def p2p_sources(src: Grid, dest: Grid, dest_rank: int) -> list[tuple[int, Cell]]:
     """(source rank, source cell) pairs a destination rank receives from, one

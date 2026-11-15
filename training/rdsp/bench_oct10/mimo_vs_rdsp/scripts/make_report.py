@@ -23,9 +23,17 @@ SUMMARY_URL = "https://claude.ai/artifact/DwiJpTgif8NV8Y756vQupZ"  # the summary
 
 def median_steps(layout):
     t = open(f"{HERE}/{layout}/logs/mimo.log").read()
-    m = [float(x[2]) / 1e3 for x in re.finditer(r"iteration +(\d+)/ +\d+ .*?per iteration \(ms\): ([\d.]+)", t) if int(x[1]) >= 6]
+    m = [
+        float(x[2]) / 1e3
+        for x in re.finditer(r"iteration +(\d+)/ +\d+ .*?per iteration \(ms\): ([\d.]+)", t)
+        if int(x[1]) >= 6
+    ]
     t = open(f"{HERE}/{layout}/logs/rdsp.log").read()
-    r = [float(x[2]) / 1e3 for x in re.finditer(r"^step (\d+) loss [\d.]+ (\d+) ms", t, re.M) if int(x[1]) >= 5]
+    r = [
+        float(x[2]) / 1e3
+        for x in re.finditer(r"^step (\d+) loss [\d.]+ (\d+) ms", t, re.M)
+        if int(x[1]) >= 5
+    ]
     return statistics.median(m), statistics.median(r)
 
 
@@ -53,24 +61,47 @@ def sweep():
 
 
 def shot(path, alt, caption):
-    return (f'<figure><a class="shot" href="{path}"><img src="{path}" alt="{esc(alt)}"></a>'
-            f'<figcaption>{caption}</figcaption></figure>')
+    return (
+        f'<figure><a class="shot" href="{path}"><img src="{path}" alt="{esc(alt)}"></a>'
+        f"<figcaption>{caption}</figcaption></figure>"
+    )
 
 
 def main() -> None:
     (ma, ra), (mb, rb) = median_steps(A), median_steps(B)
     va, la, lb = roles(A)["vision"], roles(A), roles(B)["language"]
-    fwd = {s: sum(v[i] for k, v in va.items() if k.startswith("forward")) for i, s in enumerate(("mimo", "rdsp"))}
+    fwd = {
+        s: sum(v[i] for k, v in va.items() if k.startswith("forward"))
+        for i, s in enumerate(("mimo", "rdsp"))
+    }
     first = la["first"]
-    vis_names = {"1GPU": "1 GPU", "v1": "1 GPU", "vdp2": "DP2 (2 GPUs)", "vtp2": "TP2 (2 GPUs)",
-                 "vtp4": "TP4 (4 GPUs)", "vtp2dp2": "TP2 × DP2 (4 GPUs)"}
+    vis_names = {
+        "1GPU": "1 GPU",
+        "v1": "1 GPU",
+        "vdp2": "DP2 (2 GPUs)",
+        "vtp2": "TP2 (2 GPUs)",
+        "vtp4": "TP4 (4 GPUs)",
+        "vtp2dp2": "TP2 × DP2 (4 GPUs)",
+    }
     lang_names = {"tp2pp2dp1": "a: TP2 × PP2", "tp2pp1dp2": "b: TP2 × DP2"}
-    srows = "".join(f'<tr><td>{lang_names[g]}</td><td>{vis_names.get(v, v)}</td><td class="num">{s:.2f} s</td></tr>'
-                    for g, v, s in sweep())
-    brows = "".join(f'<tr><td>{k}</td><td class="num">{lb[key][0]:.1f}</td><td class="num">{lb[key][1]:.1f}</td></tr>'
-                    for k, key in (("Forward pass", "forward"), ("Backward pass", "backward"),
-                                   ("Busy, total", "busy (all but waiting)"), ("Waiting (sync, send/receive)", "waiting")))
-    back = f'<p class="muted"><a href="{SUMMARY_URL}">← Back to the summary of all runs</a></p>' if SUMMARY_URL else ""
+    srows = "".join(
+        f'<tr><td>{lang_names[g]}</td><td>{vis_names.get(v, v)}</td><td class="num">{s:.2f} s</td></tr>'
+        for g, v, s in sweep()
+    )
+    brows = "".join(
+        f'<tr><td>{k}</td><td class="num">{lb[key][0]:.1f}</td><td class="num">{lb[key][1]:.1f}</td></tr>'
+        for k, key in (
+            ("Forward pass", "forward"),
+            ("Backward pass", "backward"),
+            ("Busy, total", "busy (all but waiting)"),
+            ("Waiting (sync, send/receive)", "waiting"),
+        )
+    )
+    back = (
+        f'<p class="muted"><a href="{SUMMARY_URL}">← Back to the summary of all runs</a></p>'
+        if SUMMARY_URL
+        else ""
+    )
     S = f"{A}/results/screens"
 
     page = f"""<title>9B MIMO vs rdsp</title>
@@ -92,12 +123,16 @@ h3 {{ font-family: var(--font-head); font-weight: 600; font-size: 1.15rem; margi
   <div class="nums">
     <div><span class="big r">{ra:.2f} s</span><span class="muted">a: rdsp, per step</span></div>
     <div><span class="big b">{ma:.2f} s</span><span class="muted">a: MIMO, per step</span></div>
-    <div><span class="big">{100 * (ma - ra) / ma:.0f}%</span><span class="muted">a: rdsp faster</span></div>
+    <div><span class="big">{
+        100 * (ma - ra) / ma:.0f}%</span><span class="muted">a: rdsp faster</span></div>
   </div>
   <div class="nums">
     <div><span class="big r">{rb:.2f} s</span><span class="muted">b: rdsp, per step</span></div>
     <div><span class="big b">{mb:.2f} s</span><span class="muted">b: MIMO, per step</span></div>
-    <div><span class="big">{100 * abs(mb - rb) / mb:.0f}%</span><span class="muted">b: MIMO faster (about even)</span></div>
+    <div><span class="big">{
+        100
+        * abs(mb - rb)
+        / mb:.0f}%</span><span class="muted">b: MIMO faster (about even)</span></div>
   </div>
   <div class="tablewrap"><table>
     <tr><th>Layout</th><th>Vision encoder</th><th>Language model</th><th>Microbatches per step</th></tr>
@@ -110,9 +145,18 @@ h3 {{ font-family: var(--font-head); font-weight: 600; font-size: 1.15rem; margi
 <section id="answer">
   <h2>The answer</h2>
   <ol class="answer">
-    <li><b>Layout a: MIMO is held back by its vision GPU.</b> MIMO's vision forward pass takes {fwd["mimo"]:.1f} s per step ({1000 * fwd["mimo"] / 64:.0f} ms for each of the 64 microbatches), rdsp's {fwd["rdsp"]:.1f} s ({1000 * fwd["rdsp"] / 64:.0f} ms each). MIMO uses Megatron-Bridge's vision encoder, the same one that made Bridge slow.</li>
+    <li><b>Layout a: MIMO is held back by its vision GPU.</b> MIMO's vision forward pass takes {
+        fwd["mimo"]:.1f} s per step ({
+        1000 * fwd["mimo"] / 64:.0f} ms for each of the 64 microbatches), rdsp's {
+        fwd["rdsp"]:.1f} s ({
+        1000
+        * fwd["rdsp"]
+        / 64:.0f} ms each). MIMO uses Megatron-Bridge's vision encoder, the same one that made Bridge slow.</li>
     <li><b>Layout a: MIMO's hand-off between vision and language blocks the CPU on every microbatch.</b> Its first language GPUs spend about 14% of each step in that hand-off code.</li>
-    <li><b>Layout b: both are held back by their 4 language GPUs, which run at about the same speed.</b> MIMO's forward pass is {round(lb["forward"][0], 1) - round(lb["forward"][1], 1):.1f} s slower, rdsp's backward pass {round(lb["backward"][1], 1) - round(lb["backward"][0], 1):.1f} s slower.</li>
+    <li><b>Layout b: both are held back by their 4 language GPUs, which run at about the same speed.</b> MIMO's forward pass is {
+        round(lb["forward"][0], 1)
+        - round(lb["forward"][1], 1):.1f} s slower, rdsp's backward pass {
+        round(lb["backward"][1], 1) - round(lb["backward"][0], 1):.1f} s slower.</li>
     <li><b>More vision GPUs make MIMO slower.</b> Its vision GPU computes only about 3.4 s of each step. The limit is the CPU launching about 158,000 kernels per step. Splitting the encoder most likely does not reduce that (the multi-GPU runs were not profiled).</li>
   </ol>
 </section>
@@ -128,10 +172,20 @@ h3 {{ font-family: var(--font-head); font-weight: 600; font-size: 1.15rem; margi
     <tr><td><code>NVTX</code></td><td>Named code ranges</td><td>rdsp: forward and backward bars. MIMO: only small Transformer Engine ranges</td></tr>
     <tr><td><code>CUDA API</code></td><td>The CPU sending work to the GPU</td><td>Long red or green bar = the CPU stuck waiting</td></tr>
   </table></div>
-  {shot(f"{S}/n1_mimo_one_cycle.png", "Nsight, MIMO, one microbatch cycle, labeled",
-        '<span class="b">MIMO</span>, 186 ms shown. One microbatch: the vision GPU runs its forward pass (94 ms), then its backward pass (80 ms). The first language GPU waits 48 ms (long red bar: a copy back to the CPU) until the vision GPU sends its output.')}
-  {shot(f"{S}/n2_rdsp_one_cycle.png", "Nsight, rdsp, one microbatch cycle, labeled",
-        '<span class="r">rdsp</span>, 184 ms shown. One microbatch: the vision forward pass takes 40 ms. In its backward pass the vision GPU then waits 65 ms (long green bar) for the gradient, until the first language GPU finishes its own backward pass (112 ms) and sends it.')}
+  {
+        shot(
+            f"{S}/n1_mimo_one_cycle.png",
+            "Nsight, MIMO, one microbatch cycle, labeled",
+            '<span class="b">MIMO</span>, 186 ms shown. One microbatch: the vision GPU runs its forward pass (94 ms), then its backward pass (80 ms). The first language GPU waits 48 ms (long red bar: a copy back to the CPU) until the vision GPU sends its output.',
+        )
+    }
+  {
+        shot(
+            f"{S}/n2_rdsp_one_cycle.png",
+            "Nsight, rdsp, one microbatch cycle, labeled",
+            '<span class="r">rdsp</span>, 184 ms shown. One microbatch: the vision forward pass takes 40 ms. In its backward pass the vision GPU then waits 65 ms (long green bar) for the gradient, until the first language GPU finishes its own backward pass (112 ms) and sends it.',
+        )
+    }
   <p><b>What this shows:</b> in MIMO the language GPUs wait for the vision GPU. In rdsp the vision GPU waits for the language GPUs. The GPU everyone waits for sets the step time.</p>
   <p class="muted">Nsight slows the CPU, rdsp more than MIMO (traced steps 11.9 s and 12.8 s; untraced 9.5 s and 9.1 s). Use these pictures for the pattern, not for exact times. All numbers on the labels: <code>nsys_facts.txt</code>.</p>
 </section>
@@ -142,13 +196,26 @@ h3 {{ font-family: var(--font-head); font-weight: 600; font-size: 1.15rem; margi
   <div class="tablewrap"><table>
     <tr><th rowspan="2">Vision GPU</th><th colspan="2" class="num">Per step (64 microbatches), s</th><th colspan="2" class="num">Per microbatch, ms</th><th colspan="2" class="num">In the picture (traced), ms</th></tr>
     <tr><th class="num">MIMO</th><th class="num">rdsp</th><th class="num">MIMO</th><th class="num">rdsp</th><th class="num">MIMO</th><th class="num">rdsp</th></tr>
-    <tr><td>Forward pass</td><td class="num">{fwd["mimo"]:.1f}</td><td class="num">{fwd["rdsp"]:.1f}</td><td class="num">{1000 * fwd["mimo"] / 64:.0f}</td><td class="num">{1000 * fwd["rdsp"] / 64:.0f}</td><td class="num">94</td><td class="num">40</td></tr>
-    <tr><td>Backward pass</td><td class="num">{va["backward"][0]:.1f}</td><td class="num">{va["backward"][1]:.1f}*</td><td class="num">{1000 * va["backward"][0] / 64:.0f}</td><td class="num">{1000 * va["backward"][1] / 64:.0f}*</td><td class="num">80</td><td class="num">138*</td></tr>
-    <tr><td>Waiting in send/receive code</td><td class="num">{va["waiting"][0]:.1f}</td><td class="num">{va["waiting"][1]:.2f}</td><td class="num">{1000 * va["waiting"][0] / 64:.0f}</td><td class="num">{1000 * va["waiting"][1] / 64:.0f}</td><td class="num">–</td><td class="num">–</td></tr>
+    <tr><td>Forward pass</td><td class="num">{fwd["mimo"]:.1f}</td><td class="num">{
+        fwd["rdsp"]:.1f}</td><td class="num">{1000 * fwd["mimo"] / 64:.0f}</td><td class="num">{
+        1000 * fwd["rdsp"] / 64:.0f}</td><td class="num">94</td><td class="num">40</td></tr>
+    <tr><td>Backward pass</td><td class="num">{va["backward"][0]:.1f}</td><td class="num">{
+        va["backward"][1]:.1f}*</td><td class="num">{
+        1000 * va["backward"][0] / 64:.0f}</td><td class="num">{
+        1000
+        * va["backward"][1]
+        / 64:.0f}*</td><td class="num">80</td><td class="num">138*</td></tr>
+    <tr><td>Waiting in send/receive code</td><td class="num">{
+        va["waiting"][0]:.1f}</td><td class="num">{va["waiting"][1]:.2f}</td><td class="num">{
+        1000 * va["waiting"][0] / 64:.0f}</td><td class="num">{
+        1000 * va["waiting"][1] / 64:.0f}</td><td class="num">–</td><td class="num">–</td></tr>
   </table></div>
   <p class="muted">The traced numbers are higher because Nsight slows the CPU (MIMO's whole step: 11.9 s traced vs 9.5 s normal). Per microbatch = per step ÷ 64.</p>
   <p class="muted">* Includes rdsp's waits for the gradient. They happen inside the backward pass, where py-spy cannot see them (Nsight above shows them).</p>
-  <p>MIMO's first language GPUs spend {100 * first["waiting"][0] / ma:.0f}% of each step waiting (py-spy), more than half of it in the hand-off code below.</p>
+  <p>MIMO's first language GPUs spend {
+        100
+        * first["waiting"][0]
+        / ma:.0f}% of each step waiting (py-spy), more than half of it in the hand-off code below.</p>
   <h3>The hand-off code in MIMO</h3>
   <pre>megatron/core/pipeline_parallel/bridge_communicator.py
 973  shape = <span class="hl">forward_shape_tensor.tolist()</span>   # receiver: CPU waits until the sender's shape arrives

@@ -25,10 +25,19 @@ TP, HIDDEN, K_HEADS, V_HEADS, HEAD_DIM = 2, 32, 4, 8, 8
 
 def layer(k_heads=K_HEADS, v_heads=V_HEADS):
     config = transformers.Qwen3_5TextConfig(
-        hidden_size=HIDDEN, linear_num_key_heads=k_heads, linear_num_value_heads=v_heads,
-        linear_key_head_dim=HEAD_DIM, linear_value_head_dim=HEAD_DIM, linear_conv_kernel_dim=4,
-        num_hidden_layers=1, layer_types=["linear_attention"], num_attention_heads=4,
-        num_key_value_heads=2, intermediate_size=64, vocab_size=16)
+        hidden_size=HIDDEN,
+        linear_num_key_heads=k_heads,
+        linear_num_value_heads=v_heads,
+        linear_key_head_dim=HEAD_DIM,
+        linear_value_head_dim=HEAD_DIM,
+        linear_conv_kernel_dim=4,
+        num_hidden_layers=1,
+        layer_types=["linear_attention"],
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=64,
+        vocab_size=16,
+    )
     torch.manual_seed(0)
     full = Qwen3_5GatedDeltaNet(config, 0).float()
     with torch.no_grad():  # the norm starts at ones: make a wrong gradient visible
@@ -41,9 +50,13 @@ def own_rows(rank):
     its key heads' slice of q and of k, then its value heads' slice of v."""
     key_dim, value_dim = K_HEADS * HEAD_DIM, V_HEADS * HEAD_DIM
     k, v = key_dim // TP, value_dim // TP
-    return torch.cat([torch.arange(rank * k, (rank + 1) * k),
-                      key_dim + torch.arange(rank * k, (rank + 1) * k),
-                      2 * key_dim + torch.arange(rank * v, (rank + 1) * v)])
+    return torch.cat(
+        [
+            torch.arange(rank * k, (rank + 1) * k),
+            key_dim + torch.arange(rank * k, (rank + 1) * k),
+            2 * key_dim + torch.arange(rank * v, (rank + 1) * v),
+        ]
+    )
 
 
 def _reference_kernels():
@@ -62,8 +75,7 @@ def _rank(rank, init_file, out_dir):
     _reference_kernels()
     full = layer()
     sharded = copy.deepcopy(full)
-    replaced = shard_linear_attention(sharded, rank=rank, world=TP,
-                                      group=lambda: dist.group.WORLD)
+    replaced = shard_linear_attention(sharded, rank=rank, world=TP, group=lambda: dist.group.WORLD)
 
     x = torch.randn(2, 6, HIDDEN, generator=torch.Generator().manual_seed(1))
     target = torch.randn(2, 6, HIDDEN, generator=torch.Generator().manual_seed(2))
@@ -81,21 +93,24 @@ def _rank(rank, init_file, out_dir):
         return a.shape == b.shape and torch.allclose(a, b, atol=1e-5)
 
     g = {n: p.grad for n, p in full.named_parameters()}
-    torch.save({
-        "replaced": replaced,
-        "heads": (sharded.num_k_heads, sharded.num_v_heads),
-        "output": close(got, expected),
-        "input_grad": close(x_sharded.grad, x_full.grad),
-        "in_proj_qkv": close(sharded.in_proj_qkv.weight.grad, g["in_proj_qkv.weight"][rows]),
-        "conv1d": close(sharded.conv1d.weight.grad, g["conv1d.weight"][rows]),
-        "in_proj_z": close(sharded.in_proj_z.weight.grad, g["in_proj_z.weight"][value_cols]),
-        "in_proj_b": close(sharded.in_proj_b.weight.grad, g["in_proj_b.weight"][value_heads]),
-        "in_proj_a": close(sharded.in_proj_a.weight.grad, g["in_proj_a.weight"][value_heads]),
-        "A_log": close(sharded.A_log.grad, g["A_log"][value_heads]),
-        "dt_bias": close(sharded.dt_bias.grad, g["dt_bias"][value_heads]),
-        "out_proj": close(sharded.out_proj.weight.grad, g["out_proj.weight"][:, value_cols]),
-        "norm": close(sharded.norm.weight.grad, g["norm.weight"]),
-    }, os.path.join(out_dir, f"r{rank}.pt"))
+    torch.save(
+        {
+            "replaced": replaced,
+            "heads": (sharded.num_k_heads, sharded.num_v_heads),
+            "output": close(got, expected),
+            "input_grad": close(x_sharded.grad, x_full.grad),
+            "in_proj_qkv": close(sharded.in_proj_qkv.weight.grad, g["in_proj_qkv.weight"][rows]),
+            "conv1d": close(sharded.conv1d.weight.grad, g["conv1d.weight"][rows]),
+            "in_proj_z": close(sharded.in_proj_z.weight.grad, g["in_proj_z.weight"][value_cols]),
+            "in_proj_b": close(sharded.in_proj_b.weight.grad, g["in_proj_b.weight"][value_heads]),
+            "in_proj_a": close(sharded.in_proj_a.weight.grad, g["in_proj_a.weight"][value_heads]),
+            "A_log": close(sharded.A_log.grad, g["A_log"][value_heads]),
+            "dt_bias": close(sharded.dt_bias.grad, g["dt_bias"][value_heads]),
+            "out_proj": close(sharded.out_proj.weight.grad, g["out_proj.weight"][:, value_cols]),
+            "norm": close(sharded.norm.weight.grad, g["norm.weight"]),
+        },
+        os.path.join(out_dir, f"r{rank}.pt"),
+    )
     dist.destroy_process_group()
 
 
@@ -124,15 +139,23 @@ def test_a_tp_stage_splits_its_linear_attention_and_autotp_leaves_it_alone(tmp_p
     from ray_deepspeed_pipeline.partition import attach_tp_plan
 
     config = transformers.Qwen3_5TextConfig(
-        hidden_size=HIDDEN, linear_num_key_heads=K_HEADS, linear_num_value_heads=V_HEADS,
-        linear_key_head_dim=HEAD_DIM, linear_value_head_dim=HEAD_DIM, linear_conv_kernel_dim=4,
-        num_hidden_layers=2, layer_types=["linear_attention", "full_attention"],
-        num_attention_heads=4, num_key_value_heads=2, head_dim=8, intermediate_size=64,
-        vocab_size=16)
+        hidden_size=HIDDEN,
+        linear_num_key_heads=K_HEADS,
+        linear_num_value_heads=V_HEADS,
+        linear_key_head_dim=HEAD_DIM,
+        linear_value_head_dim=HEAD_DIM,
+        linear_conv_kernel_dim=4,
+        num_hidden_layers=2,
+        layer_types=["linear_attention", "full_attention"],
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=8,
+        intermediate_size=64,
+        vocab_size=16,
+    )
     model = transformers.Qwen3_5ForCausalLM(config)
     attach_tp_plan(model, config.base_model_tp_plan)
-    dist.init_process_group("gloo", init_method=f"file://{tmp_path / 'init'}", rank=0,
-                            world_size=1)
+    dist.init_process_group("gloo", init_method=f"file://{tmp_path / 'init'}", rank=0, world_size=1)
     try:
         _split_linear_attention(model, tp=2)
     finally:

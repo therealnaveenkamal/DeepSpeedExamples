@@ -55,7 +55,8 @@ def breakdown(path: str, step_ms: float) -> list[dict]:
     db = sqlite3.connect(path)
     rows = db.execute(
         "SELECT k.deviceId, k.start, k.end, s.value FROM CUPTI_ACTIVITY_KIND_KERNEL k "
-        "JOIN StringIds s ON s.id = k.shortName").fetchall()
+        "JOIN StringIds s ON s.id = k.shortName"
+    ).fetchall()
     db.close()
     lo, hi = min(r[1] for r in rows), max(r[2] for r in rows)
     steps = (hi - lo) / 1e6 / step_ms
@@ -66,10 +67,14 @@ def breakdown(path: str, step_ms: float) -> list[dict]:
         for _, s, e, name in mine:
             per[category(name)] += e - s
         busy = _union((s, e) for _, s, e, _ in mine)
-        row = {"device": device, "steps": steps,
-               "role": "language" if per["linear attention"] else "vision",
-               "busy_ms": busy / 1e6 / steps, "idle_ms": ((hi - lo) - busy) / 1e6 / steps,
-               "kernels": len(mine) / steps}
+        row = {
+            "device": device,
+            "steps": steps,
+            "role": "language" if per["linear attention"] else "vision",
+            "busy_ms": busy / 1e6 / steps,
+            "idle_ms": ((hi - lo) - busy) / 1e6 / steps,
+            "kernels": len(mine) / steps,
+        }
         row.update({c: v / 1e6 / steps for c, v in per.items()})
         out.append(row)
     return out
@@ -81,11 +86,16 @@ def main(argv=None) -> None:
     p.add_argument("--step-ms", type=float, required=True, help="median step time of the run")
     args = p.parse_args(argv)
     rows = breakdown(args.sqlite, args.step_ms)
-    print(f"{'gpu':>3} {'role':9} {'busy':>7} {'idle':>7} {'kernels':>8} "
-          + " ".join(f"{c:>16}" for c in COLUMNS) + "   (ms per step)")
+    print(
+        f"{'gpu':>3} {'role':9} {'busy':>7} {'idle':>7} {'kernels':>8} "
+        + " ".join(f"{c:>16}" for c in COLUMNS)
+        + "   (ms per step)"
+    )
     for r in rows:
-        print(f"{r['device']:>3} {r['role']:9} {r['busy_ms']:>7.0f} {r['idle_ms']:>7.0f} "
-              f"{r['kernels']:>8.0f} " + " ".join(f"{r[c]:>16.0f}" for c in COLUMNS))
+        print(
+            f"{r['device']:>3} {r['role']:9} {r['busy_ms']:>7.0f} {r['idle_ms']:>7.0f} "
+            f"{r['kernels']:>8.0f} " + " ".join(f"{r[c]:>16.0f}" for c in COLUMNS)
+        )
     print(f"window: {rows[0]['steps']:.1f} steps")
 
 
