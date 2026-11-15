@@ -1,87 +1,47 @@
 # rdsp: pipeline parallelism on Ray + DeepSpeed
 
-rdsp (`ray_deepspeed_pipeline`) splits a model into pipeline stages and gives each stage its own GPU count and parallel layout. Every stage is a group of Ray actors, one per GPU, each running a stock DeepSpeed engine. Stages pass activations and gradients over NCCL in a 1F1B schedule. You can split a Hugging Face vision-language model so the vision encoder gets its own stage and layout, and train it from the HF checkpoint without converting it.
+rdsp (`ray_deepspeed_pipeline`) splits a model into pipeline stages and gives each stage its own GPU count and parallel layout. You can split a Hugging Face vision-language model so the vision encoder gets its own stage, and train it from the HF checkpoint without converting it.
 
-On 8 PCIe GPUs, rdsp takes 13–28% less time per training step (1.15–1.40× the throughput) than Megatron-Bridge and MegatronMIMO on Qwen3.5-2B and 4B, with the same layouts, data and settings. A first run on 8 NVLink H100s gives −1% to −33% for Qwen3.5-4B, and rdsp's colocated-vision layout is the fastest of all; that run has caveats, below.
+```mermaid
+flowchart TB
+    driver(["Driver: plans the split, hands out the schedule"])
+    subgraph stages ["Stages: Ray actors, one per GPU, each running a DeepSpeed engine"]
+        direction LR
+        s0["Stage 0<br/>vision encoder<br/>4 GPUs"]
+        s1["Stage 1<br/>decoder layers<br/>2 GPUs"]
+        s2["Last stage<br/>decoder layers, loss<br/>2 GPUs"]
+        s0 -- activations --> s1 -- activations --> s2
+        s2 -- gradients --> s1 -- gradients --> s0
+    end
+    driver -.-> stages
+```
 
-## Terms
-
-| Term | Meaning |
-|---|---|
-| Stage | A contiguous slice of the model on its own group of GPUs. |
-| PP | Pipeline parallelism: the number of stages. |
-| TP | Tensor parallelism: each layer's matrices split across GPUs. |
-| DP | Data parallelism: copies of a stage, each on different rows. ZeRO-1 splits the optimizer state across them. |
-| Cut | The decoder layer where one stage ends and the next begins. |
-| Microbatch | The rows one stage processes at a time. A step is many microbatches, with gradients accumulated across them. |
-| TP2×PP2×DP2 | 2 stages, each 4 GPUs as TP2 × DP2: 8 GPUs. |
+Every stage is a group of Ray actors, one per GPU, each running a stock DeepSpeed engine. Stages pass activations and gradients to each other directly over NCCL; the driver only plans and schedules.
 
 ## Results
 
-Median step time over steps 6–50. Lower is better.
+Qwen3.5 vision-language models on H100 GPUs, trained on CORD-v2. Median time per training step; lower is better.
 
-### 8× RTX PRO 4500, PCIe
+| Model | GPUs | rdsp | Megatron-Bridge | TorchTitan |
+|---|---|---|---|---|
+| Qwen3.5-35B-A3B (mixture of experts) | 16, two nodes | **6.38 s** | 8.67 s | 9.11 s |
+| Qwen3.5-27B (dense) | 8, one node | **11.19 s** | 14.34 s | 13.16 s |
 
-| Model | Layout | GPUs | Megatron | rdsp | Step time | Megatron tok/s per GPU | rdsp tok/s per GPU |
-|---|---|---|---|---|---|---|---|
-| Qwen3.5-2B | Vision on 1 GPU + language TP2×DP2, vs MegatronMIMO | 5 | 9.64 s | 8.30 s | −14% | 1,356 | 1,567 |
-| Qwen3.5-2B | TP2×PP2×DP2, vs Megatron-Bridge | 8 | 7.39 s | 5.30 s | −28% | 1,089 | 1,523 |
-| Qwen3.5-4B | TP2×PP2×DP2, vs Megatron-Bridge | 8 | 10.04 s | 8.69 s | −13% | 807 | 932 |
-| Qwen3.5-4B | TP4×PP2×DP1, vs Megatron-Bridge | 8 | 15.93 s | 13.29 s | −17% | 509 | 613 |
+- On the 35B that is 1.36× Megatron-Bridge's throughput and 1.43× TorchTitan's; on the 27B, 1.28× and 1.18×.
+- On MegatronMIMO's own layouts, with one GPU for the vision encoder, rdsp runs at 0.99–1.09× MIMO's throughput.
+- rdsp ran the 35B with the vision encoder on its own 4-GPU stage and six 2-GPU language stages, and the 27B as eight 1-GPU stages. Megatron-Bridge used the layout of NVIDIA's H100 recipe on the 35B and rdsp's eight-stage split on the 27B. TorchTitan sharded over all GPUs, with expert parallelism on the 35B.
 
-Tokens are real (non-padding) tokens; per GPU divides by the layout's GPU count, so the 5-GPU and 8-GPU layouts compare directly. Total throughput: 7,837 vs 6,780; 12,187 vs 8,711; 7,460 vs 6,459; 4,901 vs 4,073 tokens/s (rdsp first). Qwen3.5-2B can't run TP4: it has 2 key/value heads.
-
-**Hardware.** AWS g7.48xlarge: 8× NVIDIA RTX PRO 4500 Blackwell (32 GB) on PCIe, no NVLink, so every TP all-reduce and stage-to-stage transfer goes over PCIe. $5.32/h spot in us-east-1.
-
-**Software.** torch 2.13, DeepSpeed 0.19.3 at `53a2ac44`, transformers 5.17.0. Megatron side: `nvcr.io/nvidia/nemo:26.08`, NVIDIA's training scripts unmodified.
-
-**Held equal.**
-- Data: CORD-v2. rdsp replays the exact samples Megatron-Bridge's loader produces, in the same order.
-- Batches: sequence length 2048, 64 rows per step, one row per GPU per microbatch.
-- Optimizer: AdamW, lr 1e-5 constant, betas 0.9/0.95, eps 1e-8, no weight decay, clipping or warm-up.
-- Precision: bf16 compute, fp32 gradients and optimizer state split over data parallel.
-- No activation recompute.
-
-**Not equal.**
-- Pipeline split: Megatron splits decoder layers evenly. rdsp picks the cut from the model and the first batch (`--cuts balanced`).
-- Padding: rdsp pads each microbatch to its longest row. Megatron-Bridge pads every row to 2048 whenever it pipelines, so those rows are not equal work (see [REPRODUCE](docs/REPRODUCE.md)). MegatronMIMO pads to 2048; its dynamic padding gives 9.60 s instead of 9.64 s.
-- Loss averaging: the MegatronMIMO run trains on per-microbatch means (its only mode), so the rdsp run against it does the same. The Bridge runs train on the per-token mean.
-- Embeddings: in the pipeline layouts, Megatron ties the input embedding and output layer across stages. rdsp trains two copies.
-
-### 8× H100, NVLink (first run)
-
-Qwen3.5-4B on an AWS p5.48xlarge (8× H100 SXM 80 GB, NVSwitch); same software, data, settings and recipes.
-
-| Layout | GPUs | Megatron | rdsp | Step time | Megatron tok/s per GPU | rdsp tok/s per GPU |
-|---|---|---|---|---|---|---|
-| Vision on 1 GPU + language TP2×DP2, vs MegatronMIMO | 5 | 7.99 s | 7.89 s | −1% | 1,634 | 1,648 |
-| TP2×PP2×DP2, vs Megatron-Bridge | 8 | 8.79 s | 6.49 s | −26% | 921 | 1,238 |
-| TP4×PP2×DP1, vs Megatron-Bridge | 8 | 18.24 s | 12.30 s | −33% | 440 | 659 |
-| Vision colocated on every GPU + language TP2×PP2×DP2 (rdsp only) | 8 | — | 5.62 s | | — | 1,447 |
-
-Per GPU, MIMO's 5-GPU layout is the most efficient on H100 (about 1,640 tokens/s per GPU on both systems); colocated is the fastest per step but uses 8 GPUs.
-
-Caveats:
-- **One round**, so there's no measure of run-to-run spread yet.
-- **This instance's CPU (AMD EPYC 7R13) limits launch-heavy runs.** Profiling shows the CPU, not the GPUs, setting the pace of the MIMO layout, which is why that one ends in a near-tie. Megatron's TP4 runs slower here than on the PCIe GPUs, likely for the same reason, so the −33% is inflated.
-- **Colocated ran without compiling its encoder.**
-
-Both systems used NVLink. Details: [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md).
-
-Logs behind every number: `bench/published/`. How to rerun all of it: [docs/REPRODUCE.md](docs/REPRODUCE.md). What moved the numbers: [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md).
+One run per configuration. Settings, commands and the log behind each number: [docs/REPRODUCE.md](docs/REPRODUCE.md). Earlier Qwen3.5-2B and 4B results on 8 GPUs: [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md).
 
 ## Install
 
-Linux, CUDA, Python 3.12.
+Linux, CUDA GPUs, Python 3.12. On a fresh node:
 
 ```bash
-uv venv -p 3.12 && . .venv/bin/activate
-uv pip install "torch==2.13.*" torchvision "transformers==5.17.0" ray cloudpickle accelerate safetensors datasets pillow
-DS_BUILD_OPS=0 uv pip install --no-build-isolation \
-    "git+https://github.com/deepspeedai/DeepSpeed.git@53a2ac44fb664bea838df3981ba4366b91643070"
-uv pip install -e ".[dev]"
-uv pip install flash-linear-attention liger-kernel && uv pip install --no-build-isolation causal-conv1d
+bash bench/setup_node.sh
 ```
+
+This builds `~/venv` with torch, DeepSpeed at the commit every result was measured with, and rdsp, and pulls the container the Megatron comparisons run in. To install by hand, or without the container: [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md#install).
 
 Importing `ray_deepspeed_pipeline` doesn't import Ray or DeepSpeed; only the stage actors do.
 
@@ -123,18 +83,12 @@ If the input embedding and output layer share a weight and land on different sta
 
 ## How it works
 
-- **Planning.** `rdsp.initialize` lowers the config into an immutable plan: cuts, each stage's grid (`gpus = dp × sp × tp`), each stage's DeepSpeed config, and a hash that binds checkpoints. Every check, including the cluster's GPU count, runs before any actor starts.
+- **Planning.** `rdsp.initialize` lowers the config into an immutable plan: where the model is cut, each stage's GPUs and DeepSpeed config, and a hash that binds checkpoints. Every check, including the cluster's GPU count, runs before any actor starts.
 - **Stages.** Each stage runs the HF model's own `forward`. Blocks outside the stage pass their input through, and a hook injects what arrived from upstream. No per-architecture code is needed.
-- **Step.** The driver hands each stage its 1F1B op list. Stages exchange activations and gradients directly over NCCL. Each stage applies its optimizer step only after every stage reports its backward done.
+- **Step.** The driver hands each stage its 1F1B schedule, which interleaves forward and backward microbatches. Each stage applies its optimizer step only after every stage reports its backward done.
 - **Failures.** A failure before any update raises `StepFailed`: weights are unchanged and a retry is exact. A failure during the update raises `PipelinePoisoned` until a checkpoint is loaded.
-- **Vision encoder.** There are three placements:
-  - on the first stage, sharing its layout;
-  - on its own stage, via a first cut of 0;
-  - colocated on every GPU.
-- **Balanced cuts.** `--cuts balanced` charges the vision encoder per image patch. It measures patches per text token from the first batch, then picks the cut that minimises the slowest stage.
-- **Memory.** Each bf16 gradient is folded into the fp32 accumulator as soon as it exists, then freed, saving 2 bytes per parameter (12 instead of 14 at DP=2, as in Megatron). Each microbatch is padded only to its own longest row.
 
-Design and the reasoning behind it: [docs/ENGINEERING.md](docs/ENGINEERING.md).
+Vision encoder placement, how the cuts are chosen, memory, and the reasoning behind the design: [docs/ENGINEERING.md](docs/ENGINEERING.md).
 
 ## Model coverage
 
@@ -159,24 +113,17 @@ The GPU tests (parity against the unsplit model, checkpoint round trip, rank-kil
 
 | | |
 |---|---|
-| [GETTING_STARTED](docs/GETTING_STARTED.md) | Install, recipes, flags, your own data, common failures |
-| [REPRODUCE](docs/REPRODUCE.md) | Rerun the benchmark |
+| [GETTING_STARTED](docs/GETTING_STARTED.md) | Install, terms, recipes, flags, your own data, common failures |
+| [REPRODUCE](docs/REPRODUCE.md) | Rerun the benchmarks |
+| [BENCHMARK_RESULTS](docs/BENCHMARK_RESULTS.md) | Qwen3.5-2B and 4B results, per-layout settings, what moved the numbers |
 | [CONTRACTS](docs/CONTRACTS.md) | Public API guarantees, errors, supported layouts |
 | [ENGINEERING](docs/ENGINEERING.md) | Design |
-| [BENCHMARK_RESULTS](docs/BENCHMARK_RESULTS.md) | Per-layout settings, what moved the numbers |
 
 ## Limitations
 
-- **Validation.**
-  - Benchmarked on one 8-GPU node and on two 8× H100 nodes ([REPRODUCE](docs/REPRODUCE.md)).
-  - Two nodes is the most it has run on.
-- **Schedule.**
-  - 1F1B only, no interleaved stages.
-  - No global-norm gradient clipping: a nonzero `gradient_clipping` is rejected.
+- **Scale.** Benchmarked on one 8-GPU node and on two 8× H100 nodes. Two nodes is the most it has run on.
+- **Schedule.** 1F1B only, no interleaved stages. No global-norm gradient clipping: a nonzero `gradient_clipping` is rejected.
 - **Weights.** No parameters tied across stages.
-- **Colocated vision.** Matches the unsplit model. On 32 GB GPUs it needs encoder recompute and is slower (Qwen3.5-4B: 9.66 s vs 8.69 s with the encoder on the first stage); on 80 GB H100s it is the fastest layout (5.62 s vs 6.49 s).
-- **Balanced cuts.**
-  - The cost model ignores communication.
-  - It counts MoE experts in full, not by the active fraction.
-  - `ExplicitCuts` overrides it.
+- **Colocated vision.** It matches the unsplit model. On 32 GB GPUs it needs encoder recompute and is slower; on 80 GB H100s it was the fastest Qwen3.5-4B layout.
+- **Balanced cuts.** The cost model ignores communication and counts MoE experts in full, not by the active fraction. `ExplicitCuts` overrides it.
 - **Checkpoints.** Node-local: they survive actor loss, not node loss. A stage that spans nodes needs shared storage.
