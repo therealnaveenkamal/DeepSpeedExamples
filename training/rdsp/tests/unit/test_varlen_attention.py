@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """--vision-attn varlen: the vision encoder's attention through one
 variable-length call per layer gives HF's SDPA results, and reads the image
 lengths from the GPU once per forward instead of once per layer. PyTorch's

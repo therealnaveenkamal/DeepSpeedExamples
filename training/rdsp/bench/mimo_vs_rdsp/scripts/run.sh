@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # run.sh <step> [layout] [steps]: MegatronMIMO vs rdsp on Qwen3.5-9B, 8x H100, on the box
 # after bench/setup_node.sh and the 9B export (bridge_vs_rdsp/9b_tp4pp2dp1/scripts/run.sh prep).
 #
@@ -18,7 +20,7 @@
 #                        operation); needs the pyspy step's steady time
 #                        -> <layout>/profiles/rdsp-bt.nsys-rep and .sqlite
 # Profiled runs are diagnosis: their step times are not the results. TAG (e.g. -nov11) suffixes
-# the profiles directory and the profiled runs' logs, so a later session keeps the earlier files.
+# the profiles directory and the profiled runs' logs, so a later run keeps the earlier files.
 #
 # Layout name: 9b_<vision>_<language>. Language on ranks 0-3, the vision encoder after it.
 #   vision:   v1 (1 GPU), vtp2, vtp4, vdp2, vtp2dp2

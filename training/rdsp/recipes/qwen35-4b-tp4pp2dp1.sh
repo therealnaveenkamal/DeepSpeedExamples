@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # Qwen3.5-4B, 2 pipeline stages, each TP4 (no data parallelism). One row
 # per microbatch, 64 microbatches per step, as Megatron runs this layout.
 # rdsp places the cut (--cuts balanced picks 12 on the exported CORD-v2 samples).

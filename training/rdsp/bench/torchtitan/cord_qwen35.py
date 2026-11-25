@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """TorchTitan on the rows Megatron-Bridge exported: Qwen3.5 on CORD-v2.
 
 Bridge's SFT rows, exported by bench/mimo/export_bridge_batches.py (the files rdsp

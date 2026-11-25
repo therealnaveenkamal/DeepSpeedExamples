@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Internal command protocol schema and facade result resolution."""
 
 import dataclasses

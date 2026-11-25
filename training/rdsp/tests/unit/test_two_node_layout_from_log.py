@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """bench/two_node_35b/scripts/layout_from_log.py: Bridge's cut and the vision stage's
 width for the two-node runs, read from rdsp's run 1 log rather than picked by hand."""
 

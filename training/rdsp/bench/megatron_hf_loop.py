@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Megatron-Core pipeline training from the same pretrained Hugging Face Qwen3
 weights and the same token file as rdsp_bench.py, for matched loss and
 throughput comparisons.

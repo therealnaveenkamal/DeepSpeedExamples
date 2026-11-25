@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Public PipelineConfig and its declarative per-stage overrides.
 
 Only the compiler reads these; the runtime executes the lowered ExecutionPlan.

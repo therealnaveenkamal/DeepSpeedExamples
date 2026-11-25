@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """One pipeline stage's DeepSpeed engine, driven one microbatch at a time.
 
 The coordinator owns the global step and its all-stage ready/apply barrier,

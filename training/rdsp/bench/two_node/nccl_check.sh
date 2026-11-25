@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # nccl_check.sh: nccl_check.py with torchrun on this node (8 GPUs), in the rdsp venv with
 # efa_env.sh; run on both nodes by both.sh (NNODES, NODE_RANK, MASTER_ADDR). NCCL_DEBUG=INFO
 # records which network NCCL picked ("NET/OFI ... efa" or "NET/Socket").

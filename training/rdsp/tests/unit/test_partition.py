@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Deterministic contiguous partitioning and name-based rebinding."""
 
 import functools
@@ -345,3 +348,47 @@ def test_recompute_first_blocks_takes_the_encoder_whole():
         True,
         True,
     ]
+
+
+def test_per_head_norms_get_their_tp_gradient_sum_when_the_config_plan_omits_them():
+    # Qwen3-VL-MoE's own TP plan leaves out q_norm/k_norm: under tp>1 their
+    # gradients would stay per rank and the TP replicas drift apart
+    transformers = pytest.importorskip("transformers")
+    from ray_deepspeed_pipeline.hf_stage import build_hf_stage
+
+    torch.manual_seed(0)
+    cfg = transformers.Qwen3VLMoeConfig(
+        text_config=dict(
+            hidden_size=32,
+            intermediate_size=64,
+            moe_intermediate_size=16,
+            num_hidden_layers=4,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=8,
+            num_experts=4,
+            num_experts_per_tok=2,
+            vocab_size=64,
+            tie_word_embeddings=False,
+        ),
+        vision_config=dict(
+            depth=2,
+            hidden_size=16,
+            intermediate_size=32,
+            num_heads=2,
+            out_hidden_size=32,
+            deepstack_visual_indexes=[],
+        ),
+        tie_word_embeddings=False,
+    )
+    model = transformers.Qwen3VLMoeForConditionalGeneration(cfg)
+    assert "layers.*.self_attn.q_norm" not in cfg.text_config.base_model_tp_plan
+    parts = partition_parameters(model, UniformTransformerBlocks(), 2)
+    stage = build_hf_stage(
+        model, parts[1].block_start, parts[1].block_stop, parts[1].parameter_names, 1
+    )
+    assert set(stage._rdsp_tp_grad_allreduce) == {
+        "layers.*.self_attn.q_norm",
+        "layers.*.self_attn.k_norm",
+    }
+    assert stage._tp_plan["layers.*.self_attn.q_proj"] == "colwise"

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Driver-side data loading: exact microbatch consumption and resumable position."""
 
 from torch.utils.data import DataLoader
@@ -6,8 +9,10 @@ from ray_deepspeed_pipeline.errors import StepFailed, ValidationError
 
 
 def build_training_dataloader(training_data, collate_fn, rows: int) -> DataLoader:
-    """One loader entry is one global microbatch of `rows` rows."""
-    return DataLoader(training_data, batch_size=rows, collate_fn=collate_fn)
+    """One loader entry is one global microbatch of `rows` rows. A short last
+    entry is dropped: every microbatch of a step must have the rows the
+    stages split."""
+    return DataLoader(training_data, batch_size=rows, collate_fn=collate_fn, drop_last=True)
 
 
 def take_microbatch_entries(data_iter, n: int) -> list[tuple]:

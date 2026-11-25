@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """The single lowering path from PipelineConfig to ExecutionPlan.
 
 Test names double as acceptance selectors; keep them stable."""
@@ -32,7 +35,6 @@ def test_simple_complete_plan():
     assert plan.schedule.kind == "1f1b"
     assert all(s.num_gpus == 1 for s in plan.stages)
     assert plan.connections[0].conversion == "identity"
-    assert plan.failure.poison_on_partial_apply
     # stage ds config stays an ordinary DeepSpeed config
     assert json.loads(plan.stages[0].ds_config_json)["train_batch_size"] == 8
 
@@ -294,3 +296,25 @@ def test_optimizer_group_size_must_be_a_whole_number(value):
     with pytest.raises(ValidationError, match="rdsp_optimizer_group_numel"):
         lower(ToyLM(), simple_config(), {**DS, "rdsp_optimizer_group_numel": value})
     lower(ToyLM(), simple_config(), {**DS, "rdsp_optimizer_group_numel": 0})
+
+
+def test_fp16_is_rejected_for_every_pipeline():
+    # each stage's engine.backward would scale by its own loss scale, so upstream
+    # gradients would carry every downstream stage's scale too
+    with pytest.raises(ValidationError, match="fp16.*bf16 or fp32"):
+        lower(ToyLM(), simple_config(), {**DS, "fp16": {"enabled": True}})
+    lower(ToyLM(), simple_config(), {**DS, "fp16": {"enabled": False}})
+
+
+def test_sequence_parallelism_is_rejected_for_linear_attention_layers():
+    import types
+
+    def model(layer_types):
+        m = ToyLM()
+        m.config = types.SimpleNamespace(layer_types=layer_types)
+        return m
+
+    cfg = simple_config(stage_overrides=[StageOverride(stage=0, num_gpus=2, sp=2)])
+    with pytest.raises(ValidationError, match="linear.attention"):
+        lower(model(["linear_attention", "full_attention"]), cfg, DS)
+    assert lower(model(["full_attention"] * 2), cfg, DS).stages[0].sp == 2

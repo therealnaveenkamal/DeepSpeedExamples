@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """bench/mimo/summarize.py pairs each Megatron run with its rdsp run and
 prints one results row per pair."""
 
@@ -32,9 +35,17 @@ def test_pairs_megatron_and_rdsp_logs(tmp_path, capsys):
     out = capsys.readouterr().out
     row = next(line for line in out.splitlines() if "TP2xPP2xDP2" in line)
     assert "10.00" in row and "8.00" in row and "-20%" in row
-    per_gpu = row.split()[-2:]  # tokens/s per GPU: 65000 tokens over 10 s / 8 s, 8 GPUs
-    assert per_gpu == ["812", "1016"]
+    per_gpu = row.split()[-2:]  # tokens/s per GPU: 64 rows x 2048 over 10 s / 8 s, 8 GPUs
+    assert per_gpu == ["1638", "2048"]
     assert "TP4xPP2xDP1" not in out  # pairs without logs are left out
+
+
+def test_tokens_per_second_follow_rows_and_sequence_length(tmp_path, capsys):
+    (tmp_path / "shared-megatron.log").write_text(_megatron_log(10000.0))
+    (tmp_path / "shared-rdsp.log").write_text(_rdsp_log(8000))
+    summarize.main([str(tmp_path), "--rows", "128", "--seq", "1024"])
+    row = next(line for line in capsys.readouterr().out.splitlines() if "TP2xPP2xDP2" in line)
+    assert row.split()[-5:-3] == ["13107", "16384"]  # 128 x 1024 over 10 s and 8 s
 
 
 def test_every_mimo_layout_gets_its_row(tmp_path, capsys):

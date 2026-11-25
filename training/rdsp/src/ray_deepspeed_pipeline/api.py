@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Public initialize(): argument validation and engine assembly."""
 
 import json

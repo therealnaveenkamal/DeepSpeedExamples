@@ -153,7 +153,7 @@ A step's loss taken as the plain average over every answer token in the step, wh
 _Avoid_: per-token loss, global mean
 
 **Microbatch-mean loss**:
-A step's loss taken as the average of each microbatch's own answer-token average. Tokens in microbatches with fewer answer tokens count for more.
+A step's training loss taken as the average of each rank-microbatch's own answer-token average: each data-parallel rank's share of a microbatch is averaged on its own. Tokens in rank-microbatches with fewer answer tokens count for more. The reported loss is still the token mean.
 _Avoid_: per-microbatch loss, mean of means
 
 ### Comparison

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Turn modal_bench.py grid results (bench/results/*.json) into Markdown tables.
 
     python bench/analyze.py bench/results/<run>.json [> table.md]

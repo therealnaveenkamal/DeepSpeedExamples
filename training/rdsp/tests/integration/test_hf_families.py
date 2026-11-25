@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Major Hugging Face model families through rdsp.initialize(), on real Ray
 CPU actors (torch stub engine): three stages, the middle one data-parallel,
 must train exactly like the unsplit model. The stage builder is rdsp's own

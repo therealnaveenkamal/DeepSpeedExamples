@@ -35,11 +35,11 @@ peak GPU MiB: {0: 12837, 1: 13237, 2: 7902, 3: 11194}
 ===== R5b: --model Qwen/Qwen3-VL-8B-Instruct --stages 4 --steps 4 --rows 2 --microbatches 4 --zero 1 --stage 0:offload=1,recompute=1 --stage 1:offload=1,recompute=1 --stage 2:offload=1,recompute=1 --stage 3:offload=1,recompute=1
 stages (blocks): [(0, 8), (8, 19), (19, 29), (29, 36)]
 Traceback (most recent call last):
-ray.exceptions.OutOfMemoryError: 1 worker(s) were killed due to the node running low on memory. Memory on the node (IP: 172.31.87.149, ID: 275fa5b78b944282786dd1c7012afd8954a8c722bb553b62aac019f1) was 179.99GB / 181.76GB (0.990274)
+ray.exceptions.OutOfMemoryError: 1 worker(s) were killed due to the node running low on memory. Memory on the node (IP: node1, ID: 275fa5b78b944282786dd1c7012afd8954a8c722bb553b62aac019f1) was 179.99GB / 181.76GB (0.990274)
 Traceback (most recent call last):
-ray_deepspeed_pipeline.errors.StepFailed: worker failure on g1.t0.s3.apply: OutOfMemoryError: 1 worker(s) were killed due to the node running low on memory. Memory on the node (IP: 172.31.87.149, ID: 275fa5b78b944282786dd1c7012afd8954a8c722bb553b62aac019f1) was 179.99GB / 181.76GB (0.990274)
+ray_deepspeed_pipeline.errors.StepFailed: worker failure on g1.t0.s3.apply: OutOfMemoryError: 1 worker(s) were killed due to the node running low on memory. Memory on the node (IP: node1, ID: 275fa5b78b944282786dd1c7012afd8954a8c722bb553b62aac019f1) was 179.99GB / 181.76GB (0.990274)
 Traceback (most recent call last):
-ray_deepspeed_pipeline.errors.PipelinePoisoned: partial optimizer apply in generation 1: worker failure on g1.t0.s3.apply: OutOfMemoryError: 1 worker(s) were killed due to the node running low on memory. Memory on the node (IP: 172.31.87.149, ID: 275fa5b78b944282786dd1c7012afd8954a8c722bb553b62aac019f1) was 179.99GB / 181.76GB (0.990274)
+ray_deepspeed_pipeline.errors.PipelinePoisoned: partial optimizer apply in generation 1: worker failure on g1.t0.s3.apply: OutOfMemoryError: 1 worker(s) were killed due to the node running low on memory. Memory on the node (IP: node1, ID: 275fa5b78b944282786dd1c7012afd8954a8c722bb553b62aac019f1) was 179.99GB / 181.76GB (0.990274)
 exit 1  wall 112s
 peak GPU MiB: {0: 21426, 1: 13056, 2: 11948, 3: 18088}
 ALL_RUNS_DONE

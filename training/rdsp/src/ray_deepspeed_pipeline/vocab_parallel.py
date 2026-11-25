@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Vocab-parallel input embedding and output head for tensor-parallel stages.
 
 A large vocabulary makes the embedding and the output head the biggest single

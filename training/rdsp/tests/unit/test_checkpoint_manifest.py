@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Checkpoint manifest and save/load protocol, on in-process fake stages.
 
 Test names double as acceptance selectors; keep them stable."""
@@ -14,7 +17,7 @@ from ray_deepspeed_pipeline import checkpoint as ckpt
 from ray_deepspeed_pipeline.compiler import lower
 from ray_deepspeed_pipeline.config import StageOverride
 from ray_deepspeed_pipeline.coordinator import PipelineCoordinator
-from ray_deepspeed_pipeline.errors import CheckpointError, PipelinePoisoned
+from ray_deepspeed_pipeline.errors import CheckpointError, PipelinePoisoned, StepFailed
 
 DS = {"gradient_accumulation_steps": 2, "train_batch_size": 8}  # 4 rows per microbatch
 
@@ -29,12 +32,15 @@ class FakeStage:
         self.fail_save, self.drop_rank = fail_save, drop_rank
         self.loaded = []
         self.is_alive = True
+        self.fail_step = False
 
     def prepare(self, inputs=None, labels=None):
         return (inputs, labels)
 
     def submit(self, command, *, control=None, inputs=None, labels=None, prepared=None):
         if command.kind == "step":  # a training step, for prefetch tests
+            if self.fail_step:
+                raise RuntimeError("rank lost")
             self.last_inputs = prepared[0] if prepared is not None else inputs
             forwards = [mb for kind, mb, _ in control["ops"] if kind == "forward"]
             return {"losses": [0.5] * len(forwards) if self.is_last else None, "ready": True}
@@ -243,3 +249,42 @@ def test_load_drops_the_step_prefetch_read_ahead(tmp_path):
     coord.load_checkpoint(str(tmp_path), "t1")
     coord.train_batch(iter([(f"b{k}", f"y{k}") for k in range(4)]))
     assert stages[0].last_inputs == ["b0", "b1"]
+
+
+def test_a_save_after_a_failed_step_does_not_count_the_entries_kept_for_its_retry(tmp_path):
+    _, stages, coord = make_coordinator((1, 1))
+    stages[1].fail_step = True
+    with pytest.raises(StepFailed):
+        coord.train_batch(iter([(f"x{k}", f"y{k}") for k in range(2)]))
+    coord.save_checkpoint(
+        str(tmp_path), "t", data_position={"owner": "engine", "entries_consumed": 2}
+    )
+    manifest = json.loads((tmp_path / "t" / "manifest.json").read_text())
+    assert manifest["data_position"] == {"owner": "engine", "entries_consumed": 0}
+
+
+def test_a_save_under_prefetch_records_the_entries_read_ahead(tmp_path):
+    _, _, coord = make_coordinator((1, 1), prefetch=True)
+    coord.train_batch(iter([(f"x{k}", f"y{k}") for k in range(6)]))
+    coord.save_checkpoint(str(tmp_path), "t", data_position={"owner": "caller"})
+    manifest = json.loads((tmp_path / "t" / "manifest.json").read_text())
+    assert manifest["data_position"] == {"owner": "caller", "read_ahead": 2}
+
+
+def test_publish_creates_the_tag_directory(tmp_path):
+    # node-local storage: no stage wrote under the driver's root
+    manifest = ckpt.build_manifest(
+        tag="t",
+        global_step=0,
+        plan_hash="h",
+        plan_json="{}",
+        stage_records=[],
+        data_position=None,
+        client_state={},
+    )
+    ckpt.publish(str(tmp_path / "root"), manifest)
+    assert (tmp_path / "root" / "t" / "manifest.json").exists()
+    blocker = tmp_path / "file"
+    blocker.write_text("")
+    with pytest.raises(CheckpointError, match="manifest"):
+        ckpt.publish(str(blocker), manifest)

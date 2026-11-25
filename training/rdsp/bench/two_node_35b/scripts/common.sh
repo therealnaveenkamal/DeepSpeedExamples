@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # Sourced by two_node_35b/<layout>/run.sh on node 1, after scripts/prep.sh: Qwen3.5-35B-A3B on
 # two p5.48xlarge (16 H100, EFA), the settings every run shares.
 # Bridge and TorchTitan start on both nodes through bench/two_node/both.sh; rdsp's driver runs
@@ -37,7 +39,7 @@ RECOMPUTE=${RECOMPUTE:-0}
 # node as before), as on a cluster without EFA or InfiniBand. Logs get "-tcp" after NAME.
 export NET=${NET:-efa}
 [ "$NET" = socket ] && export NAME="${NAME:-}-tcp"
-# ~/no_tcp: TCP runs switched off (a queue that is already running skips them when it gets there)
+# ~/no_tcp: TCP runs switched off (a script already running skips them when it gets there)
 if [ "$NET" = socket ] && [ -f "$HOME/no_tcp" ]; then echo "TCP runs off (~/no_tcp)"; exit 0; fi
 
 bridge() {  # bridge <runs.sh case> <log name> [Bridge overrides...]: Bridge on both nodes
@@ -46,7 +48,7 @@ bridge() {  # bridge <runs.sh case> <log name> [Bridge overrides...]: Bridge on 
   bash "$BOTH" env MODEL=$MODEL RECIPE=$RECIPE GBS=$GBS STEPS=$STEPS LOGS=$LOGS NET=$NET \
     NCCL_DEBUG=${NCCL_DEBUG:-} HOST_OFI=${HOST_OFI:-} NCCL_P2P_PXN_LEVEL=${NCCL_P2P_PXN_LEVEL:-} \
     GRAD_REDUCE_FP32=false MEGATRON_EXTRA="$MEG_COMMON $rc_flags $*" bash "$RUNS" "$case" || rc=$?
-  mv "$LOGS/$case.log" "$LOGS/$name.log" 2>/dev/null
+  mv "$LOGS/$case.log" "$LOGS/$name.log" 2>/dev/null || true
   return $rc
 }
 

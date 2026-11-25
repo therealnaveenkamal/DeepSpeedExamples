@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Run rdsp test files on Modal GPUs, with DeepSpeed from the pinned revision.
 
 From the repo root:

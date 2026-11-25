@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Driver-side handles to the stage actor groups, and their start-up.
 
 create_stage_clients() places each stage on one node, starts one

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Vision attention as one variable-length flash attention call per layer.
 
 Hugging Face's Qwen-VL vision encoders attend within each image. Under SDPA

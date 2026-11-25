@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """All-reduce and all-to-all bandwidth over every GPU of both nodes, with NCCL set up as the
 runs use it (EFA through the aws-ofi-nccl plugin, bench/two_node/efa_env.sh). Start on both
 nodes at once:

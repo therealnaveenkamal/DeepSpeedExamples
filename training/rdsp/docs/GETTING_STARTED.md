@@ -8,15 +8,16 @@ Linux, CUDA GPUs, Python 3.12. `bench/setup_node.sh` does all of this on a fresh
 
 ```bash
 uv venv -p 3.12 && . .venv/bin/activate
-uv pip install "torch==2.13.*" torchvision "transformers==5.17.0" ray cloudpickle accelerate safetensors datasets pillow
+uv pip install "torch==2.13.0" "torchvision==0.28.0" "transformers==5.17.0" "ray==2.59.0" cloudpickle \
+    "accelerate==1.15.0" safetensors datasets pillow
 DS_BUILD_OPS=0 uv pip install --no-build-isolation \
     "git+https://github.com/deepspeedai/DeepSpeed.git@53a2ac44fb664bea838df3981ba4366b91643070"
 uv pip install -e .
-uv pip install flash-linear-attention liger-kernel   # Qwen3.5 linear attention, fused kernels
-uv pip install --no-build-isolation causal-conv1d
+uv pip install "flash-linear-attention==0.5.2" "liger-kernel==0.8.4"   # Qwen3.5 linear attention, fused kernels
+uv pip install --no-build-isolation "causal-conv1d==1.7.0"
 ```
 
-The DeepSpeed commit is the one every result was measured with.
+The DeepSpeed commit is the one every result was measured with; the other versions are the ones the October runs used.
 
 ## Terms
 
@@ -90,6 +91,10 @@ ValidationError: the pipeline needs 8 GPUs; this Ray cluster has 4. Reduce gpus=
 ```
 
 On a multi-node cluster, stages fill the driver's node first, then the next. A stage with more GPUs than a node has spans nodes, its tensor-parallel groups kept inside a node (each node's share of the stage must be a multiple of `tp` x `sp`). A stage that cannot be placed at all fails after `RDSP_PLACEMENT_TIMEOUT_S` (default 600 s) with `stage S: cannot place G GPUs ... in this Ray cluster`.
+
+Two more timeouts, both in seconds:
+- `RDSP_P2P_TIMEOUT_S` (default 300): how long a stage waits on a neighbour's send or receive before the step fails.
+- `RDSP_ALIVE_TIMEOUT_S` (default 60): how long loading a checkpoint waits for every stage actor to answer a ping. A stage that doesn't answer counts as lost: its workers are rebuilt, or the load fails if the pipeline can't rebuild them.
 
 **Several nodes.** Start Ray on each node yourself (`ray start --head` on the first, `ray start --address <first node>:6379` on the others) with the network settings NCCL needs in that shell, and run `train_vl.py` on the first node with `RAY_ADDRESS=auto`. Workers of a cluster started this way run in `ray start`'s environment, not the driver's; `train_vl.py` passes them the driver's `RDSP_*`, `NCCL_*`, `FI_*`, `HF_*`, `PYTORCH_*`, `TORCH_*`, `DS_*`, `CUDA_HOME`, `LD_LIBRARY_PATH` and `TRANSFORMERS_OFFLINE`, except anything named like a credential (`HF_TOKEN`): the workers read the weights the driver downloaded. On AWS with EFA: `bench/two_node/` (`efa_env.sh`, `ray_cluster.sh`).
 

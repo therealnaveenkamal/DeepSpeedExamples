@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Profiled steps as MeasuredStages: what BalancedTransformerBlocks(measured=...)
 re-cuts the pipeline by."""
 
@@ -43,9 +46,12 @@ def measured_stages(plan, records, skip: int, reserve_gib: float) -> MeasuredSta
             )
         per_step = [max(sum(r.get(k, 0.0) for k in _BUSY) for r in ranks) for ranks in zip(*steps)]
         seconds.append(sum(per_step) / len(per_step) / 1e3)
-        peaks.append(
-            max((r.get("peak_gb", 0.0) for rank in stage for r in rank["records"]), default=0.0)
-        )
+        # from the first kept step on, so each kept step's apply counts too
+        kept = []
+        for rank in stage:
+            starts = [i for i, r in enumerate(rank["records"]) if r.get("kind") == "step"]
+            kept += rank["records"][starts[skip] :]
+        peaks.append(max((r.get("peak_gb", 0.0) for r in kept), default=0.0))
         totals += [rank["total_gib"] for rank in stage if rank["total_gib"] is not None]
     limit = (min(totals) if totals else float("inf")) - reserve_gib
     return MeasuredStages(

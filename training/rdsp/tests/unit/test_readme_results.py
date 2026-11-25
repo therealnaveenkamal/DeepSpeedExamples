@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """The README's headline step times are the medians of the logs docs/REPRODUCE.md cites,
 as bench/gap_round/scripts/medians.py computes them, and its ratios follow from them."""
 
@@ -22,8 +25,8 @@ LOGS = {
         ),
     ),
     "27B": (
-        ("rdsp", "bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-fix-p8.log"),
-        ("bridge", "bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-gap-cut1.log"),
+        ("rdsp", "bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-nov21fix-rows1-best.log"),
+        ("bridge", "bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-nov21fix-mbs1-best.log"),
         ("titan", "torchtitan/logs/run-qwen35_27b_cord_fsdp8_rc_bf16.log"),
     ),
 }
@@ -51,3 +54,10 @@ def test_the_ratios_follow_from_the_step_times(model):
     text = readme()
     assert f"{bridge / ours:.2f}×" in text
     assert f"{titan / ours:.2f}×" in text
+
+
+def test_rdsp_steps_are_counted_as_logged():
+    """rdsp's log counts from step 0, and medians.py keeps its numbers."""
+    log = "".join(f"step {i} loss 0.5 {1000 * (i + 1)} ms\n" for i in range(50))
+    assert min(medians.rdsp(log)) == 0
+    assert medians.rdsp(log)[6] == 7.0

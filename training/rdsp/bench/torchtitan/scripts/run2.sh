@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # run2.sh <fit|run> <CONFIG>: TorchTitan over two nodes, Qwen3.5-35B-A3B on Bridge's rows exported
 # at 128 per step. Start it on both nodes at once from ~/rdsp with bench/two_node/both.sh, which
 # sets NNODES, NODE_RANK and MASTER_ADDR:

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """The global checkpoint protocol with real DeepSpeed engines and NCCL
 stage-local worlds (2 GPUs, one per stage).
 

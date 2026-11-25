@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Supported configurations. Default-deny: a row is supported only once its
 validation test has passed and the run is recorded here. When and where each
 validation ran is in docs/BENCHMARK_RESULTS.md."""

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Optimizer parameter groups for DeepSpeed's ZeRO step: consecutive, at most
 max_numel elements each (a larger parameter alone), every parameter exactly
 once, and built only when DeepSpeed lists them (after its tensor-parallel

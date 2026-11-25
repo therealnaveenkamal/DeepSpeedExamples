@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # rdsp, Qwen3.5-27B, TP1 x PP8 x DP1 (8 pipeline stages of one GPU) on 8x H100. 1 row(s) per microbatch (one per DP copy), 64
 # microbatches per step, as Megatron runs this layout. Every row padded to 2048. Recompute every
 # block (27B does not fit this layout without), bf16 gradient accumulation,

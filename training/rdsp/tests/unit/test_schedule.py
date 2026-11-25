@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Deterministic 1F1B command generation."""
 
 from test_partition import ToyLM

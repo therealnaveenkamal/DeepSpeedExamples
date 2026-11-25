@@ -43,6 +43,30 @@ bench/mimo_vs_rdsp/convert.log
 !bench/mimo_vs_rdsp/9b_v1_tp2pp1dp2/logs/mimo-nov11.log
 !bench/blog_round/logs27b/rdsp-27b-1rows-10steps-profile-run1.log
 !bench/blog_round/logs27b/mimo-27b-1rows-10steps-run1-node2.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-nov21-mbs1.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-nov21-mbs2.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-nov21-mbs4.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-nov21fix-mbs1-best.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-nov21fix-mbs2-best.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-nov21fix-mbs2-block8.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-nov21fix-mbs2-block9.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-nov21fix-mbs2-selective.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-nov21fix-mbs4-best.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-nov21fix-mbs8-best.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-nov21-rows1.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-nov21-rows2.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-nov21-rows4.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-nov21fix-rows1-best.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-nov21fix-rows2-best.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-nov21fix-rows2-compile.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-nov21fix-rows2-per1.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-nov21fix-rows2-rc6.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-nov21fix-rows4-best.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-nov21fix-rows4-profile-all.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-nov21fix-rows8-best.log
+!bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-nov11.log
+!bench/bridge_vs_rdsp/27b_tp2pp2dp2/logs/bridge-50.log
+!bench/torchtitan/logs/run-qwen35_27b_cord_tp4dp2.log
 
 # nCompass profiling plugin's working files
 ncompass/

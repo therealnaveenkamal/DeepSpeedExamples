@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # bench.sh <layout>...: rdsp against Megatron on one 8-GPU node, then the table.
 #
 #   noncoloc   MegatronMIMO vs rdsp: vision encoder on 1 GPU, language TP2xDP2 (5 GPUs)

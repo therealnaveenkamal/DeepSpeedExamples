@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Stable public exception classes. No Ray or DeepSpeed subclassing."""
 
 

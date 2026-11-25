@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # run.sh rdsp: Qwen3.5-35B-A3B with the vision encoder on a stage of its own: K GPUs
 # encode the step's images (one image row per GPU per microbatch), the language model runs as
 # (16 - K) / 2 pipeline stages of 2 GPUs. K comes from run 1's measured stage times
@@ -11,7 +13,7 @@
 # STAGE_GPUS=4: language stages of 4 GPUs instead of 2 ((16 - K) / 4 of them; K a multiple of 4),
 # logs get "-s4"; with LANG_EP=4 each splits its experts over its 4 GPUs.
 # K (required: 2, 4 or 8), STEPS (default 50), RECOMPUTE=1 (every block), NAME (log suffix).
-set -uo pipefail
+set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/../scripts/common.sh"
 export LOGS=$HERE/logs$LOGS_SUFFIX; mkdir -p "$LOGS"

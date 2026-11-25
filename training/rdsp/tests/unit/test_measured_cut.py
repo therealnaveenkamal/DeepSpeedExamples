@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """--cuts measured: profiled stage times re-cut the pipeline. Each stage's
 time beyond its blocks' becomes a fixed cost of that stage, blocks move off
 slow stages, and no stage is cut to need more memory than the limit."""
@@ -283,3 +286,15 @@ def test_a_failed_step_is_what_measure_stages_raises_even_if_profiling_cannot_be
 def test_stage_times_must_be_positive():
     with pytest.raises(ValidationError, match="positive"):
         measured((16,), (0.0, 19.0))
+
+
+def test_skipped_steps_set_no_memory_peak():
+    conf = json.dumps({"zero_optimization": {"stage": 1}})
+    plan = types.SimpleNamespace(
+        stages=[types.SimpleNamespace(block_start=0, ds_config_json=conf, tp=1, dp=1)]
+    )
+    warm_up = rank((9000, 9000), peak=78.0)["records"]  # allocation, compilation
+    steady = rank((5000, 11000), (5000, 11000), peak=50.0)["records"]
+    records = [[{"records": warm_up + steady, "total_gib": 80.0}]]
+    m = measured_stages(plan, records, skip=1, reserve_gib=5.0)
+    assert m.peak_gib == (51.0,)

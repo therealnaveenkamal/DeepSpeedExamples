@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Megatron-Bridge's exported CORD-v2 rows as a TorchTitan dataset (see cord_qwen35.py).
 
 Source, processor and collator only: no model or kernel code, so the data path runs

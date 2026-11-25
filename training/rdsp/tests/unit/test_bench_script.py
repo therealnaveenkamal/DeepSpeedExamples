@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """bench/mimo/bench.sh: which runs.sh cases a layout launches, in what order,
 and what it skips. DRY_RUN=1 prints the plan instead of running it."""
 

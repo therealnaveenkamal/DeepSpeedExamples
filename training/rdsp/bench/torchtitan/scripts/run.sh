@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # run.sh <fit|run> [CONFIG]: TorchTitan, Qwen3.5-27B TP4 x PP2 on Bridge's exported rows, on the
 # H100 box after scripts/setup_box.sh, the 27B download and the export.
 #   fit   3 steps (memory check)        run   50 steps (STEPS to change)

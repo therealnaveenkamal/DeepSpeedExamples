@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Train a Qwen3-VL or Qwen3.5 model with rdsp on image-caption rows.
 
 The driver holds only an empty model skeleton; each stage reads its own
@@ -453,7 +456,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=parse_stage,
         action="append",
         default=[],
-        help="per-stage layout, as in train.py",
+        help=(
+            "per-stage layout, as in train.py; recompute_blocks=N recomputes the "
+            "stage's first N decoder layers, and the first stage, which holds the "
+            "vision encoder, always recomputes the encoder (even at N=0)"
+        ),
     )
     p.add_argument("--microbatches", type=int, default=8)
     p.add_argument("--rows", type=int, default=4, help="rows per microbatch")

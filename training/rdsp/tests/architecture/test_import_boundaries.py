@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Importing the package must not import ray, deepspeed or cupy.
 
 They are runtime dependencies imported lazily by the coordinator and stage

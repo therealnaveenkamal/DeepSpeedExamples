@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """train_vl.py optimizer flags. --master-dtype bf16 sets DeepSpeed's two
 low-precision state keys and is refused wherever DeepSpeed would ignore them;
 --master-dtype remainder asks the stage adapter for RemainderAdamW under the

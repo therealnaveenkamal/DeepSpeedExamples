@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Stage builders and engine factories that rdsp_bench.py injects into rdsp.
 
 Imported inside the stage actors (rdsp_bench.py puts this directory on their

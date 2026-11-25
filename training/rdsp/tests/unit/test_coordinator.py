@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """The one-step coordinator state machine, on fake workers."""
 
 import pytest
@@ -21,6 +24,8 @@ class FakeStageWorker:
         self.ready = ready
         self.commands = []
         self.ops = []
+        self.controls = []
+        self.fail_prepare = False
         self.saw_labels = False
         self.saw_inputs = False
         self.loss_calls = 0
@@ -32,6 +37,8 @@ class FakeStageWorker:
 
     def prepare(self, inputs=None, labels=None):
         """A step's payload, made ready ahead of its dispatch."""
+        if self.fail_prepare:
+            raise ValueError("cannot split the rows")
         return (inputs, labels)
 
     def submit(self, command, *, inputs=None, labels=None, control=None, prepared=None):
@@ -47,6 +54,7 @@ class FakeStageWorker:
             return True
         assert command.kind in ("step", "eval_step"), command.kind
         ops = control["ops"]
+        self.controls.append(control)
         self.ops.extend(ops)
         if any(kind in self.fail_on for kind, _, _ in ops):
             raise RuntimeError("injected failure inside the step")
@@ -287,3 +295,102 @@ def test_a_stage_whose_ranks_do_not_share_the_checkpoint_directory_refuses_to_sa
     apart = [shared[0], {"rank": 1, "shares_dir": False}]
     with pytest.raises(CheckpointError, match="stage 3.*rank 1.*shared"):
         client._stage_record(apart)
+
+
+def test_microbatches_of_different_row_counts_travel_with_their_shapes():
+    import torch
+
+    coord, workers = build(microbatches=2)
+    same = [(torch.zeros(2, 8), "y0"), (torch.zeros(2, 8), "y1")]
+    coord.train_batch(iter(same))
+    assert workers[0].controls[-1]["varying"] is False
+    short_last = [(torch.zeros(2, 8), "y0"), (torch.zeros(1, 8), "y1")]
+    coord.train_batch(iter(short_last))
+    assert workers[0].controls[-1]["varying"] is True
+
+
+def test_a_payload_that_cannot_be_built_dispatches_nothing():
+    coord, workers = build(stages=3)
+    workers[2].fail_prepare = True
+    with pytest.raises(StepFailed, match="stage 2"):
+        coord.train_batch(iter([(f"x{k}", f"y{k}") for k in range(4)]))
+    assert all(w.commands == [] for w in workers), "no stage may start a step it cannot finish"
+
+
+def test_a_retry_after_step_failed_reruns_the_failed_steps_entries():
+    coord, workers = build(fail_on={1: {"forward"}})
+    data = iter([(f"x{k}", f"y{k}") for k in range(8)])
+    with pytest.raises(StepFailed):
+        coord.train_batch(data)
+    workers[1].fail_on = set()
+    coord.train_batch(data)
+    assert workers[0].last_inputs == ["x0", "x1", "x2", "x3"]
+    coord.train_batch(data)
+    assert workers[0].last_inputs == ["x4", "x5", "x6", "x7"]
+
+
+def test_a_new_iterator_after_step_failed_drops_the_failed_steps_entries():
+    coord, workers = build(fail_on={1: {"forward"}})
+    with pytest.raises(StepFailed):
+        coord.train_batch(iter([(f"x{k}", f"y{k}") for k in range(4)]))
+    workers[1].fail_on = set()
+    coord.train_batch(iter([(f"z{k}", f"w{k}") for k in range(4)]))
+    assert workers[0].last_inputs == ["z0", "z1", "z2", "z3"]
+
+
+def test_a_retry_under_prefetch_keeps_the_step_read_ahead():
+    coord, workers = build_prefetching()
+    data = iter([(f"x{k}", f"y{k}") for k in range(8)])
+    workers[0].ready = False  # fails after dispatch, once the next step is read ahead
+    with pytest.raises(StepFailed, match="not ready"):
+        coord.train_batch(data)
+    workers[0].ready = True
+    coord.train_batch(data)
+    assert workers[0].last_inputs == ["x0", "x1"]
+    coord.train_batch(data)
+    assert workers[0].last_inputs == ["x2", "x3"]
+    coord.train_batch(data)
+    assert workers[0].last_inputs == ["x4", "x5"]
+
+
+def test_eval_batch_takes_its_own_iterator_beside_the_engines_loader():
+    from torch.utils.data import DataLoader
+
+    from ray_deepspeed_pipeline.engine import RayPipelineEngine
+
+    coord, workers = build()
+    rows = [(f"x{k}", f"y{k}") for k in range(8)]
+    engine = RayPipelineEngine(coord, DataLoader(rows, batch_size=1, collate_fn=lambda b: b[0]))
+    engine.eval_batch(iter([(f"e{k}", f"f{k}") for k in range(4)]))
+    assert workers[0].last_inputs == ["e0", "e1", "e2", "e3"]
+    engine.train_batch()  # the loader's entries were not consumed by the eval
+    assert workers[0].last_inputs == ["x0", "x1", "x2", "x3"]
+
+
+def test_a_stage_worker_keeps_a_bounded_record_of_executed_commands():
+    import torch
+
+    from ray_deepspeed_pipeline.boundary import Grid
+    from ray_deepspeed_pipeline.stage_worker import StageWorkerActor, _PhaseTimer
+
+    class Adapter:
+        def apply(self):
+            return True
+
+    worker = StageWorkerActor(
+        None,
+        "{}",
+        stage=0,
+        rank=0,
+        grid=Grid(1, 1),
+        backend="gloo",
+        n_microbatches=4,
+        is_first=True,
+        is_last=False,
+    )
+    worker.adapter, worker._timer = Adapter(), _PhaseTimer(torch.device("cpu"))
+    for step in range(1000):
+        worker.execute(f"g1.t{step}.apply", "apply")
+    executed = worker.executed_commands()
+    assert executed[-1] == "g1.t999.apply"
+    assert len(executed) < 100, "one step's commands are kept, not every step's"

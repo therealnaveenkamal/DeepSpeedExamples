@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Dependency directions, checked mechanically.
 
 - Importing the package or any compile-path module pulls in none of ray,

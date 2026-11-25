@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Loss averaging across the step.
 
 A plain loss_fn returns each data-parallel rank's mean over its rows, and the

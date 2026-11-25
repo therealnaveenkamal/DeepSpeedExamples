@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """rdsp vs Megatron: pipeline-parallel training throughput on Modal H100s.
 
 From the repo root:

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 from ray_deepspeed_pipeline.api import initialize
 from ray_deepspeed_pipeline.config import (
     BalancedTransformerBlocks,

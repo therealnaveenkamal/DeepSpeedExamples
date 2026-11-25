@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Stage-boundary layout conversion.
 
 Every stage lays one global microbatch out over its ranks as a grid:
@@ -157,6 +160,30 @@ def assemble(pieces: list[tuple[Cell, torch.Tensor]], dest: Cell) -> torch.Tenso
             f"boundary pieces cover {covered} of {expected} elements of the destination cell {dest}"
         )
     return out
+
+
+def assemble_boundary(pieces: list[tuple[Cell, tuple]], dest: Cell) -> tuple:
+    """dest's (hidden state, block arguments) from the source cells'
+    (hidden, extras). Under sequence parallelism every block argument must be
+    laid out rows x sequence like the hidden state; one that is not (a 4D
+    attention mask) fails the step."""
+    hidden = assemble([(cell, x) for cell, (x, _) in pieces], dest)
+    first_cell, (first, extras) = pieces[0]
+    if first_cell.sp > 1 or dest.sp > 1:
+        for name, t in extras.items():
+            if name.startswith("@"):  # stage-to-stage settings, not block arguments
+                continue
+            if t.dim() < 2 or t.shape[1] != first.shape[1]:
+                raise StepFailed(
+                    f"block argument {name!r} of shape {tuple(t.shape)} is not laid out "
+                    f"rows x sequence, so it cannot be split across sequence shards; "
+                    f"sequence parallelism needs blocks that get no 4D attention mask "
+                    f"(sdpa attention, no padding mask)"
+                )
+    out = {
+        name: assemble([(cell, got[name]) for cell, (_, got) in pieces], dest) for name in extras
+    }
+    return hidden, out
 
 
 def conversion_name(src: Grid, dest: Grid) -> str:

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """The three vision placements on GPU with real DeepSpeed engines, each
 against the unsplit model (tiny Qwen3.5-VL, fp32, SGD so any gradient
 scaling error shows):

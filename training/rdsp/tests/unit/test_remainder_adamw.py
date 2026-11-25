@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """RemainderAdamW: an fp32 master kept as the bf16 weight plus a 16-bit
 remainder is exact, and AdamW on it follows torch.optim.AdamW on a separate
 fp32 master bit for bit, whatever the chunking."""

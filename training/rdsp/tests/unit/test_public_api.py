@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """The public API: what a user imports, and the contract each name states."""
 
 from types import SimpleNamespace

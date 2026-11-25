@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # rdsp vs Megatron (MegatronMIMO and Megatron-Bridge) on one 8-GPU node,
 # Qwen3.5 on CORD-v2. Run on the node after bench/setup_node.sh:
 #

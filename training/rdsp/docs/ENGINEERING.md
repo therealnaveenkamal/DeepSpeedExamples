@@ -61,7 +61,7 @@ A stage can use several GPUs in four ways, each an ordinary DeepSpeed feature ru
 |---|---|
 | DP (any ZeRO stage) | different rows |
 | TP (AutoTP) | the same rows, a slice of every weight matrix |
-| SP (Ulysses) | the same rows, a different stretch of the sequence |
+| SP (Ulysses) | the same rows, a different stretch of the sequence (not for models with linear-attention layers, such as Qwen3.5) |
 | EP (AutoEP), optionally folded onto TP | different rows, some of the experts |
 
 **Boundaries.** A rank's cell is its block of rows (`rows / dp`) and of sequence (`seq / sp`); TP ranks share a cell. Each receiving rank asks for exactly the upstream pieces that overlap its cell and stitches them together. Only TP rank 0 of a cell sends, and nothing is gathered in one place. Gradients take the same routes in reverse, scaled by `dp_s / dp_(s+1)`: DeepSpeed averages over DP and sums over SP, so without the factor a stage learns at the wrong rate.

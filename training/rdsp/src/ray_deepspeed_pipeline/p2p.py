@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Direct stage-to-stage tensor exchange for stage-local dispatch.
 
 Each rank joins two process groups spanning every rank of every stage: one

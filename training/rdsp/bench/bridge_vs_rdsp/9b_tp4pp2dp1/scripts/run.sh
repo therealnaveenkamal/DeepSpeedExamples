@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # run.sh <step>: one step of the 9B TP4xPP2xDP1 comparison, on the H100 box,
 # after bench/setup_node.sh. Logs go to ../logs (and ~/mimo for the container).
 #

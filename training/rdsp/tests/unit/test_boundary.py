@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Static boundaries: gather-and-resplit between differing stage grids."""
 
 import itertools
@@ -143,3 +146,29 @@ def test_per_row_lists_cannot_be_sequence_split():
     inputs = {"input_ids": torch.zeros(2, 4), "pixel_values": [torch.zeros(1, 2)] * 2}
     with pytest.raises(StepFailed, match="sequence"):
         slice_inputs(inputs, Cell(0, 1, 0, 2))
+
+
+def test_boundary_block_arguments_follow_the_hidden_state():
+    from ray_deepspeed_pipeline.boundary import assemble_boundary
+
+    src, dest = Grid(1, 1), Grid(1, 2)
+    hidden = torch.randn(2, 8, 4)
+    cos = torch.randn(2, 8, 3)
+    pieces = [(rank_cell(src, 0), (hidden, {"0/cos": cos}))]
+    for rank in range(2):
+        cell = rank_cell(dest, rank)
+        x, extras = assemble_boundary(pieces, cell)
+        assert torch.equal(x, cell_slice(hidden, cell))
+        assert torch.equal(extras["0/cos"], cell_slice(cos, cell))
+
+
+def test_a_4d_attention_mask_cannot_be_split_across_sequence_shards():
+    from ray_deepspeed_pipeline.boundary import assemble_boundary
+
+    hidden, mask = torch.randn(2, 8, 4), torch.zeros(2, 1, 8, 8)
+    pieces = [(rank_cell(Grid(1, 1), 0), (hidden, {"0/attention_mask": mask}))]
+    with pytest.raises(StepFailed, match="attention_mask.*sequence"):
+        assemble_boundary(pieces, rank_cell(Grid(1, 2), 0))
+    # without sequence parallelism the mask is split by rows only
+    _, extras = assemble_boundary(pieces, rank_cell(Grid(2, 1), 1))
+    assert torch.equal(extras["0/attention_mask"], mask[1:])

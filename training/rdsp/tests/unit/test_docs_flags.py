@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Every flag the docs pass to train_vl.py, train.py or a recipe exists in that
 script's parser, in fenced code blocks and in inline code alike. Inline code
 that starts with a flag (`--cuts balanced`) must be a flag of either script."""

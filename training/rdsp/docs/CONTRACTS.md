@@ -18,12 +18,12 @@ import ray_deepspeed_pipeline as rdsp
 | `rdsp.BalancedTransformerBlocks(vision_token_ratio=, vision_stage=False, measured=None)` | Cut that minimises the most expensive stage, from parameter counts scaled by tokens processed. Measure the ratio with `partition.vision_token_ratio(config, batch)`. `vision_stage=True` puts the vision encoder alone on stage 0. `measured=` re-cuts by what `engine.measure_stages()` measured: stage times, and memory as a limit. | `ValidationError` |
 | `rdsp.MeasuredStages` | What `engine.measure_stages()` returns: per stage, the cut it ran with, its busy time per step, its peak memory and its bytes of state per parameter. | `ValidationError` |
 | `rdsp.ExplicitCuts((c1, ...))` | Stage i+1 starts at block `c_i`. A first cut of 0 gives the vision encoder its own stage. | `ValidationError` |
-| `rdsp.ColocatedVision(recompute, compile, encode_per_microbatch)` | The encoder runs on every GPU. fp32 master weights and optimizer state are split over all ranks, and checkpoints hold the full state. | `ValidationError` (encoder output enters the decoder blocks, fp16) |
+| `rdsp.ColocatedVision(recompute, compile, encode_per_microbatch)` | The encoder runs on every GPU. fp32 master weights and optimizer state are split over all ranks, and checkpoints hold the full state. | `ValidationError` (encoder output enters the decoder blocks) |
 | `rdsp.TokenMeanLoss(sum_fn, count_fn, per_microbatch=False)` | The step loss is the mean over every counted token of the step. With `per_microbatch=True`, training averages per rank-microbatch (Megatron's default) and the report is still the token mean. | — |
 | `rdsp.next_token_loss_sum(logits, labels)` | Summed next-token cross entropy, on full logits or on a vocab-parallel head's shard. As the loss, it lets TP stages skip gathering the 248k-wide logits. | — |
-| `engine.train_batch(data_iter)` | Consumes exactly M entries (M = microbatches per step). Returns the step loss. | `StepFailed`, `PipelinePoisoned` |
-| `engine.eval_batch(data_iter)` | Forward only. Weights unchanged. | `StepFailed`, `PipelinePoisoned` |
-| `engine.save_checkpoint(dir, tag)` | All stages, then the manifest, written last and atomically. A failed save commits nothing. A stage that spans nodes needs `dir` on storage its nodes share; otherwise the save is refused. | `CheckpointError` |
+| `engine.train_batch(data_iter)` | Consumes exactly M entries (M = microbatches per step). Returns the step loss. After `StepFailed`, the next call with the same iterator (or the engine's loader) reruns the failed step's entries instead of reading new ones. | `StepFailed`, `PipelinePoisoned` |
+| `engine.eval_batch(data_iter)` | Forward only. Weights unchanged. Takes its own `data_iter` even when the engine owns a loader; reads the loader only when `data_iter` is omitted. | `StepFailed`, `PipelinePoisoned` |
+| `engine.save_checkpoint(dir, tag)` | All stages, then the manifest, written last and atomically. A failed save commits nothing. A stage that spans nodes needs `dir` on storage its nodes share; otherwise the save is refused. The engine-owned loader's saved position counts only entries trained on. | `CheckpointError` |
 | `engine.load_checkpoint(dir, tag)` | Verifies the manifest and every file's SHA-256, rebuilds dead actors, then loads. Clears a poisoned pipeline. | `CheckpointError` |
 | `engine.stage_blocks` | Each stage's `[start, stop)` transformer blocks. | — |
 | `engine.measure_stages(data_iter, steps=3, skip=1)` | Runs `steps` training steps with every stage timed and returns an `rdsp.MeasuredStages` from the steps after the first `skip`. The steps update the weights like any step. To use the result, shut this engine down and build a new one with `BalancedTransformerBlocks(measured=...)`. | `ValidationError`, `StepFailed`, `PipelinePoisoned` |
@@ -33,8 +33,10 @@ import ray_deepspeed_pipeline as rdsp
 
 - An entry is `(inputs, labels)`. Inputs are a tensor or a dict of tensors; vision models pass `pixel_values` and `image_grid_thw` as one tensor per row.
 - A step reads exactly M entries and leaves the rest of the iterator untouched.
+- The engine-owned loader (`initialize(training_data=...)`) drops a short last entry, so every microbatch has the same rows.
 - Microbatches in one step may differ in sequence length. The stages then send each boundary with its shape.
 - With `prefetch=True`, the next step's M entries are read while the current step runs. Pass the same iterator to every `train_batch` call. `initialize(training_data=...)` rejects prefetch. `load_checkpoint()` drops the step read ahead.
+- Under prefetch, `save_checkpoint()` runs with the next step's M entries already read: a position you track yourself is M entries past the saved step, so resume from M entries earlier. The manifest records the count as `data_position["read_ahead"]`.
 
 ## Loss
 
@@ -45,7 +47,7 @@ import ray_deepspeed_pipeline as rdsp
 
 | When | Raises | State after |
 |---|---|---|
-| A stage fails before any stage applies its update | `StepFailed` | Weights unchanged; links rebuilt. A retry discards leftovers and rewinds the RNG, so it is exact. |
+| A stage fails before any stage applies its update | `StepFailed` | Weights unchanged; links rebuilt. A retry with the same iterator (or the engine's loader) reruns the failed step's entries, discards leftovers and rewinds the RNG, so it is exact. A different iterator starts a new step. |
 | A stage fails while updates are being applied | `PipelinePoisoned` | Every call is refused until `load_checkpoint()`. |
 | A checkpoint fails verification | `CheckpointError` | Nothing loaded. |
 
@@ -83,5 +85,7 @@ The vision-language layouts benchmarked against Megatron (Qwen3.5-2B/4B) are lis
 - TP above, or not dividing, the model's key/value heads (Qwen3.5-2B has 2: no TP4). Raises `ValidationError`.
 - Parameters tied across stages. Untie them, or keep both users on one stage.
 - Colocated vision for encoders whose features enter the decoder blocks (Qwen3-VL deepstack). The check reads `deepstack_visual_indexes`, so other ways of injecting features are not detected.
-- fp16 with colocated vision.
+- fp16. Each stage's DeepSpeed would scale its backward by its own loss scale, so upstream gradients would carry every downstream scale. Raises `ValidationError`; use bf16 or fp32.
+- Sequence parallelism (`sp > 1`) for models with linear-attention layers (Qwen3.5): Ulysses splits only the attention DeepSpeed swaps in. Raises `ValidationError`.
+- Sequence parallelism on a stage whose blocks get a 4D attention mask (eager attention, or a padding mask): the mask cannot be split by sequence. The step raises `StepFailed`.
 - The 4-node composed layout (`four-stage-mixed`) is validated on one node only.

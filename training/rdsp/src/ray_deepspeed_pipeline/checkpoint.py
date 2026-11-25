@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Global checkpoint manifest: layout, digests, publish, validate.
 
 A global checkpoint is a directory per tag:
@@ -118,24 +121,30 @@ def publish(root: str, manifest: dict, *, update_latest: bool = True) -> str:
     """Atomically write the manifest, then advance `latest`.
 
     Call only after every shard is written: the manifest's presence is what marks
-    the checkpoint complete. Raises CheckpointError if the tag is already committed.
+    the checkpoint complete. Raises CheckpointError if the tag is already committed
+    or the manifest cannot be written.
     """
     tag = manifest["tag"]
     final = os.path.join(root, tag, MANIFEST_NAME)
     if os.path.exists(final):
         raise CheckpointError(f"checkpoint {tag!r} is already committed; tags are immutable")
     tmp = final + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(manifest, f, indent=1, sort_keys=True)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, final)
-    if not update_latest:
-        return final
-    latest_tmp = os.path.join(root, LATEST_NAME + ".tmp")
-    with open(latest_tmp, "w") as f:
-        f.write(tag)
-    os.replace(latest_tmp, os.path.join(root, LATEST_NAME))
+    try:
+        # on node-local storage no stage may have written under the driver's root
+        os.makedirs(os.path.dirname(final), exist_ok=True)
+        with open(tmp, "w") as f:
+            json.dump(manifest, f, indent=1, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, final)
+        if not update_latest:
+            return final
+        latest_tmp = os.path.join(root, LATEST_NAME + ".tmp")
+        with open(latest_tmp, "w") as f:
+            f.write(tag)
+        os.replace(latest_tmp, os.path.join(root, LATEST_NAME))
+    except OSError as e:
+        raise CheckpointError(f"could not write the manifest of {tag!r} under {root!r}: {e}") from e
     return final
 
 

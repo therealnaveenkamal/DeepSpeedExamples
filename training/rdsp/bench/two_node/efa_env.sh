@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # Sourced on each node before anything that runs NCCL across nodes (Ray's raylets, so every
 # actor inherits it; torchrun). NCCL reaches the other node over EFA through the aws-ofi-nccl
 # plugin on the AMI. LD_LIBRARY_PATH holds only the plugin and libfabric: the AMI's CUDA

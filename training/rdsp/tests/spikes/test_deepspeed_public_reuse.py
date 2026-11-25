@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Public DeepSpeed APIs alone support stage-local pipeline stages (no Ray).
 
 Checked on GPUs, with only public DeepSpeed APIs at the pinned revision

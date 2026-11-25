@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Train a Hugging Face causal LM with rdsp.
 
     python train.py --model Qwen/Qwen3-0.6B --stages 4 --microbatches 8
@@ -126,7 +129,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=parse_stage,
         action="append",
         default=[],
-        help="per-stage layout, e.g. 1:gpus=2,tp=2 (repeatable)",
+        help=(
+            "per-stage layout, e.g. 1:gpus=2,tp=2 (repeatable); recompute_blocks=N "
+            "recomputes the stage's first N decoder layers, and a stage holding the "
+            "vision encoder always recomputes the encoder"
+        ),
     )
     p.add_argument("--microbatches", type=int, default=8)
     p.add_argument("--rows", type=int, default=4, help="sequences per microbatch")

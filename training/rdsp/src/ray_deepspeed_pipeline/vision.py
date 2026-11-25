@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Colocated vision: the vision encoder runs on every rank of every stage.
 
 The pipeline's stages hold only the language model. Each step, every rank

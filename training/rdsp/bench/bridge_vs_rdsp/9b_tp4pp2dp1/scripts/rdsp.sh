@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # rdsp, Qwen3.5-9B, 2 pipeline stages of TP4 (no data parallelism) on 8x H100.
 # One row per microbatch, 64 microbatches per step, as Megatron runs this layout.
 #
