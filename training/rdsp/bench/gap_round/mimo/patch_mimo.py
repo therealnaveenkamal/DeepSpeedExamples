@@ -1,6 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """patch_mimo.py <copy of finetune_qwen35_vl.py>: MegatronMIMO's Qwen3.5 VL launcher with Megatron-
-Bridge's memory settings, so the dense 27B fits on two nodes (approved 2026-10-19 as an exception
-to "never modify MIMO": results are labeled "MIMO with our memory settings").
+Bridge's memory settings, so the dense 27B fits on two nodes. Results from it are labeled "MIMO
+with our memory settings"; MIMO's library itself is unchanged.
 
 Changes, each asserted to match exactly once in the container's copy (NeMo 26.08):
   1. precision-aware optimizer: bf16 main gradients, fp32 master weights stored as bf16 + 2-byte

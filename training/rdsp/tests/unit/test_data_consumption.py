@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Each step consumes exactly its global microbatches from the iterator."""
 
 import pytest
@@ -39,3 +42,11 @@ def test_list_entries_normalized_to_tuples():
     # DataLoader batches often arrive as lists
     got = take_microbatch_entries(iter([["x", "y"]]), 1)
     assert got == [("x", "y")]
+
+
+def test_training_loader_drops_a_short_last_entry():
+    from ray_deepspeed_pipeline.data import build_training_dataloader
+
+    # a short entry would change the boundary shapes mid-step
+    loader = build_training_dataloader(list(range(5)), lambda rows: rows, rows=2)
+    assert list(loader) == [[0, 1], [2, 3]]

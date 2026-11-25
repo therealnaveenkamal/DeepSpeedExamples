@@ -1,11 +1,13 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # prep.sh, on node 1 (docs/REPRODUCE.md lists what must be in place): both nodes ready.
 #   1. two_node_35b/scripts/prep.sh: environments, NeMo container, 35B weights, Bridge's 35B
 #      checkpoint, the 35B rows at 128 a step on both nodes, NCCL check, Ray cluster
 #   2. the dense 27B: weights on both nodes, Bridge's checkpoint on node 1 (its one-node runs),
 #      Bridge's rows at 64 a step (the one-node runs' rows) on both nodes
 # Idempotent like two_node_35b's prep. Logs in ../prep/logs.
-set -uo pipefail
+set -uo pipefail   # no -e: each step checks its own exit code and reports which one failed
 RDSP=~/rdsp
 G=$RDSP/bench/gap_round
 . ~/env2.sh

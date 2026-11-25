@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # prep.sh, on node 1 with ~/env2.sh and ~/key2.pem in place (docs/REPRODUCE.md): both
 # nodes ready for the 35B runs. Logs in ../prep/logs/.
 #   1. node_prep.sh on both nodes at once: environments, NeMo container, 35B weights, hardware
@@ -9,7 +11,7 @@
 # SKIP_CONVERT=1: no Bridge checkpoint (rdsp-only rounds; the rows export needs only the container).
 # Steps already done (their outputs in place) are skipped, so a failed prep restarts where it
 # stopped: ~/.rdsp_node_prep_done on each node, ~/mimo/std/$MODEL.done, the export's stats.json.
-set -uo pipefail
+set -uo pipefail   # no -e: each step checks its own exit code and reports which one failed
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/common.sh"
 . ~/env2.sh

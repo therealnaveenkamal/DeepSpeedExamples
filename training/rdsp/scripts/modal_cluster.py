@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Multi-node Modal harness: N clustered GPU containers joined into ONE Ray
 cluster; pytest runs on the rank-0 container as the Ray driver.
 

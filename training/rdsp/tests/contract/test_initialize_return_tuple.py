@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """initialize() returns an honest 4-tuple and validates inputs before any actor starts."""
 
 import pytest

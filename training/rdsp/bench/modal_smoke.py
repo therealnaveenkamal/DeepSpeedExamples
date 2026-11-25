@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Check that the shared NGC benchmark image works for both frameworks.
 
     modal run bench/modal_smoke.py                  # from the repo root

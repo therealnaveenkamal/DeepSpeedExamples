@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # Qwen3.5-4B, 2 pipeline stages, each TP2 x DP2. The vision encoder sits on
 # stage 0; rdsp places the cut (--cuts balanced picks 13 decoder layers for
 # stage 0 on the exported CORD-v2 samples).

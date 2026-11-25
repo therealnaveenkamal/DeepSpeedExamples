@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # ray_cluster.sh <up|down> <node 1 private IP> <node 2 private IP>, on node 1: the 2-node Ray
 # cluster, head on node 1 and a worker on node 2, both raylets started with efa_env.sh so
 # every rdsp actor's NCCL uses EFA. A driver on node 1 joins it with RAY_ADDRESS=auto.

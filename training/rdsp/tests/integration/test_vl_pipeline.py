@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """A vision-language model (tiny Qwen3-VL) through rdsp.initialize() on real
 Ray CPU actors, with only the DeepSpeed engine swapped for the torch stub.
 

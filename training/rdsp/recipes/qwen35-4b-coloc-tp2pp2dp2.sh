@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # Qwen3.5-4B, vision encoder colocated: every GPU encodes 1/8 of the step's
 # images (data parallel, no TP inside the encoder). Language model: 2 pipeline
 # stages, each TP2 x DP2; rdsp places the cut (--cuts balanced picks 19

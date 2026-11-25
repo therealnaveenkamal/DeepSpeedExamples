@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """train_vl.py --cuts: each spelling maps to one partition policy."""
 
 import os

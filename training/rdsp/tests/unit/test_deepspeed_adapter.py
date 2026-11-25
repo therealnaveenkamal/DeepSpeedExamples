@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """The stage-local adapter, driven by an injected plain-torch engine stub.
 
 The adapter's routing, cut, VJP, scaling and lifecycle logic do not depend on

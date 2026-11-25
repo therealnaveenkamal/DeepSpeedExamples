@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """The Ray actor behind one rank of one pipeline stage.
 
 Each actor owns one GPU, one DeepSpeed engine (through DeepSpeedStageAdapter)
@@ -20,6 +23,7 @@ from ray_deepspeed_pipeline import checkpoint as ckpt
 from ray_deepspeed_pipeline.boundary import (
     Grid,
     assemble,
+    assemble_boundary,
     gradient_scale,
     p2p_destinations,
     p2p_sources,
@@ -128,7 +132,8 @@ class StageWorkerActor:
         )
         self.adapter = None
         self.vision = None  # this rank's colocated vision encoder (vision.py)
-        self.executed = []  # command ids in execution order
+        # the last two steps' command ids in execution order, for tests and diagnostics
+        self.executed = collections.deque(maxlen=2 * (2 * n_microbatches + 2))
         self.generation = None
 
     def address(self) -> tuple[str, int, str]:
@@ -241,12 +246,7 @@ class StageWorkerActor:
     def _receive_forward(self, sources, mb: int):
         """This rank's cell of the upstream hidden state and extras."""
         pieces = [(cell, self.p2p.recv_boundary("fwd", peer, mb)) for peer, cell in sources]
-        x = assemble([(cell, hidden) for cell, (hidden, _) in pieces], self.cell)
-        extras = {
-            name: assemble([(cell, got[name]) for cell, (_, got) in pieces], self.cell)
-            for name in pieces[0][1][1]
-        }
-        return x, extras
+        return assemble_boundary(pieces, self.cell)
 
     def execute(self, command_id: str, kind: str, generation=None, control=None):
         """Run one control command: apply, save or load (verify or load)."""

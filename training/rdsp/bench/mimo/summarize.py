@@ -1,8 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Results table from bench/mimo/runs.sh logs: one row per Megatron / rdsp
 pair, median step time over steps 6-50 (the first five compile and warm up).
 
-Both systems train on the same samples, so a step's real (unpadded) token
-count comes from the rdsp log and applies to the Megatron run's same step.
+Tokens/s is rows x sequence length / median step time (64 x 2048 in every
+bench/mimo run); per GPU divides by the layout's GPU count.
 
     python summarize.py ~/runs --price 5.32
 """
@@ -22,18 +25,15 @@ PAIRS = (  # (layout, GPUs, Megatron run or None for rdsp only, rdsp run)
     ("colocated vision + TP2xPP2xDP2", 8, None, "coloc-rdsp"),
 )
 _MEGATRON = re.compile(r"iteration\s+(\d+)/\s*\d+ .*?elapsed time per iteration \(ms\): ([\d.]+)")
-_RDSP = re.compile(r"^step (\d+) loss [\d.]+ (\d+) ms .* real (\d+) supervised \d+", re.M)
+_RDSP = re.compile(r"^step (\d+) loss \S+ +(\d+) ms", re.M)
 
 
-def parse(path: Path) -> tuple[dict, dict]:
-    """({step: ms}, {step: real tokens}); real tokens only in rdsp logs."""
+def parse(path: Path) -> dict:
+    """{step: ms}, steps counted from 0 (Megatron's iteration 1 is step 0, as in rdsp)."""
     text = path.read_text(errors="replace")
     ms = {int(m[1]) - 1: float(m[2]) for m in _MEGATRON.finditer(text)}
-    real = {}
-    for m in _RDSP.finditer(text):
-        ms[int(m[1])] = float(m[2])
-        real[int(m[1])] = int(m[3])
-    return ms, real
+    ms.update({int(m[1]): float(m[2]) for m in _RDSP.finditer(text)})
+    return ms
 
 
 def main(argv=None) -> None:
@@ -41,6 +41,8 @@ def main(argv=None) -> None:
     p.add_argument("logs")
     p.add_argument("--price", type=float, default=5.32, help="8-GPU node, $/hour")
     p.add_argument("--first", type=int, default=5, help="warm-up steps left out")
+    p.add_argument("--rows", type=int, default=64, help="rows per step")
+    p.add_argument("--seq", type=int, default=2048, help="sequence length")
     args = p.parse_args(argv)
     logs = Path(args.logs)
     print(
@@ -53,22 +55,21 @@ def main(argv=None) -> None:
             megatron and not (logs / f"{megatron}.log").exists()
         ):
             continue
-        r_ms, real = parse(logs / f"{rdsp}.log")
-        m_ms = parse(logs / f"{megatron}.log")[0] if megatron else None
-        timed = [
-            s for s in sorted(r_ms) if s >= args.first and s in real and (m_ms is None or s in m_ms)
-        ]
+        r_ms = parse(logs / f"{rdsp}.log")
+        m_ms = parse(logs / f"{megatron}.log") if megatron else None
+        timed = [s for s in sorted(r_ms) if s >= args.first and (m_ms is None or s in m_ms)]
         if not timed:
             continue
+        tokens = args.rows * args.seq
         r_s = statistics.median(r_ms[s] for s in timed) / 1e3
-        r_tok = statistics.median(real[s] / r_ms[s] * 1e3 for s in timed)
+        r_tok = tokens / r_s
         cost = args.price * gpus / 8 / 3600 / r_tok * 1e6
         if m_ms is None:
             m_col, step, m_tok, m_gpu = "-", "-", "-", "-"
         else:
             m_s = statistics.median(m_ms[s] for s in timed) / 1e3
             m_col, step = f"{m_s:.2f}", f"{r_s / m_s - 1:+.0%}"
-            tok = statistics.median(real[s] / m_ms[s] * 1e3 for s in timed)
+            tok = tokens / m_s
             m_tok, m_gpu = f"{tok:.0f}", f"{tok / gpus:.0f}"
         print(
             f"{layout:34} {gpus:>4} {m_col:>10} {r_s:>7.2f} {step:>6} "

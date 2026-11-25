@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # run.sh <step>: 27B TP1 x PP8 x DP1 (8 pipeline stages of one GPU) on the H100 box, after bench/setup_node.sh and the 27B checkpoint + export
 # (bench/gap_round/scripts/prep.sh makes both).
 #

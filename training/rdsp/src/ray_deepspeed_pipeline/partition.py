@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Deterministic contiguous model partitioning and stage-module builders.
 
 Policies: explicit cuts, uniform transformer blocks, uniform sequential, and

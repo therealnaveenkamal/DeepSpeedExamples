@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """--master-dtype remainder through the stage engine factory: DeepSpeed's
 ZeRO-1/2 optimizer steps RemainderAdamW on the model's own bf16 partition,
 keeps no master copy, trains as its fp32 master does, and checkpoints the

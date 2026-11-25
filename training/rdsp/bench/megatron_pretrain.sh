@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # Megatron-LM pretrain_gpt.py, Qwen3-0.6B shape, mock data. One benchmark cell.
 #   PP=2 M=8 SEQ=2048 VARIANT=plain ./megatron_pretrain.sh
 #   PP=4 M=16 SEQ=512 VARIANT=vpp   ./megatron_pretrain.sh

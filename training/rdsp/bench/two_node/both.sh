@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # both.sh <command...>, on node 1 from ~/rdsp: the same command on both nodes at once, for
 # launchers that start one torchrun per node (Bridge and MIMO through bench/mimo/runs.sh,
 # TorchTitan). It runs with NNODES=2, NODE_RANK (0 here, 1 on node 2) and MASTER_ADDR (node 1)

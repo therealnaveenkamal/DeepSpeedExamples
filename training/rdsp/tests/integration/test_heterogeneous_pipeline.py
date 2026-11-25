@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Heterogeneous support rows, all on the one runtime.
 
 Each row is declarative data (stage grids, DeepSpeed strategy, model) and runs

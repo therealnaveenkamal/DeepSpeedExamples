@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Colocated vision: who encodes which image, who receives its features, and
 the per-rank vision engine, in one process."""
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # Qwen3.5-4B, vision encoder alone on 1 GPU, language model TP2 x DP2 on 4.
 # MegatronMIMO's non-colocated layout.
 #

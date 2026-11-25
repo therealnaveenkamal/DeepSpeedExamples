@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """ExecutionPlan: the normalized plan every PipelineConfig lowers to.
 
 The runtime reads only this, never PipelineConfig. Plain, JSON-canonical data
@@ -9,7 +12,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 
 
 @dataclass(frozen=True)
@@ -57,11 +60,6 @@ class ScheduleSpec:
 
 
 @dataclass(frozen=True)
-class FailureSpec:
-    poison_on_partial_apply: bool
-
-
-@dataclass(frozen=True)
 class VisionSpec:
     """Colocated vision encoder: its module path in the model, its
     parameters (on no stage), and whether its blocks recompute or compile."""
@@ -101,7 +99,6 @@ class ExecutionPlan:
     stages: tuple[StageSpec, ...]
     connections: tuple[StageConnection, ...]
     schedule: ScheduleSpec
-    failure: FailureSpec
     # rows in one global microbatch (the data loader's entry size)
     microbatch_rows: int = 1
     # vision encoder on every rank instead of the first stage (vision.py)

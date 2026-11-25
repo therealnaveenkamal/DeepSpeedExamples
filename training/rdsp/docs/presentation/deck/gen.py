@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 import json, os
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -383,7 +386,7 @@ sec("fix", head("The fix", "Each stage runs its own schedule and talks to its ne
 <div style="flex:1; display:flex; flex-direction:column; gap:14px">
 <h3 style="font-size:30px; font-weight:600">Overhead alone (CPU, tiny model)</h3>
 {table(["", "First design", "Stage-local"], cpu, [34, 33, 33], fs=24)}</div></div>
-''', "One group per direction avoids a stage's gradient receive queueing behind its own activation send on an NCCL stream. After a failed step the links are aborted and rebuilt immediately so a stuck GPU transfer can't later kill a worker. The old path remains available as RDSP_DISPATCH=driver. 8-stage throughput is 2.1x the first design; both designs measured on H200 machines (separate machines, allow ~20%). A Megatron column shown here earlier came from H100s and was removed.", extra="; gap:32px")
+''', "One group per direction avoids a stage's gradient receive queueing behind its own activation send on an NCCL stream. After a failed step the links are aborted and rebuilt immediately so a stuck GPU transfer can't later kill a worker. 8-stage throughput is 2.1x the first design; both designs measured on H200 machines (separate machines, allow ~20%). A Megatron column shown here earlier came from H100s and was removed.", extra="; gap:32px")
 
 # ---------------------------------------------------------------- 17 pipelines drawn as boxes
 TEAL_SOFT = "#D3ECE6"

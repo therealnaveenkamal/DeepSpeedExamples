@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # run.sh <rdsp|bridge>: Qwen3.5-35B-A3B, TP1 x PP8 x DP2 on two nodes, each of
 # the 8 pipeline stages on 2 GPUs of one node (stages 0-3 on node 1, 4-7 on node 2), no expert
 # parallelism (each stage's 2 copies hold all its experts). 64 microbatches of 2 rows (one per
@@ -13,7 +15,7 @@
 # LANG_EP=2: every stage splits its experts over its 2 GPUs (DeepSpeed AutoEP, NVLink inside the
 # node), about half the expert weights and optimizer state per GPU; logs get "-ep2".
 # STEPS (default 50), RECOMPUTE=1 (every block), NAME (log suffix). Logs in logs/.
-set -uo pipefail
+set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/../scripts/common.sh"
 export LOGS=$HERE/logs$LOGS_SUFFIX; mkdir -p "$LOGS"

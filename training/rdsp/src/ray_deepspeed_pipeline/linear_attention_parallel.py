@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Head-parallel gated delta-net (Qwen3.5's linear attention) for
 tensor-parallel stages.
 

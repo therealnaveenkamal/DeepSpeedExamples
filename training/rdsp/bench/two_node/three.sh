@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # three.sh <command...>, on node 1 from ~/rdsp: both.sh over three nodes, the two in ~/env2.sh and
 # the third box in ~/env3.sh (which exports PRIV3, its private IP). The command runs with NNODES=3, NODE_RANK (0
 # here, 1 on node 2, 2 on the third box) and MASTER_ADDR (node 1); pass other settings inside the

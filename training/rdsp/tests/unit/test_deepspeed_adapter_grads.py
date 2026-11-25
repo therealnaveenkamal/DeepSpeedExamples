@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """bf16 gradients under fp32 accumulation: each one is added into the fp32
 buffer as soon as autograd produces it and then freed, so no bf16 copy of
 the gradients stays allocated (2 bytes per parameter less)."""

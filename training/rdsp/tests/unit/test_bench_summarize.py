@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """bench/mimo/summarize.py pairs each Megatron run with its rdsp run and
 prints one results row per pair."""
 
@@ -7,7 +10,14 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "..", "bench", "mimo"))
 
+import pytest  # noqa: E402
 import summarize  # noqa: E402
+
+PUBLISHED = os.path.join(HERE, "..", "..", "bench", "published")
+# the 2B/4B/H100 logs are not in the repository; the tests that read them run where they are
+needs_published_logs = pytest.mark.skipif(
+    not os.path.isdir(PUBLISHED), reason="bench/published logs not here"
+)
 
 
 def _megatron_log(ms: float) -> str:
@@ -32,9 +42,17 @@ def test_pairs_megatron_and_rdsp_logs(tmp_path, capsys):
     out = capsys.readouterr().out
     row = next(line for line in out.splitlines() if "TP2xPP2xDP2" in line)
     assert "10.00" in row and "8.00" in row and "-20%" in row
-    per_gpu = row.split()[-2:]  # tokens/s per GPU: 65000 tokens over 10 s / 8 s, 8 GPUs
-    assert per_gpu == ["812", "1016"]
+    per_gpu = row.split()[-2:]  # tokens/s per GPU: 64 rows x 2048 over 10 s / 8 s, 8 GPUs
+    assert per_gpu == ["1638", "2048"]
     assert "TP4xPP2xDP1" not in out  # pairs without logs are left out
+
+
+def test_tokens_per_second_follow_rows_and_sequence_length(tmp_path, capsys):
+    (tmp_path / "shared-megatron.log").write_text(_megatron_log(10000.0))
+    (tmp_path / "shared-rdsp.log").write_text(_rdsp_log(8000))
+    summarize.main([str(tmp_path), "--rows", "128", "--seq", "1024"])
+    row = next(line for line in capsys.readouterr().out.splitlines() if "TP2xPP2xDP2" in line)
+    assert row.split()[-5:-3] == ["13107", "16384"]  # 128 x 1024 over 10 s and 8 s
 
 
 def test_every_mimo_layout_gets_its_row(tmp_path, capsys):
@@ -60,6 +78,7 @@ def test_rdsp_only_layout_gets_a_row_without_megatron(tmp_path, capsys):
     assert "5.00" in row and row.count("-") >= 2
 
 
+@needs_published_logs
 def test_published_2b_and_4b_logs_give_the_benchmark_results_numbers(capsys):
     """bench/published holds the logs behind BENCHMARK_RESULTS.md's PCIe table;
     summarize.py on them prints every step time it reports."""
@@ -76,6 +95,7 @@ def test_published_2b_and_4b_logs_give_the_benchmark_results_numbers(capsys):
         assert f"| {megatron} s | {rdsp} s |" in doc
 
 
+@needs_published_logs
 def test_published_h100_logs_give_the_benchmark_results_numbers(capsys):
     """bench/published/h100 holds the 8x H100 logs; summarize.py on them prints
     every step time BENCHMARK_RESULTS.md reports for H100."""
@@ -90,6 +110,7 @@ def test_published_h100_logs_give_the_benchmark_results_numbers(capsys):
         assert f"| {cell} | {rdsp} s |" in doc, (megatron, rdsp)
 
 
+@needs_published_logs
 def test_docs_report_tokens_per_gpu_from_the_logs(capsys):
     """Every published row's tokens/s per GPU (both systems) appears in
     BENCHMARK_RESULTS.md, as printed by summarize.py."""

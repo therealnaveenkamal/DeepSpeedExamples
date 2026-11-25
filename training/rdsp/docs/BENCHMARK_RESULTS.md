@@ -1,37 +1,37 @@
 # Benchmark results
 
-rdsp against MegatronMIMO and Megatron-Bridge, training Qwen3.5-2B and 4B on CORD-v2. The first set: one AWS g7.48xlarge, 8× RTX PRO 4500 Blackwell, 32 GB, PCIe, no NVLink. A first 4B run on 8× H100 with NVLink follows them. Settings held equal, software versions and how to rerun: [REPRODUCE.md](REPRODUCE.md). Raw logs: `bench/published/{2b,4b,h100}/`; `python bench/mimo/summarize.py bench/published/2b` prints the table rows, and `tests/unit/test_bench_summarize.py` checks them against this file. The Qwen3.5-27B and 35B-A3B results on H100 nodes are in the [README](../README.md) and [REPRODUCE.md](REPRODUCE.md#h100-runs).
+rdsp against MegatronMIMO and Megatron-Bridge, training Qwen3.5-2B and 4B on CORD-v2. The first set: one AWS g7.48xlarge, 8× RTX PRO 4500 Blackwell, 32 GB, PCIe, no NVLink. A first 4B run on 8× H100 with NVLink follows them. Settings held equal, software versions and how to rerun: [REPRODUCE.md](REPRODUCE.md). `python bench/mimo/summarize.py <log directory>` prints the table rows from a run's logs. The Qwen3.5-27B and 35B-A3B results on H100 nodes are in the [README](../README.md) and [REPRODUCE.md](REPRODUCE.md#h100-runs).
 
 ## Results: 8× RTX PRO 4500, PCIe
 
-Median over steps 6–50. Tokens/s counts real tokens only; both systems see the same tokens. Per GPU divides by the layout's GPU count, so the 5-GPU MIMO layout and the 8-GPU layouts compare directly. Cost assumes $5.32/h for 8 GPUs, prorated to 5 for the MIMO layout.
+Median over steps 6–50. Each step is 64 rows of 2,048 tokens on both systems. Per GPU divides by the layout's GPU count, so the 5-GPU MIMO layout and the 8-GPU layouts compare directly. Cost assumes $5.32/h for 8 GPUs, prorated to 5 for the MIMO layout.
 
 | Model | Layout | Megatron | rdsp | Step time | Megatron tok/s | rdsp tok/s | Megatron tok/s per GPU | rdsp tok/s per GPU | Megatron $/M tok | rdsp $/M tok |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 2B | Vision 1 GPU + language TP2×DP2, vs MIMO | 9.64 s | 8.30 s | −14% | 6,780 | 7,837 | 1,356 | 1,567 | 0.136 | 0.118 |
-| 2B | TP2×PP2×DP2, vs Bridge | 7.39 s | 5.30 s | −28% | 8,711 | 12,187 | 1,089 | 1,523 | 0.170 | 0.121 |
-| 4B | TP2×PP2×DP2, vs Bridge | 10.04 s | 8.69 s | −13% | 6,459 | 7,460 | 807 | 932 | 0.229 | 0.198 |
-| 4B | TP4×PP2×DP1, vs Bridge | 15.93 s | 13.29 s | −17% | 4,073 | 4,901 | 509 | 613 | 0.363 | 0.302 |
+| 2B | Vision 1 GPU + language TP2×DP2, vs MIMO | 9.64 s | 8.30 s | −14% | 13,595 | 15,796 | 2,719 | 3,159 | 0.068 | 0.058 |
+| 2B | TP2×PP2×DP2, vs Bridge | 7.39 s | 5.30 s | −28% | 17,740 | 24,745 | 2,218 | 3,093 | 0.083 | 0.060 |
+| 4B | TP2×PP2×DP2, vs Bridge | 10.04 s | 8.69 s | −13% | 13,058 | 15,087 | 1,632 | 1,886 | 0.113 | 0.098 |
+| 4B | TP4×PP2×DP1, vs Bridge | 15.93 s | 13.29 s | −17% | 8,229 | 9,866 | 1,029 | 1,233 | 0.180 | 0.150 |
 
 Loss: every pair starts from the same step-0 loss. Over steps 1–49, rdsp's mean difference from Megatron is +0.0005 (2B MIMO layout), +0.003 (4B TP2×PP2×DP2) and −0.0024 (4B TP4×PP2×DP1). Steps 4–5 vary by up to 0.08 between repeated runs of either system, from GPU kernels that aren't bit-for-bit deterministic.
 
 ## Results: 8× H100, NVLink (first run)
 
-Qwen3.5-4B on one AWS p5.48xlarge: 8× H100 SXM 80 GB, every pair of GPUs linked by NVLink through NVSwitch (`nvidia-smi topo -m`: NV18). Same software, data, settings and recipes as above. Megatron-Bridge's settings were diffed against the PCIe runs: the only difference was the step count. Median over steps 6–50; cost assumes $22.28/h for 8 GPUs (spot, us-east-2).
+Qwen3.5-4B on one AWS p5.48xlarge: 8× H100 SXM 80 GB, every pair of GPUs linked by NVLink through NVSwitch (`nvidia-smi topo -m`: NV18). Same software, data, settings and recipes as above. Megatron-Bridge's settings were diffed against the PCIe runs: the only difference was the step count. Median over steps 6–50, 64 rows of 2,048 tokens a step; cost assumes $22.28/h for 8 GPUs (spot, us-east-2).
 
 | Layout | Megatron | rdsp | Step time | Megatron tok/s | rdsp tok/s | Megatron tok/s per GPU | rdsp tok/s per GPU | Megatron $/M tok | rdsp $/M tok |
 |---|---|---|---|---|---|---|---|---|---|
-| Vision 1 GPU + language TP2×DP2, vs MIMO | 7.99 s | 7.89 s | −1% | 8,171 | 8,239 | 1,634 | 1,648 | 0.473 | 0.469 |
-| TP2×PP2×DP2, vs Bridge | 8.79 s | 6.49 s | −26% | 7,372 | 9,901 | 921 | 1,238 | 0.840 | 0.625 |
-| TP4×PP2×DP1, vs Bridge | 18.24 s | 12.30 s | −33% | 3,522 | 5,274 | 440 | 659 | 1.757 | 1.174 |
-| Colocated vision + language TP2×PP2×DP2 (rdsp only) | — | 5.62 s | | | 11,580 | — | 1,447 | | 0.534 |
+| Vision 1 GPU + language TP2×DP2, vs MIMO | 7.99 s | 7.89 s | −1% | 16,413 | 16,606 | 3,283 | 3,321 | 0.236 | 0.233 |
+| TP2×PP2×DP2, vs Bridge | 8.79 s | 6.49 s | −26% | 14,917 | 20,208 | 1,865 | 2,526 | 0.415 | 0.306 |
+| TP4×PP2×DP1, vs Bridge | 18.24 s | 12.30 s | −33% | 7,184 | 10,658 | 898 | 1,332 | 0.861 | 0.581 |
+| Colocated vision + language TP2×PP2×DP2 (rdsp only) | — | 5.62 s | | | 23,322 | — | 2,915 | | 0.265 |
 
-Loss: every pair starts from the same step-0 loss; over steps 1–49 rdsp's mean difference from Megatron is +0.003, −0.003 and −0.008, and colocated's from Megatron-Bridge TP2×PP2×DP2 is −0.002. Logs: `bench/published/h100/`, with the GPU topology in `hardware.txt`.
+Loss: every pair starts from the same step-0 loss; over steps 1–49 rdsp's mean difference from Megatron is +0.003, −0.003 and −0.008, and colocated's from Megatron-Bridge TP2×PP2×DP2 is −0.002.
 
-Per GPU, MIMO's 5-GPU layout is the most efficient here (1,634 and 1,648 tokens/s per GPU); colocated is the fastest per step and the second most efficient per GPU (1,447).
+Per GPU, MIMO's 5-GPU layout is the most efficient here (3,283 and 3,321 tokens/s per GPU); colocated is the fastest per step and the second most efficient per GPU (2,915).
 
 **Read with care:**
-- **One round.** No repeats yet, so no spread. On PCIe, repeats landed within about 2%.
+- **One round.** No repeats, so no spread.
 - **The host CPU limits launch-heavy runs.** This instance has an AMD EPYC 7R13. A torch-profiler step on rdsp's language GPUs in the MIMO layout shows the CPU busy for the whole step while GPU kernels run for only part of it: the layout is bound by kernel launches, not by the GPUs. That's why it ends in a near-tie. Megatron's TP4×PP2×DP1 (64 one-row microbatches per GPU, 26.7 TFLOP/s per GPU) is slower here than on the PCIe GPUs, most likely for the same reason. That's an inference, since its profiler trace was lost, and it inflates the −33%.
 - **rdsp's TP4 split is off on H100.** Stage 0 (vision encoder + 12 layers) is busy 12.1 s per step while stage 1 waits 3.2 s. The balanced estimate doesn't model how much less efficiently the encoder's small matrices run under TP4.
 - **Colocated ran without compiling the encoder.** The recipe's `compile_vision` doesn't apply to a colocated encoder (now rejected at start-up); `recipes/qwen35-4b-coloc-tp2pp2dp2.sh` compiles it, and is unmeasured.
@@ -96,7 +96,7 @@ Same chain for 4B TP2×PP2×DP2: 13.51 s → 11.57 s → 10.58 s → 8.71 s → 
 - **2B TP4.** Qwen3.5-2B has 2 key/value heads, which can't be split 4 ways.
 - **9B and up.** These need 80 GB-class GPUs in these layouts.
 - **Colocated vision.** rdsp only; neither Megatron system supports it for Qwen3.5. 4B ran at 9.66 s, slower than TP2×PP2×DP2; 2B didn't fit.
-- **Repeats.** One 50-step run per configuration, except the rdsp 4B TP2×PP2×DP2 repeat (8.71 s and 8.69 s).
+- **Repeats.** One 50-step run per configuration.
 - **Interconnect.** On NVLink machines, rdsp's communication savings would matter less.
 
 ## Validation provenance

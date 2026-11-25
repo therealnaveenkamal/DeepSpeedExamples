@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """CPU check: with data parallelism 2 (layout C3), TorchTitan's loader on rank r gives
 microbatch k = exported row 2k + r, so each step trains on the same 64 consecutive rows
 as Megatron-Bridge (global microbatch k = rows 2k, 2k + 1). Also builds the C3 configs.

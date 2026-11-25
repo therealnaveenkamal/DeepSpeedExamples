@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """TorchTitan's M-RoPE positions (saved by checks/tt_data_check.py) against Hugging
 Face's Qwen3_5Model.get_rope_index on the same exported rows, real tokens only
 (padding positions never feed a real token: attention is causal).

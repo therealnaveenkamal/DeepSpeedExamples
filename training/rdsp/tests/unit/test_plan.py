@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """ExecutionPlan canonical serialization and hashing are stable."""
 
 import dataclasses
@@ -8,7 +11,6 @@ import pytest
 from ray_deepspeed_pipeline.plan import (
     SCHEMA_VERSION,
     ExecutionPlan,
-    FailureSpec,
     ScheduleSpec,
     StageConnection,
     StageSpec,
@@ -34,7 +36,6 @@ def make_plan(microbatches=4):
         stages=stages,
         connections=(StageConnection(source=0, dest=1, conversion="identity"),),
         schedule=ScheduleSpec(kind="1f1b", global_microbatches=microbatches),
-        failure=FailureSpec(poison_on_partial_apply=True),
     )
 
 

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """The full runtime on real Ray actors (CPU, gloo, torch stub engines).
 
 On GPU only the engine changes (real DeepSpeed); the rest of this path is the

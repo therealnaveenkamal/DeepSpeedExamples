@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Pipeline stages of a Hugging Face model that run the model's own forward.
 
 A stage is a copy of the whole module tree in which everything it does not
@@ -370,6 +373,10 @@ def build_hf_stage(
         getattr(text_config, "base_model_tp_plan", None)
         or _standard_tp_plan(blocks_name, blocks, _STANDARD_TP)
     )
+    # some configs' plans omit the per-head norms (Qwen3-VL-MoE, GLM-4-MoE):
+    # without their gradient sum the TP replicas drift apart
+    for name, style in _standard_tp_plan(blocks_name, blocks, _PER_HEAD_NORMS).items():
+        plan.setdefault(name, style)
     for name, vision_blocks in _vision_block_lists(model, blocks_name):
         plan.update(_standard_tp_plan(name, vision_blocks, _VISION_TP))
     attach_tp_plan(stage, plan)
@@ -405,6 +412,9 @@ _STANDARD_TP = {
     "self_attn.q_norm": "replicated_with_grad_allreduce",
     "self_attn.k_norm": "replicated_with_grad_allreduce",
 }
+
+
+_PER_HEAD_NORMS = {k: v for k, v in _STANDARD_TP.items() if v == "replicated_with_grad_allreduce"}
 
 
 # the same for vision encoder blocks (Qwen-VL family); qkv is one fused

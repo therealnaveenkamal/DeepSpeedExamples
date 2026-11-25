@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """bench/mimo/nsys_breakdown.py: per-GPU time per training step from an Nsight
 Systems trace (exported to SQLite), the same table for Megatron and rdsp."""
 

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Global checkpoint round trip and whole-pipeline recovery on real Ray actors
 (CPU, gloo, torch stub engines). test_checkpoint_gpu.py runs the same
 protocol with real DeepSpeed engines.

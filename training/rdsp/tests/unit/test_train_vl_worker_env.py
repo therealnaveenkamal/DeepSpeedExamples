@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """train_vl.worker_env: the driver's settings Ray gives every worker of the job, so actors
 on a cluster started apart from the driver (`ray start` on each of two nodes) see them."""
 

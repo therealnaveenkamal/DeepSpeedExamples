@@ -6,7 +6,7 @@ Two sets of runs:
 
 ## Node
 
-- 8 NVIDIA GPUs with at least 32 GB each. The published numbers come from an AWS g7.48xlarge: 8× RTX PRO 4500 Blackwell, 32 GB, PCIe, no NVLink.
+- 8 NVIDIA GPUs with at least 32 GB each (80 GB for the 4B `noncoloc` and `coloc` layouts). The published numbers come from an AWS g7.48xlarge: 8× RTX PRO 4500 Blackwell, 32 GB, PCIe, no NVLink.
 - NVIDIA driver and CUDA, Docker with the NVIDIA container runtime.
 - About 300 GB of free disk: the NeMo container, two models in Hugging Face and Megatron formats, and the exported samples.
 
@@ -32,14 +32,14 @@ This builds `~/venv` (torch 2.13, DeepSpeed at commit `53a2ac44`, transformers 5
 
 ```bash
 MODEL=Qwen3.5-2B bash bench/mimo/bench.sh noncoloc tp2
-MODEL=Qwen3.5-4B PRICE=5.32 bash bench/mimo/bench.sh all
+MODEL=Qwen3.5-4B PRICE=5.32 bash bench/mimo/bench.sh tp2 tp4   # 32 GB GPUs; all four layouts need 80 GB
 MODEL=Qwen3.5-4B ROUNDS=2 bash bench/mimo/bench.sh tp2 tp4      # repeat for noise
 DRY_RUN=1 MODEL=Qwen3.5-4B bash bench/mimo/bench.sh all         # print the plan only
 ```
 
 The first run per model converts the checkpoint (the Megatron side needs its own format) and exports the training samples; rdsp replays the exact samples Megatron-Bridge's loader produces, in the same order. Both are reused afterwards. A layout without a recipe for the model is skipped (Qwen3.5-2B has no TP4: 2 key/value heads).
 
-Each run is 50 steps (`STEPS`). Logs go to `~/bench/<model>/r<round>/<case>.log`, with `summary.txt` next to them: median step time over steps 6–50, real tokens/s, and rdsp's cost per million tokens at `PRICE` $/h for the node. Single cases still run through `bench/mimo/runs.sh <case>`.
+Each run is 50 steps (`STEPS`). Logs go to `~/bench/<model>/r<round>/<case>.log`, with `summary.txt` next to them: median step time over steps 6–50, tokens/s, and rdsp's cost per million tokens at `PRICE` $/h for the node. Single cases still run through `bench/mimo/runs.sh <case>`.
 
 ## Expected results
 
@@ -53,7 +53,6 @@ Each run is 50 steps (`STEPS`). Logs go to `~/bench/<model>/r<round>/<case>.log`
 In the vs-Bridge rows the two systems don't do equal work: Megatron-Bridge pads every row to 2048 and rdsp doesn't (see Padding below).
 
 Noise:
-- Repeated runs land within about 2% (rdsp 4B TP2×PP2×DP2: 8.71 s and 8.69 s).
 - The 4B Megatron numbers come from a second machine of the same type.
 - Around steps 4–5, losses vary by up to 0.08 between repeated runs on both systems, because some GPU kernels aren't bit-for-bit deterministic.
 
@@ -77,7 +76,7 @@ About 3 hours of node time for both models, roughly $16 at the $5.32/h spot pric
 
 ## H100 runs
 
-The blog post's numbers: Qwen3.5-35B-A3B on two nodes, Qwen3.5-27B on one node, and the MegatronMIMO comparison on 9B (one node) and 27B (two nodes). The scripts are in `bench/`. Each run is 50 steps, except the MIMO 27B pair, which is 10.
+The blog post's numbers: Qwen3.5-35B-A3B on two nodes, Qwen3.5-27B on one node, and the MegatronMIMO comparison on 9B (one node) and 27B (two nodes). The scripts are in `bench/`. Each run is 50 steps, except the MIMO 27B pair (10 steps) and rdsp's 9B TP2 × PP2 run (26 steps).
 
 ### Nodes
 
@@ -85,7 +84,7 @@ The blog post's numbers: Qwen3.5-35B-A3B on two nodes, Qwen3.5-27B on one node, 
 - Two-node runs: both nodes in one cluster placement group, EFA enabled on all 32 cards.
 - The scripts expect this folder at `~/rdsp` on every node (`ln -s "$PWD" ~/rdsp`). Run everything from `~/rdsp`, in bash.
 - Two-node runs start from node 1. It needs:
-  - `~/env2.sh`, which exports `PRIV1` and `PRIV2`, the two nodes' private IP addresses;
+  - `~/env2.sh`, which you write yourself: `export PRIV1=<node 1 private IP> PRIV2=<node 2 private IP>`. The scripts source it; for the commands below that use `$PRIV1` or `$PRIV2`, run `. ~/env2.sh` in the shell first;
   - `~/key2.pem`, an SSH key that logs in to node 2 as `ubuntu`.
 
 ### Setup
@@ -106,6 +105,7 @@ It sets up both nodes:
 The MIMO 27B pair also needs the 27B rows at 128 a step and MIMO's own 27B checkpoint, both copied to node 2:
 
 ```bash
+. ~/env2.sh
 MODEL=Qwen3.5-27B RECIPE=qwen35_vl_27b_sft_16gpu_h100_bf16_config GBS=128 STEPS=50 \
   EXPORT_NAME=cord_steps-Qwen3.5-27B-128 bash bench/mimo/runs.sh export
 MODEL=Qwen3.5-27B CONVERT_TP=4 bash bench/mimo/runs.sh convert-mimo
@@ -149,21 +149,67 @@ bash bench/two_node/both.sh env MODEL=Qwen3.5-35B-A3B RECIPE=qwen35_vl_35b_a3b_s
 
 ### 27B, one node
 
-Use one node of the prepared pair, with the two-node Ray cluster down (`bash bench/two_node/ray_cluster.sh down $PRIV1 $PRIV2`). Megatron-Bridge's 27B checkpoint is on node 1 only. Phase A of the gap round ran Megatron-Bridge on node 1 while the other two systems ran on node 2 (`bench/gap_round/scripts/one_node.sh bridge|others`).
+Use node 1 of the prepared pair, with the two-node Ray cluster down (`. ~/env2.sh && bash bench/two_node/ray_cluster.sh down $PRIV1 $PRIV2`). Megatron-Bridge's 27B checkpoint is on node 1 only. The published rdsp and Megatron-Bridge runs ran on one node, one after the other; TorchTitan's ran on another node of the same type (`bench/gap_round/scripts/one_node.sh others`).
+
+rdsp runs eight 1-GPU stages with `bench/bridge_vs_rdsp/27b_tp1pp8dp1/scripts/rdsp_tune.sh`. `ROWS` is the rows per microbatch (64 / `ROWS` microbatches a step). `RC_PER` is how many blocks each stage recomputes, counted at the calibration cut; without it every block is recomputed.
+
+```bash
+T=bench/bridge_vs_rdsp/27b_tp1pp8dp1
+rdsp27() {   # rdsp27 <log name> <settings...>
+  ( unset LD_LIBRARY_PATH && . ~/venv/bin/activate && . ~/cuda_env.sh && \
+    env "${@:2}" DS_BUILD_OPS=0 HF_HOME=$HOME/hf PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+      DATA=exported:$HOME/mimo/cord_steps-Qwen3.5-27B bash $T/scripts/rdsp_tune.sh ) > $T/logs/$1.log 2>&1
+}
+rdsp27 rdsp-rows1 ROWS=1 RC_PER=6,8,7,7,6,5,3,0   # the blog's 27B number
+rdsp27 rdsp-rows2 ROWS=2 RC_PER=6,8,7,7,6,5,3,0
+rdsp27 rdsp-rows4 ROWS=4 RC_PER=6,9,8,8,8,7,5,4
+rdsp27 rdsp-rows8 ROWS=8                          # every block recomputed; runs out of memory
+rdsp27 rdsp-rows1-all ROWS=1                      # every block recomputed
+```
+
+Each log starts with an `rdsp_tune:` line that shows these settings. The two `stages (blocks):` lines that follow are the calibration cut and the measured cut.
+
+Megatron-Bridge runs PP8 at rdsp's measured cut for the same rows per microbatch, with every layer recomputed and NVIDIA's speed flags:
 
 ```bash
 P8=bench/bridge_vs_rdsp/27b_tp1pp8dp1/scripts/run.sh
-NAME=-fix-p8 RDSP_ARGS="--master-dtype remainder --cuts measured" bash $P8 rdsp    # rdsp PP8, every layer recomputed
-bash bench/torchtitan/scripts/run.sh run qwen35_27b_cord_fsdp8_rc_bf16           # TorchTitan FSDP over 8 GPUs
-
-# Megatron-Bridge PP8 at rdsp's measured cut, every layer recomputed, NVIDIA's speed flags
 RC_ALL="model.recompute_granularity=full model.recompute_method=uniform model.recompute_num_layers=1"
 FAST="rerun_state_machine.check_for_nan_in_loss=false ddp.check_for_nan_in_grad=false dataset.num_workers=8"
-LAYOUT="\"model.pipeline_model_parallel_layout='Et|t*9|t*10|t*9|t*9|t*9|t*10|t*7L'\""
-NAME=-gap-cut1 MEG_RC="$RC_ALL $LAYOUT $FAST model.batch_p2p_sync=false" bash $P8 bridge
+bridge27() {  # bridge27 <rows per microbatch> <rdsp's measured cut>
+  NAME=-mbs$1 MEG_RC="$RC_ALL \"model.pipeline_model_parallel_layout='$2'\" $FAST model.batch_p2p_sync=false train.micro_batch_size=$1" \
+    bash $P8 bridge
+}
+bridge27 1 'Et|t*9|t*9|t*9|t*9|t*9|t*10|t*8L'
+bridge27 2 'Et|t*9|t*9|t*9|t*9|t*10|t*10|t*7L'
+bridge27 4 'Et*2|t*9|t*10|t*9|t*10|t*9|t*10|t*5L'
+bridge27 8 'Et|t*9|t*10|t*9|t*9|t*9|t*10|t*7L'    # an earlier cut: rdsp ran out of memory before it measured one
 ```
 
-The layout string is rdsp's measured cut, 1 | 9 | 10 | 9 | 9 | 9 | 10 | 7 layers: `E` is the embedding, `t*9` nine layers, `L` the loss. Megatron-Bridge's even split runs out of memory. rdsp prints its final cut near the top of its log; if a rerun measures a different cut, give Megatron-Bridge that one.
+These write `bench/bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-mbs<N>.log`. The layout string is rdsp's measured cut: `E` is the embedding, `t*9` nine layers, `L` the loss; at 1 row per microbatch it is 1 | 9 | 9 | 9 | 9 | 9 | 10 | 8 layers. Megatron-Bridge's even split runs out of memory. If a rerun measures a different cut, give Megatron-Bridge that one.
+
+Megatron-Bridge's lighter recompute settings all ran out of memory at 2 rows per microbatch: replace `$RC_ALL` with `model.recompute_granularity=full model.recompute_method=block model.recompute_num_layers=9` (or `8`), or with `model.recompute_granularity=selective`.
+
+TorchTitan:
+
+```bash
+bash bench/torchtitan/scripts/run.sh run qwen35_27b_cord_fsdp8_rc_bf16   # FSDP over 8 GPUs
+bash bench/torchtitan/scripts/run.sh run qwen35_27b_cord_tp4dp2          # TP4 × FSDP2
+```
+
+#### Rows per microbatch
+
+Each pipeline at its fastest setting that fits in memory, both on one node:
+
+| Rows per microbatch | rdsp | Megatron-Bridge | Faster |
+|---|---|---|---|
+| 1 | 10.66 s | 15.13 s | rdsp, 1.42× |
+| 2 | 9.28 s | 9.78 s | rdsp, 1.05× |
+| 4 | 11.33 s | 10.47 s | Megatron-Bridge, 1.08× |
+| 8 | out of memory | out of memory | |
+
+The logs are `bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-nov21fix-rows<N>-best.log` and `bridge-nov21fix-mbs<N>-best.log`. The same runs with every layer recomputed on both, the trials behind each setting, and the profile at 4 rows per microbatch: `bench/bridge_vs_rdsp/27b_tp1pp8dp1/results/nov21_images_per_pass.md`.
+
+The vision encoder timed alone, Megatron-Bridge's against Hugging Face's (the blog's encoder table): `bench/encoder_test/results.md`.
 
 ### MegatronMIMO comparison
 
@@ -176,9 +222,14 @@ for L in 9b_v1_tp2pp2dp1 9b_v1_tp2pp1dp2; do                 # language TP2 × P
 done
 ```
 
+These write `mimo_vs_rdsp/<layout>/logs/mimo.log` and `rdsp.log`. The cited logs (table below) came from the same commands, saved under other names, with two differences:
+- rdsp's TP2 × PP2 log is a 26-step run (`run.sh rdsp 9b_v1_tp2pp2dp1 26`).
+- Both rdsp logs ran with an environment switch that adds each gradient straight into the FP32 buffer. That is now rdsp's only path, so the commands above need no switch.
+
 27B, two nodes, 9 GPUs: one vision GPU plus language TP4 × PP2. MegatronMIMO's example launcher runs out of memory on the 27B as shipped. `MIMO_PATCH=1` makes `runs.sh` apply `bench/gap_round/mimo/patch_mimo.py` to a copy of the launcher in `/tmp`; MIMO's library is unchanged, and `gap_round/mimo/patch.diff` shows the result. The patch switches MIMO to BF16 gradients and an exact FP32 master copy stored as 2-byte remainders, the same settings rdsp uses here.
 
 ```bash
+. ~/env2.sh
 bash bench/two_node/both.sh env MODEL=Qwen3.5-27B GBS=128 STEPS=10 LOGS=$HOME/rdsp/bench/gap_round/logs \
   MIMO_PATCH=1 MIMO_NAME=mimo-9gpu-10 MIMO_GPUS=9 MIMO_MBS=1 MIMO_NPROC0=8 MIMO_NPROC1=1 \
   MIMO_LANGUAGE=tp=4,pp=2,dp=1,rank_offset=0 MIMO_IMAGES=tp=1,pp=1,dp=1,rank_offset=8 \
@@ -191,13 +242,18 @@ The two systems place the 9 GPUs differently:
 - MIMO puts its language model on node 1's 8 GPUs and its vision GPU on node 2. MIMO prints its step times only on node 2, in `~/both-<time>.log`.
 - rdsp puts the vision GPU and its first language stage on node 1 and its second stage on node 2.
 
+MIMO's command writes `gap_round/logs/mimo-9gpu-10.log` on node 1, with its step times in node 2's `~/both-<time>.log`; `rdsp9.sh` writes `gap_round/logs/rdsp-9gpu.log`. The cited logs used the same settings under the names in the table (MIMO's node-2 output saved as `-node2.log`), except that rdsp also ran with `--profile`.
+
 ### Step times
 
-Each number is the median over steps 6-50 (MIMO 27B: steps 4-10). Compute it with `bench/gap_round/scripts/medians.py`:
+Each number is the median over steps 6-50 (MIMO 27B pair: steps 4-10). Compute it with `bench/gap_round/scripts/medians.py`:
 
 ```bash
 python3 bench/gap_round/scripts/medians.py rdsp <log>      # or bridge, titan; MIMO logs use bridge
 MEDIAN_FIRST=4 MEDIAN_MIN=5 python3 bench/gap_round/scripts/medians.py bridge <10-step log>
+MEDIAN_FIRST=4 MEDIAN_MIN=6 python3 bench/gap_round/scripts/medians.py rdsp <10-step log>
+MEDIAN_FIRST=5 MEDIAN_MIN=21 python3 bench/gap_round/scripts/medians.py rdsp <26-step log>   # 9B TP2 × PP2
+MEDIAN_FIRST=5 python3 bench/gap_round/scripts/medians.py rdsp <log>                      # 9B TP2 × DP2
 ```
 
 | Model | Run | Step time | Log |
@@ -206,14 +262,18 @@ MEDIAN_FIRST=4 MEDIAN_MIN=5 python3 bench/gap_round/scripts/medians.py bridge <1
 | 35B-A3B | Megatron-Bridge TP1 × PP2 × EP8 | 8.67 s | `gap_round/logs/bridge-pp2ep8-nv.log` |
 | 35B-A3B | TorchTitan FSDP16 + EP8 | 9.11 s | `two_node_35b/fsdp16/logs/run-qwen35_35b_a3b_cord_fsdp16_ep8_bf16-node0.log` |
 | 35B-A3B | rdsp TP1 × PP8 × DP2 | 9.60 s | `two_node_35b/pp8dp2/logs/rdsp.log` |
-| 27B | rdsp PP8 | 11.19 s | `bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-fix-p8.log` |
+| 27B | rdsp PP8, recompute chosen per stage | 10.66 s | `bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-nov21fix-rows1-best.log` |
 | 27B | TorchTitan FSDP8 | 13.16 s | `torchtitan/logs/run-qwen35_27b_cord_fsdp8_rc_bf16.log` |
-| 27B | Megatron-Bridge PP8 at rdsp's cut | 14.34 s | `bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-gap-cut1.log` |
-| 9B | 1 vision GPU + TP2 × PP2: rdsp / MIMO | 8.63 s / 9.32 s | `mimo_vs_rdsp/9b_v1_tp2pp2dp1/logs/rdsp-nov11-fix-t.log`, `mimo-nov11-r1.log` |
+| 27B | Megatron-Bridge PP8 at rdsp's cut | 15.13 s | `bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-nov21fix-mbs1-best.log` |
+| 27B | rdsp PP8, every layer recomputed (another node) | 11.09 s | `bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-nov21-rows1.log` |
+| 27B | Megatron-Bridge PP8 at rdsp's cut, three other nodes | 14.34 s, 14.45 s, 14.79 s | `bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-gap-cut1.log`, `bridge-nov11.log`, `bridge-nov21-mbs1.log` |
+| 27B | Megatron-Bridge TP2 × PP2 × DP2 | 17.47 s | `bridge_vs_rdsp/27b_tp2pp2dp2/logs/bridge-50.log` |
+| 27B | TorchTitan TP4 × FSDP2 | 38.16 s | `torchtitan/logs/run-qwen35_27b_cord_tp4dp2.log` |
+| 9B | 1 vision GPU + TP2 × PP2: rdsp (26-step run) / MIMO | 8.63 s / 9.32 s | `mimo_vs_rdsp/9b_v1_tp2pp2dp1/logs/rdsp-nov11-fix-t.log`, `mimo-nov11-r1.log` |
 | 9B | 1 vision GPU + TP2 × DP2: rdsp / MIMO | 7.73 s / 8.41 s | `mimo_vs_rdsp/9b_v1_tp2pp1dp2/logs/rdsp-nov11-directadd.log`, `mimo-nov11.log` |
-| 27B | 1 vision GPU + TP4 × PP2: rdsp / MIMO | 31.23 s / 30.82 s | `blog_round/logs27b/rdsp-27b-1rows-10steps-profile-run1.log`, `mimo-27b-1rows-10steps-run1-node2.log` |
+| 27B | 1 vision GPU + TP4 × PP2: rdsp (stage timers on, `--profile`; the only rdsp run of this pair) / MIMO | 31.23 s / 30.82 s | `blog_round/logs27b/rdsp-27b-1rows-10steps-profile-run1.log`, `mimo-27b-1rows-10steps-run1-node2.log` |
 
-Log paths are relative to `bench/`. rdsp numbers its steps from 0. Counting from rdsp's step 5 instead of 6 moves its medians by at most 0.01 s; the 9B rdsp numbers above count from step 5.
+The logs are not in the repository; the table names the file each run writes, relative to `bench/`. rdsp numbers its steps from 0. The 9B rdsp numbers above count from step 5.
 
 ### Settings held equal
 
@@ -230,9 +290,9 @@ Log paths are relative to `bench/`. rdsp numbers its steps from 0. Counting from
 Differences that remain:
 - **Recompute.**
   - 35B-A3B: rdsp's vision-stage layout recomputes every block; rdsp PP8 × DP2 recomputes only the vision encoder; Megatron-Bridge and TorchTitan recompute nothing.
-  - 27B: every system recomputes every layer.
+  - 27B: rdsp recomputes a different number of layers on each stage (`RC_PER`); Megatron-Bridge and TorchTitan FSDP8 recompute every layer.
   - MIMO comparisons: no recompute.
-- **One run each.** rdsp's 27B run came from a different p5.48xlarge (2026-10-17) than Megatron-Bridge's and TorchTitan's (2026-10-19), because a same-node rerun failed on a full disk.
+- **One run each.** rdsp's and Megatron-Bridge's 27B runs came from the same p5.48xlarge; TorchTitan's came from another one.
 
 ### Cost
 

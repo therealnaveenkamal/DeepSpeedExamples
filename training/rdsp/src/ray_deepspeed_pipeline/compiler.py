@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Lowers a PipelineConfig to an ExecutionPlan.
 
 Simple and advanced configs share this one path; the simple path just leaves
@@ -22,7 +25,6 @@ from ray_deepspeed_pipeline.partition import (
 from ray_deepspeed_pipeline.plan import (
     SCHEMA_VERSION,
     ExecutionPlan,
-    FailureSpec,
     ScheduleSpec,
     StageConnection,
     StageSpec,
@@ -227,11 +229,6 @@ def _colocated_vision(model, pipeline_config: PipelineConfig, ds_config: dict | 
             f"colocated vision puts it on no stage; use ColocatedVision(compile=True)"
         )
     conf = ds_config if isinstance(ds_config, dict) else {}
-    if conf.get("fp16", {}).get("enabled", False):
-        raise ValidationError(
-            "colocated vision supports bf16 or fp32, not fp16: the "
-            "encoder's gradients would miss the loss scale"
-        )
     kind = conf.get("optimizer", {}).get("type", "AdamW")
     if kind.lower() not in VISION_OPTIMIZERS:
         raise ValidationError(f"colocated vision supports Adam, AdamW or SGD, got {kind!r}")
@@ -255,6 +252,22 @@ def _check_tp_divides_heads(model, tp: int, stage: int) -> None:
         raise ValidationError(
             f"stage {stage}: tp={tp} does not divide the model's {heads} key/value "
             f"heads; use a tp that divides {heads}"
+        )
+
+
+def _check_sequence_parallel_attention(model, overrides: dict) -> None:
+    """Ulysses splits only the attention DeepSpeed swaps in; linear-attention
+    layers (Qwen3.5's gated delta rule) would run their recurrence over each
+    sequence shard alone."""
+    config = getattr(model, "config", None)
+    text = config.get_text_config() if hasattr(config, "get_text_config") else config
+    layer_types = getattr(text, "layer_types", None) or ()
+    sp_stages = [s for s, o in sorted(overrides.items()) if o.sp > 1]
+    if sp_stages and "linear_attention" in layer_types:
+        raise ValidationError(
+            f"stage {sp_stages[0]}: sequence parallelism is unsupported for models with "
+            f"linear-attention layers; their recurrence would see only one sequence "
+            f"shard. Use sp=1 (tp or dp instead)"
         )
 
 
@@ -284,11 +297,19 @@ def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> Exe
             f"gradient_clipping to 0 (rdsp also turns off DeepSpeed's default "
             f"of 1.0 for every stage)"
         )
+    conf = ds_config if isinstance(ds_config, dict) else {}
+    if (conf.get("fp16") or {}).get("enabled", False):
+        raise ValidationError(
+            "fp16 is unsupported: each stage's DeepSpeed scales its backward by its "
+            "own loss scale, so upstream gradients would carry every downstream "
+            "stage's scale too. Use bf16 or fp32"
+        )
     overrides = {}
     for override in pipeline_config.stage_overrides:
         if override.stage in overrides:
             raise ValidationError(f"duplicate StageOverride for stage {override.stage}")
         overrides[override.stage] = override
+    _check_sequence_parallel_attention(model, overrides)
     first = overrides.get(0)
     if first is not None and first.sp > 1 and vision_config(model) is not None:
         raise ValidationError(
@@ -363,7 +384,6 @@ def lower(model, pipeline_config: PipelineConfig, ds_config: dict | None) -> Exe
         stages=tuple(stages),
         connections=connections,
         schedule=ScheduleSpec(kind=pipeline_config.schedule, global_microbatches=microbatches),
-        failure=FailureSpec(poison_on_partial_apply=True),
         microbatch_rows=rows,
         colocated_vision=vision,
         prefetch=pipeline_config.prefetch,

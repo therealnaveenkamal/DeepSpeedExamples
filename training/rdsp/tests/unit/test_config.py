@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """PipelineConfig schema is frozen and validating."""
 
 import dataclasses

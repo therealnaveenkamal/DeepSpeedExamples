@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Samples exported from Megatron-Bridge's SFT pipeline reach rdsp unchanged:
 the same tokens, images and supervised positions, in the same order and
 grouping into microbatches."""

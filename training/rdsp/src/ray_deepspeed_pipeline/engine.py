@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """RayPipelineEngine: the blocking driver-side facade over the coordinator."""
 
 import contextlib
@@ -68,19 +71,30 @@ class RayPipelineEngine:
         own loader is used when initialize() got training_data. Returns the
         step loss (mean over microbatches, or the token mean under
         TokenMeanLoss). Raises StepFailed when a stage fails before any stage
-        applied its update (the step may be retried), PipelinePoisoned when a
-        failure left some stages updated (only load_checkpoint() recovers)."""
+        applied its update: the next call with the same iterator (or the
+        engine's loader) reruns the failed step's entries, so the retry is
+        exact. PipelinePoisoned when a failure left some stages updated (only
+        load_checkpoint() recovers)."""
         source = self._data_iter(data_iter)
         return _public_loss(resolve(self._coordinator.train_batch(source)))
 
     def eval_batch(self, data_iter=None) -> torch.Tensor:
         """Forward only over M microbatches; no gradients, weights unchanged.
-        Same data and error contract as train_batch()."""
-        source = self._data_iter(data_iter)
+        data_iter: what to evaluate; even when the engine owns a loader, which
+        is used (and read from) only when data_iter is None. Same error
+        contract as train_batch()."""
+        source = data_iter if data_iter is not None else self._data_iter(None)
         return _public_loss(resolve(self._coordinator.eval_batch(source)))
 
     def save_checkpoint(self, save_dir, tag=None, client_state=None, save_latest=True) -> bool:
         """Save every stage plus global step and the owned loader's position.
+
+        The owned loader's position counts only entries trained on, so a
+        step that failed and awaits its retry resumes too. Under prefetch the
+        next step's M entries have already been read from your iterator when
+        this saves: a position you track yourself (in client_state) is M
+        entries past the saved step, so resume from M entries earlier; the
+        manifest records the count as data_position["read_ahead"].
 
         Returns True once the manifest is committed; a failed save raises
         CheckpointError and commits nothing."""

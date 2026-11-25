@@ -13,13 +13,13 @@ Qwen3.5 vision-language models on H100 GPUs, trained on CORD-v2. Median time per
 | Model | GPUs | rdsp | Megatron-Bridge | TorchTitan |
 |---|---|---|---|---|
 | Qwen3.5-35B-A3B (mixture of experts) | 16, two nodes | **6.38 s** | 8.67 s | 9.11 s |
-| Qwen3.5-27B (dense) | 8, one node | **11.19 s** | 14.34 s | 13.16 s |
+| Qwen3.5-27B (dense) | 8, one node | **10.66 s** | 15.13 s | 13.16 s |
 
-- On the 35B that is 1.36× Megatron-Bridge's throughput and 1.43× TorchTitan's; on the 27B, 1.28× and 1.18×.
+- On the 35B that is 1.36× Megatron-Bridge's throughput and 1.43× TorchTitan's; on the 27B, 1.42× and 1.23×. With two rows per microbatch, the fastest setting for both pipelines on the 27B, rdsp is 1.05× Megatron-Bridge.
 - On MegatronMIMO's own layouts, with one GPU for the vision encoder, rdsp runs at 0.99–1.09× MIMO's throughput.
-- rdsp ran the 35B with the vision encoder on its own 4-GPU stage and six 2-GPU language stages, and the 27B as eight 1-GPU stages. Megatron-Bridge used the layout of NVIDIA's H100 recipe on the 35B and rdsp's eight-stage split on the 27B. TorchTitan sharded over all GPUs, with expert parallelism on the 35B.
+- rdsp ran the 35B with the vision encoder on its own 4-GPU stage and six 2-GPU language stages, and the 27B as eight 1-GPU stages, each choosing how many of its layers to recompute. Megatron-Bridge used the layout of NVIDIA's H100 recipe on the 35B and rdsp's eight-stage split on the 27B. TorchTitan sharded over all GPUs, with expert parallelism on the 35B.
 
-One run per configuration. Settings, commands and the log behind each number: [docs/REPRODUCE.md](docs/REPRODUCE.md). Earlier Qwen3.5-2B and 4B results on 8 GPUs: [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md).
+One run per configuration. Settings and commands for each number: [docs/REPRODUCE.md](docs/REPRODUCE.md). Earlier Qwen3.5-2B and 4B results on 8 GPUs: [docs/BENCHMARK_RESULTS.md](docs/BENCHMARK_RESULTS.md).
 
 ## Install
 

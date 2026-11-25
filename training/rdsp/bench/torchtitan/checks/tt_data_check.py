@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """CPU check of cord_data.py through TorchTitan's own loader and MultiModalCollator:
 every microbatch against the exported row it came from. Saves the first rows' M-RoPE
 positions for checks/compare_mrope.py (Hugging Face's get_rope_index).

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Layout choices for later two-node runs, read from rdsp's run 1 log (TP1 x PP8 x DP2, --cuts
 measured), so neither is picked by hand:
 

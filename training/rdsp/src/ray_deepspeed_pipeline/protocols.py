@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Internal contracts: the engine/coordinator seam and the worker command protocol."""
 
 import dataclasses

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Live demo: the rdsp pipeline engine, end to end, on your laptop.
 
     python demo.py
@@ -13,7 +16,8 @@ demonstrates the failure contracts. ~30 seconds.
 
 The same path with real DeepSpeed engines and Qwen3-0.6B, on 2 Modal GPUs
 (from the repo root):
-    modal run scripts/modal_tests.py --gpus L4:2 --tests tests/integration/test_p6_first_row.py
+    modal run scripts/modal_tests.py --gpus L4:2 \
+        --tests tests/integration/test_two_stage_baseline.py
 """
 
 import logging

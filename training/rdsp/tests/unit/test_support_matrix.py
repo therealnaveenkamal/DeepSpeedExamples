@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """The support matrix is default-deny and internally consistent."""
 
 from ray_deepspeed_pipeline.support_matrix import BASELINE_ROW, HETEROGENEOUS_ROWS, ROWS

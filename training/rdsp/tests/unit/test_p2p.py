@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Stage-to-stage exchange over gloo: two ranks in one process, one thread each."""
 
 import socket

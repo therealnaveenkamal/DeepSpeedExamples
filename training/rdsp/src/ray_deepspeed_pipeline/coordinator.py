@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Runs one global step at a time over the stage workers; owns global_steps.
 
 The coordinator never resolves tensors: only scalar losses and statuses. The
@@ -30,16 +33,17 @@ from ray_deepspeed_pipeline.protocols import Command, resolve
 from ray_deepspeed_pipeline.schedule import control_commands, generate_commands
 
 
-def _lengths_differ(inputs) -> bool:
-    """Whether a step's microbatches differ in sequence length (each padded
-    to its own longest row); stages then send every boundary with its shape."""
+def _shapes_differ(inputs) -> bool:
+    """Whether a step's microbatches differ in shape (rows, or sequence
+    length when each is padded to its own longest row); stages then send
+    every boundary with its shape."""
 
-    def length(x):
+    def shape(x):
         if isinstance(x, dict):
             x = x.get("input_ids", next((v for v in x.values() if torch.is_tensor(v)), None))
-        return x.shape[1] if torch.is_tensor(x) and x.dim() >= 2 else None
+        return tuple(x.shape) if torch.is_tensor(x) else None
 
-    return len({length(x) for x in inputs}) > 1
+    return len({shape(x) for x in inputs}) > 1
 
 
 class StageWorkerClient(Protocol):
@@ -83,6 +87,7 @@ class PipelineCoordinator:
         self._p2p_dirty = False  # a failed stage-local step left the p2p links unusable
         self._ahead = None  # (data iterator, future of the next step) under prefetch
         self._reader = None
+        self._retry = None  # (data iterator, entries) of a step that raised StepFailed
 
     @property
     def global_steps(self) -> int:
@@ -109,13 +114,24 @@ class PipelineCoordinator:
         save_latest: bool = True,
     ) -> bool:
         """Every rank of every stage saves; the manifest is published only after
-        all of them succeed, so a failed save commits nothing."""
+        all of them succeed, so a failed save commits nothing.
+
+        data_position: where the caller's data stands. Entries read but not
+        trained on are taken off an engine-owned position's entries_consumed
+        and recorded as read_ahead in a caller's: a failed step's, kept for
+        its retry, and under prefetch the next step's M entries."""
         if self._poisoned:
             raise PipelinePoisoned(
                 "refusing to checkpoint a poisoned pipeline: its stages may "
                 "hold weights from different optimizer steps"
             )
         tag = ckpt.validate_tag(tag if tag is not None else f"global_step{self._global_steps}")
+        held = self._entries_held()
+        if held and data_position is not None and data_position.get("owner") == "engine":
+            consumed = data_position["entries_consumed"] - held
+            data_position = {**data_position, "entries_consumed": consumed}
+        elif held:
+            data_position = {**(data_position or {"owner": "caller"}), "read_ahead": held}
         if os.path.exists(os.path.join(save_dir, tag, ckpt.MANIFEST_NAME)):
             raise CheckpointError(f"checkpoint {tag!r} is already committed; tags are immutable")
 
@@ -164,6 +180,7 @@ class PipelineCoordinator:
             plan_stages=list(range(len(self._plan.stages))),
         )
         self._drop_read_ahead()
+        self._retry = None
         tag = manifest["tag"]
 
         # invalidates handles from failed generations
@@ -250,7 +267,9 @@ class PipelineCoordinator:
                 "the last committed global checkpoint"
             )
         prepared = None
-        if train and self._ahead is not None:
+        if train and self._retry is not None and self._retry[0] is data_iter:
+            entries = self._retry[1]  # the failed step again, so the retry is exact
+        elif train and self._ahead is not None:
             source, future = self._ahead
             if source is not data_iter:
                 raise StepFailed(
@@ -262,14 +281,29 @@ class PipelineCoordinator:
         else:
             # consume exactly the step's microbatches before dispatching anything
             entries = take_microbatch_entries(data_iter, self._plan.global_microbatches)
+        if train:
+            self._retry = None
         inputs = [e[0] for e in entries]
         labels = [e[1] for e in entries]
 
         self._generation += 1
         sequences = generate_commands(self._plan, self._generation, self._global_steps, train=train)
-        ahead = data_iter if train and self._plan.prefetch else None
-        losses = self._run_step(sequences, inputs, labels, train, prepared, ahead)
+        # a retry finds the next step already read ahead
+        ahead = data_iter if train and self._plan.prefetch and self._ahead is None else None
+        try:
+            losses = self._run_step(sequences, inputs, labels, train, prepared, ahead)
+        except StepFailed:
+            if train:
+                self._retry = (data_iter, entries)
+            raise
         return self._finish(sequences, losses, train)
+
+    def _entries_held(self) -> int:
+        """Entries read from the caller's iterator but not yet trained on."""
+        held = len(self._retry[1]) if self._retry is not None else 0
+        if self._ahead is not None and self._ahead[1].exception() is None:
+            held += len(self._ahead[1].result()[0])
+        return held
 
     def _stage_payload(self, s: int, inputs, labels) -> dict:
         """What stage s is sent with a step: the inputs (first stage, or
@@ -309,8 +343,24 @@ class PipelineCoordinator:
             self._reconnect_p2p(strict=True)
         kinds = ("forward", "backward", "eval", "ready")
         cmds, handles = {}, {}
-        varying = _lengths_differ(inputs)
+        varying = _shapes_differ(inputs)
         started = time.perf_counter()
+        # every payload before any dispatch: a stage left waiting on a
+        # neighbour that was never sent its step hangs until the p2p timeout
+        payloads = {}
+        for s, worker in enumerate(self._workers):
+            if prepared and s in prepared:
+                payloads[s] = {"prepared": prepared[s]}
+                continue
+            payload = self._stage_payload(s, inputs, labels)
+            prepare = getattr(worker, "prepare", None)
+            try:
+                payloads[s] = {"prepared": prepare(**payload)} if prepare else payload
+            except Exception as e:
+                raise StepFailed(
+                    f"stage {s}: building its share of the step failed before any "
+                    f"stage started: {type(e).__name__}: {e}"
+                ) from e
         for s in range(n_stages):
             ops = [(c.kind, c.microbatch, c.command_id) for c in sequences[s] if c.kind in kinds]
             cmds[s] = Command(
@@ -323,13 +373,8 @@ class PipelineCoordinator:
                 predecessors=(),
             )
             try:
-                payload = (
-                    {"prepared": prepared[s]}
-                    if prepared and s in prepared
-                    else self._stage_payload(s, inputs, labels)
-                )
                 handles[s] = self._submit(
-                    cmds[s], control={"ops": ops, "varying": varying}, **payload
+                    cmds[s], control={"ops": ops, "varying": varying}, **payloads[s]
                 )
             except StepFailed:
                 self._p2p_dirty = True

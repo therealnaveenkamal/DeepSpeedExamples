@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # Qwen3-0.6B (text only) on 4 GPUs: stage 0 data parallel with ZeRO-2 on 2
 # GPUs, stage 1 tensor parallel on 2 GPUs. WikiText-103.
 #

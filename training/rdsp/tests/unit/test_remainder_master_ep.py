@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """--master-dtype remainder with expert parallelism: two CPU ranks (gloo), a tiny
 Qwen3.5-MoE text model whose experts DeepSpeed's AutoEP splits over the two ranks.
 RemainderAdamW then steps DeepSpeed's MoE groups (the experts reduced and split over

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Every recipe in recipes/ is a valid command: its flags parse with the
 script it calls, and its header states the hardware and the measured result."""
 

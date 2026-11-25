@@ -1,9 +1,11 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # node_prep.sh: one node ready for the 35B runs (prep.sh runs it on both nodes at once): the rdsp
 # environment and NeMo container (bench/setup_node.sh), TorchTitan's environment
 # (torchtitan/scripts/setup_box.sh) and the Qwen3.5-35B-A3B weights (~72 GB) side by side, then a
 # record of the node's GPUs and EFA devices in ~/hardware.txt. Logs in ~/.
-set -uo pipefail
+set -uo pipefail   # no -e: each step checks its own exit code and reports which one failed
 RDSP=$(cd "$(dirname "$0")/../../.." && pwd)
 bash "$RDSP/bench/setup_node.sh" > ~/setup.log 2>&1 || { echo "SETUP FAILED"; exit 1; }
 bash "$RDSP/bench/torchtitan/scripts/setup_box.sh" > ~/tt_setup.log 2>&1 &

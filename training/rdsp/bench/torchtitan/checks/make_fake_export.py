@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """A small export in the format of bench/mimo/export_bridge_batches.py, built with the
 real Qwen3.5 Hugging Face processor: random images of varying sizes, a chat prompt and
 an answer, labels on the last 12 real tokens (Hugging Face convention: unshifted, -100

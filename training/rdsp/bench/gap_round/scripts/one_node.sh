@@ -1,12 +1,14 @@
 #!/bin/bash
-# one_node.sh <bridge|others>: this node's one-node runs on the dense 27B (8 GPUs), phase A of
-# the gap round. "bridge" runs on node 1 while "others" runs on node 2, so the cleanup here
-# touches this node only. Each run prints a "=== " line when it starts and when it ends.
-#   bridge  A1-A3: Megatron-Bridge TP1 x PP8, every layer recomputed, at per-stage cuts given
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+# one_node.sh <bridge|others>: this node's one-node runs on the dense 27B (8 GPUs). "bridge"
+# runs on node 1 while "others" runs on node 2, so the cleanup here touches this node only.
+# Each run prints a "=== " line when it starts and when it ends.
+#   bridge  Megatron-Bridge TP1 x PP8, every layer recomputed, at three per-stage cuts given
 #           with model.pipeline_model_parallel_layout
-#   others  A4-A6: TorchTitan FSDP8 (FullAC fp32 reduce, FullAC bf16 reduce, MLP-only recompute
-#           bf16 reduce); A8: TorchTitan TP1 x PP8 at rdsp's cut (weights converted to DCP);
-#           then A7: rdsp TP1 x PP8 with its measured cut
+#   others  TorchTitan FSDP8 (FullAC fp32 reduce, FullAC bf16 reduce, MLP-only recompute
+#           bf16 reduce); TorchTitan TP1 x PP8 at rdsp's cut (weights converted to DCP);
+#           then rdsp TP1 x PP8 with its measured cut
 set -uo pipefail
 cd ~/rdsp
 B=~/rdsp/bench

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Export Megatron-Bridge's own SFT samples, for rdsp to train on the same data.
 
 Runs inside the NeMo container. Builds the training dataset exactly as a

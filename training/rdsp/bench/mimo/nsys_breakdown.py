@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Per-GPU time per training step from an Nsight Systems trace: how long each
 GPU computes, communicates and sits idle. The same table for Megatron and rdsp,
 so their difference is visible kernel by kernel.

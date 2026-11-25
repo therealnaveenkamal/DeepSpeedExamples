@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
 # run.sh <titan|titan-ep8|rdsp>: Qwen3.5-35B-A3B fully sharded over all 16 GPUs:
 # weights, gradients and Adam split 16 ways, each layer gathered whole just before it
 # runs; one row per GPU per microbatch, 8 microbatches. On node 1, after ../scripts/prep.sh;
@@ -10,7 +12,7 @@
 #              2-byte master works with ZeRO 1 and 2 only; TorchTitan's master is fp32 too
 # STEPS (default 50; 3 for TorchTitan's fit), RECOMPUTE=1 (every block), NAME (log suffix).
 # Logs in logs/ (TorchTitan: logs/<fit|run>-<config>-node<rank>.log).
-set -uo pipefail
+set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/../scripts/common.sh"
 export LOGS=$HERE/logs$LOGS_SUFFIX; mkdir -p "$LOGS"

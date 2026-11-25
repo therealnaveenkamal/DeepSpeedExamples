@@ -1,5 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """The README's headline step times are the medians of the logs docs/REPRODUCE.md cites,
-as bench/gap_round/scripts/medians.py computes them, and its ratios follow from them."""
+as bench/gap_round/scripts/medians.py computes them, and its ratios follow from them.
+The logs are not in the repository; these tests run where they are."""
 
 import os
 import sys
@@ -22,11 +26,24 @@ LOGS = {
         ),
     ),
     "27B": (
-        ("rdsp", "bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-fix-p8.log"),
-        ("bridge", "bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-gap-cut1.log"),
+        ("rdsp", "bridge_vs_rdsp/27b_tp1pp8dp1/logs/rdsp-nov21fix-rows1-best.log"),
+        ("bridge", "bridge_vs_rdsp/27b_tp1pp8dp1/logs/bridge-nov21fix-mbs1-best.log"),
         ("titan", "torchtitan/logs/run-qwen35_27b_cord_fsdp8_rc_bf16.log"),
     ),
 }
+
+
+def _logs_present(model: str) -> bool:
+    return all(os.path.exists(os.path.join(ROOT, "bench", log)) for _, log in LOGS[model])
+
+
+needs_logs = pytest.mark.parametrize(
+    "model",
+    [
+        pytest.param(m, marks=pytest.mark.skipif(not _logs_present(m), reason="logs not here"))
+        for m in sorted(LOGS)
+    ],
+)
 
 
 def readme() -> str:
@@ -34,7 +51,7 @@ def readme() -> str:
         return f.read()
 
 
-@pytest.mark.parametrize("model", sorted(LOGS))
+@needs_logs
 def test_the_results_row_is_the_cited_logs_medians(model):
     ours, bridge, titan = (
         medians.median(kind, os.path.join(ROOT, "bench", log)) for kind, log in LOGS[model]
@@ -43,7 +60,7 @@ def test_the_results_row_is_the_cited_logs_medians(model):
     assert row in readme()
 
 
-@pytest.mark.parametrize("model", sorted(LOGS))
+@needs_logs
 def test_the_ratios_follow_from_the_step_times(model):
     ours, bridge, titan = (
         medians.median(kind, os.path.join(ROOT, "bench", log)) for kind, log in LOGS[model]
@@ -51,3 +68,10 @@ def test_the_ratios_follow_from_the_step_times(model):
     text = readme()
     assert f"{bridge / ours:.2f}×" in text
     assert f"{titan / ours:.2f}×" in text
+
+
+def test_rdsp_steps_are_counted_as_logged():
+    """rdsp's log counts from step 0, and medians.py keeps its numbers."""
+    log = "".join(f"step {i} loss 0.5 {1000 * (i + 1)} ms\n" for i in range(50))
+    assert min(medians.rdsp(log)) == 0
+    assert medians.rdsp(log)[6] == 7.0

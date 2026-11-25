@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Train one rdsp benchmark cell on the local GPUs and write its results as JSON.
 
     python rdsp_bench.py --pp 4 --m 16 --seq 512 --data <tokens.pt> --out <result.json>

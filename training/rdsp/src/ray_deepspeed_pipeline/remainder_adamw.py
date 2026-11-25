@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """AdamW whose fp32 master weights cost 2 bytes per parameter instead of 4.
 
 An fp32 number is its bf16 rounding plus a 16-bit remainder. The bf16 model

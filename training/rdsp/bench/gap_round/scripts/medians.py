@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """medians.py <bridge|titan|rdsp> <log>...: median seconds per step over steps 6-50 of each log
 (one line per log: "<seconds> <log>", or nothing when fewer than 40 steps ran), and with --best
 only the log with the lowest median. MEDIAN_FIRST (default 6) and MEDIAN_MIN (default 40): the

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """End-to-end acceptance of the first support row, on 2 GPUs.
 
 Row: BF16, 2 stages, 1 GPU per stage, DP=TP=EP=SP=1, ZeRO-0, identity

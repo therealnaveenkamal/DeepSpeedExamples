@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """Vocab-parallel embedding and output head: two processes stand in for two
 tensor-parallel ranks; each holds half of the vocabulary rows. Outputs and
 gradients must equal the unsplit modules'."""

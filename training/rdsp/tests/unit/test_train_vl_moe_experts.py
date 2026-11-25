@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# DeepSpeed Team
+
 """--moe-experts hf: Liger binds its fused-experts forward onto each routed-experts module
 instance (as liger_kernel's _bind_method_to_module does); restore_hf_experts removes that
 binding so the class's own forward runs again, and leaves every other patch alone."""
